@@ -496,7 +496,11 @@ class SystemInstallerHarness(InstallerHarness):
             "TAILPLAN_BACKUP_DIR": str(self.backup_dir),
         }
         system_overrides.update(overrides)
-        return super().env(**system_overrides)
+        environment = super().env(**system_overrides)
+        for name in ("SUDO_USER", "SUDO_UID"):
+            if name not in overrides:
+                environment.pop(name, None)
+        return environment
 
     def run(
         self, *arguments: str, check: bool = True, **overrides: str
