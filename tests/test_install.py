@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -72,6 +73,25 @@ def parse_env(path: Path) -> dict[str, str]:
 def unit_escape(value: str) -> str:
     safe = b"/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-:"
     return "".join(chr(byte) if byte in safe else f"\\x{byte:02x}" for byte in value.encode())
+
+
+@functools.cache
+def system_installer_command_prefix() -> tuple[str, ...] | None:
+    if os.geteuid() == 0:
+        return ("bash",)
+    try:
+        probe = subprocess.run(
+            ["unshare", "-Ur", "true"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if probe.returncode != 0:
+        return None
+    return ("unshare", "-Ur", "bash")
 
 
 class InstallerHarness:
@@ -423,6 +443,12 @@ class InstallerHarness:
 
 class SystemInstallerHarness(InstallerHarness):
     def __init__(self, root: Path) -> None:
+        command_prefix = system_installer_command_prefix()
+        if command_prefix is None:
+            raise unittest.SkipTest(
+                "System installer tests require root or support for `unshare -Ur`."
+            )
+        self.command_prefix = command_prefix
         super().__init__(root)
         prefix = root / "system-root"
         self.app_dir = prefix / "opt/tailplan"
@@ -476,7 +502,7 @@ class SystemInstallerHarness(InstallerHarness):
         self, *arguments: str, check: bool = True, **overrides: str
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["unshare", "-Ur", "bash", str(INSTALLER), "--system", *arguments],
+            [*self.command_prefix, str(INSTALLER), "--system", *arguments],
             cwd=REPO,
             env=self.env(**overrides),
             text=True,

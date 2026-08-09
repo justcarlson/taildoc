@@ -26,9 +26,24 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install . pytest
       - run: tailplan-server --help
-      - run: python -m pytest -q
+      - run: python -m pytest -q -rs
       - run: bash tests/smoke.sh
       - run: python tests/check_ste100.py
+
+  system-installer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install . pytest
+      - name: Test the system installer as root
+        run: >-
+          sudo -- "$pythonLocation/bin/python" -m pytest -q
+          tests/test_install.py
+          -k "system or failed_rotation_restores_both_private_token_copies"
 
   container:
     runs-on: ubuntu-latest
