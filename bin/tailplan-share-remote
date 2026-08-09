@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Publish a local artifact through a remote Tailplan host over OpenSSH."""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Callable
+
+
+DEFAULT_TARGET = "tailplan-server"
+TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+DRAFT_RE = re.compile(r"^[a-z0-9]{6,32}$")
+REMOTE_DIR_RE = re.compile(r"^/tmp/tailplan-upload\.[A-Za-z0-9]{8}$")
+Run = Callable[..., subprocess.CompletedProcess[str]]
+
+
+def safe_filename(path: Path) -> str:
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "-", path.name).strip("-.")
+    return (name or "tailplan-draft.md")[:255]
+
+
+def validate_target(target: str) -> None:
+    if not TARGET_RE.fullmatch(target):
+        raise ValueError(
+            "SSH target must be a simple configured host alias containing only letters, "
+            "numbers, dots, underscores, or hyphens."
+        )
+
+
+def validate_remote_dir(path: str) -> None:
+    if not REMOTE_DIR_RE.fullmatch(path) or ".." in Path(path).parts:
+        raise RuntimeError("Remote mktemp returned an unsafe path.")
+
+
+def share_file(
+    source: Path,
+    *,
+    target: str,
+    new: bool,
+    draft: str | None,
+    run: Run = subprocess.run,
+) -> subprocess.CompletedProcess[str]:
+    source = source.expanduser().resolve()
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    validate_target(target)
+    if draft and not DRAFT_RE.fullmatch(draft):
+        raise ValueError("Draft id must contain 6-32 lowercase letters or numbers.")
+
+    created = run(
+        ["ssh", target, "mktemp", "-d", "/tmp/tailplan-upload.XXXXXXXX"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    remote_dir = created.stdout.strip()
+    validate_remote_dir(remote_dir)
+    remote_path = f"{remote_dir}/{safe_filename(source)}"
+
+    try:
+        run(["scp", "-O", "--", str(source), f"{target}:{remote_path}"], check=True)
+        command = ["ssh", target, "tailplan-share", remote_path]
+        if new:
+            command.append("--new")
+        elif draft:
+            command.extend(["--draft", draft])
+        return run(command, check=True, capture_output=True, text=True)
+    finally:
+        run(
+            ["ssh", target, "rm", "-rf", "--", remote_dir],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Publish a local Markdown, text, or HTML file through a remote Tailplan server."
+    )
+    parser.add_argument("file", help="Path to .md, .txt, or .html file")
+    parser.add_argument(
+        "--target",
+        default=os.getenv("TAILPLAN_SSH_TARGET", DEFAULT_TARGET),
+        help=f"Configured SSH host alias (default: {DEFAULT_TARGET})",
+    )
+    version = parser.add_mutually_exclusive_group()
+    version.add_argument("--new", action="store_true", help="Create a fresh Tailplan draft")
+    version.add_argument("--draft", help="Update a specific Tailplan draft id")
+    args = parser.parse_args()
+
+    try:
+        result = share_file(
+            Path(args.file),
+            target=args.target,
+            new=args.new,
+            draft=args.draft,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        print(f"tailplan-share: {exc}", file=sys.stderr)
+        return 2
+    except subprocess.CalledProcessError as exc:
+        if exc.stdout:
+            print(exc.stdout, end="", file=sys.stdout)
+        if exc.stderr:
+            print(exc.stderr, end="", file=sys.stderr)
+        print(f"tailplan-share: remote publish failed with exit {exc.returncode}", file=sys.stderr)
+        return exc.returncode or 1
+
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+    return result.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

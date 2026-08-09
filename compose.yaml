@@ -1,0 +1,42 @@
+name: tailplan
+
+services:
+  tailplan:
+    build:
+      context: .
+    image: tailplan:0.2.0
+    restart: unless-stopped
+    init: true
+    environment:
+      TAILPLAN_HOST: 0.0.0.0
+      TAILPLAN_PORT: 9127
+      TAILPLAN_DATA_DIR: /var/lib/tailplan
+      TAILPLAN_TOKEN_FILE: /run/secrets/tailplan_upload_token
+      TAILPLAN_BASE_URL: ${TAILPLAN_BASE_URL:-http://127.0.0.1:9127}
+    ports:
+      - "${TAILPLAN_BIND_ADDRESS:-127.0.0.1}:${TAILPLAN_PORT:-9127}:9127"
+    volumes:
+      - tailplan-data:/var/lib/tailplan
+    secrets:
+      - tailplan_upload_token
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /run/tailplan:size=1m,mode=0700
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_READ_SEARCH
+      - FOWNER
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  tailplan-data:
+
+secrets:
+  tailplan_upload_token:
+    file: ${HOME}/.tailplan/token

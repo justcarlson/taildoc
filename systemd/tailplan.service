@@ -1,0 +1,31 @@
+[Unit]
+Description=Tailplan tailnet-only static HTML draft publisher
+After=__TAILPLAN_AFTER__
+Wants=__TAILPLAN_WANTS__
+
+[Service]
+__TAILPLAN_SYSTEM_DIRECTIVES__
+Type=simple
+EnvironmentFile=__TAILPLAN_ENV_FILE__
+ExecStart=/usr/bin/env bash -c 'exec "$${TAILPLAN_APP_DIR}/bin/run-tailplan"'
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__TAILPLAN_DATA_DIR__
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=__TAILPLAN_WANTED_BY__

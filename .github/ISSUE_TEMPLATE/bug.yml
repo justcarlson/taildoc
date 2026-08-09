@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible Tailplan defect.
+title: "Bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include tokens, private hostnames, draft content, or personal data.
+        Read SECURITY.md before you report a possible vulnerability.
+  - type: input
+    id: version
+    attributes:
+      label: Tailplan version
+      description: Give the release tag or commit identifier.
+      placeholder: v0.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment type
+      options:
+        - Local process
+        - Docker Compose
+        - Native user service
+        - Native system service
+        - Remote client
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: >-
+        List the commands and actions that reproduce the defect from a clean supported deployment.
+        Do not include credentials, private hostnames, draft content, or personal data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: >-
+        If Tailplan writes log entries for the defect, add those entries after you remove upload tokens,
+        private hostnames, draft content, and personal data.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: >-
+        Give the operating system.
+        Give the Python version for a native or local deployment or the Docker version for a container deployment.
+        Give the proxy and Tailscale versions only when the deployment uses those components.
+    validations:
+      required: true

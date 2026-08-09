@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Mirror a specific Tailplan draft to public postplan.dev after explicit approval."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+TAILPLAN_META = Path.home() / ".tailplan" / "metadata.json"
+APPROVAL = "--i-approve-public-sharing"
+
+
+def draft_id_from_value(value: str) -> str:
+    m = re.search(r"/d/([a-z0-9]{6,32})", value)
+    if m:
+        return m.group(1)
+    if re.fullmatch(r"[a-z0-9]{6,32}", value):
+        return value
+    raise SystemExit("Provide a Tailplan draft id or URL containing /d/<draft-id>.")
+
+
+def load_draft(draft_id: str) -> dict:
+    try:
+        meta = json.loads(TAILPLAN_META.read_text())
+    except Exception as e:
+        raise SystemExit(f"Could not read {TAILPLAN_META}: {e}")
+    draft = meta.get("drafts", {}).get(draft_id)
+    if not draft:
+        raise SystemExit(f"Tailplan draft not found: {draft_id}")
+    return draft
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Mirror a Tailplan draft to public postplan.dev. Requires explicit approval flag."
+    )
+    parser.add_argument("draft", help="Tailplan draft id or Tailplan URL")
+    parser.add_argument(APPROVAL, dest="approved", action="store_true", help="Required. Confirms this draft may be shared on the open internet.")
+    parser.add_argument("--new", action="store_true", help="Force a fresh public Postplan URL")
+    args = parser.parse_args()
+
+    if not args.approved:
+        raise SystemExit(
+            f"Refusing public mirror without {APPROVAL}. Confirm the artifact contains no secrets/private data and rerun."
+        )
+
+    if not shutil.which("postplan"):
+        raise SystemExit("postplan CLI is not installed or not on PATH.")
+
+    draft_id = draft_id_from_value(args.draft)
+    draft = load_draft(draft_id)
+    source = Path(draft.get("currentObject", ""))
+    if not source.exists():
+        raise SystemExit(f"Tailplan draft object missing: {source}")
+
+    with tempfile.TemporaryDirectory() as td:
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", draft.get("title") or draft_id).strip("-") or draft_id
+        public_file = Path(td) / f"{safe_name}.html"
+        public_file.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        cmd = ["postplan", "upload", str(public_file)]
+        if args.new:
+            cmd.append("--new")
+        proc = subprocess.run(cmd, text=True, capture_output=True)
+        sys.stdout.write(proc.stdout)
+        sys.stderr.write(proc.stderr)
+        return proc.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Allow the exact remote commands that the Tailplan OpenSSH client uses."""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shlex
+import stat
+import sys
+from pathlib import Path
+
+
+CONFIG_PATH = Path("/etc/tailplan-publisher.json")
+DIRECTORY_RE = re.compile(r"/tmp/tailplan-upload\.[A-Za-z0-9]{8}")
+FILE_RE = re.compile(
+    r"(/tmp/tailplan-upload\.[A-Za-z0-9]{8})/([A-Za-z0-9_][A-Za-z0-9_.-]{0,254})"
+)
+DRAFT_RE = re.compile(r"[a-z0-9]{6,32}")
+
+
+def deny(detail: str) -> None:
+    print(f"tailplan-publish-guard: {detail}", file=sys.stderr)
+    raise SystemExit(126)
+
+
+def configured_share_command() -> str:
+    try:
+        config_stat = CONFIG_PATH.stat(follow_symlinks=False)
+        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        deny(f"publisher configuration is not available: {error}")
+    if not stat.S_ISREG(config_stat.st_mode) or config_stat.st_uid != 0:
+        deny("publisher configuration must be a root-owned regular file")
+    if config_stat.st_mode & 0o022:
+        deny("publisher configuration must not be writable by group or other users")
+    command = config.get("share_command") if isinstance(config, dict) else None
+    if not isinstance(command, str) or not command.startswith("/"):
+        deny("publisher command must be an absolute path")
+    try:
+        command_stat = os.stat(command, follow_symlinks=False)
+    except OSError as error:
+        deny(f"publisher command is not available: {error}")
+    if not stat.S_ISREG(command_stat.st_mode) or command_stat.st_mode & 0o022:
+        deny("publisher command must be a protected regular file")
+    if not os.access(command, os.X_OK):
+        deny("publisher command is not executable")
+    return command
+
+
+def parse_original_command() -> list[str]:
+    original = os.environ.get("SSH_ORIGINAL_COMMAND", "")
+    if not original or "\n" in original or "\r" in original or "\x00" in original:
+        deny("SSH_ORIGINAL_COMMAND is missing or invalid")
+    try:
+        return shlex.split(original, posix=True)
+    except ValueError:
+        deny("SSH_ORIGINAL_COMMAND has invalid quoting")
+
+
+def execute(argv: list[str]) -> None:
+    if argv == ["mktemp", "-d", "/tmp/tailplan-upload.XXXXXXXX"]:
+        os.execv("/usr/bin/mktemp", argv)
+
+    if len(argv) == 3 and argv[:2] == ["scp", "-t"] and FILE_RE.fullmatch(argv[2]):
+        parent = Path(argv[2]).parent
+        try:
+            parent_stat = parent.stat(follow_symlinks=False)
+        except OSError:
+            deny("upload directory is not available")
+        if not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != os.getuid():
+            deny("upload directory has an invalid owner or type")
+        os.execv("/usr/bin/scp", argv)
+
+    if len(argv) in {2, 3, 4} and argv[0] == "tailplan-share":
+        match = FILE_RE.fullmatch(argv[1])
+        if match is None:
+            deny("publish path is invalid")
+        if len(argv) == 3 and argv[2] != "--new":
+            deny("publish option is invalid")
+        if len(argv) == 4 and (
+            argv[2] != "--draft" or DRAFT_RE.fullmatch(argv[3]) is None
+        ):
+            deny("draft option is invalid")
+        if len(argv) not in {2, 3, 4}:
+            deny("publish arguments are invalid")
+        source = Path(argv[1])
+        try:
+            source_stat = source.stat(follow_symlinks=False)
+        except OSError:
+            deny("publish source is not available")
+        if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_uid != os.getuid():
+            deny("publish source has an invalid owner or type")
+        command = configured_share_command()
+        os.execv(command, [command, *argv[1:]])
+
+    if len(argv) == 4 and argv[:3] == ["rm", "-rf", "--"]:
+        directory = argv[3]
+        if DIRECTORY_RE.fullmatch(directory) is None:
+            deny("cleanup path is invalid")
+        try:
+            directory_stat = os.lstat(directory)
+        except FileNotFoundError:
+            raise SystemExit(0)
+        except OSError:
+            deny("cleanup path is not available")
+        if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != os.getuid():
+            deny("cleanup directory has an invalid owner or type")
+        os.execv("/usr/bin/rm", argv)
+
+    deny("command is not allowed")
+
+
+def main() -> int:
+    execute(parse_original_command())
+    return 126
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

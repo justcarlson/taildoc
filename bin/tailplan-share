@@ -1,0 +1,1600 @@
+#!/usr/bin/env python3
+"""Convert a local markdown/text/html artifact to safe static HTML and upload it to Tailplan."""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import fcntl
+import hashlib
+import ipaddress
+import html
+import http.client
+import json
+import os
+import re
+import secrets
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from html.parser import HTMLParser
+from pathlib import Path
+
+CSS = """
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+html { max-width: 100%; overflow-x: hidden; }
+body { margin: 0; max-width: 100%; overflow-x: hidden; background: #f8fafc; color: #111827; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.58; }
+main { width: min(100% - 32px, 920px); margin: 40px auto 64px; padding: 0; }
+h1 { font-size: clamp(1.8rem, 7vw, 2.25rem); line-height: 1.12; margin: 0 0 1rem; letter-spacing: -0.035em; }
+h2 { font-size: clamp(1.25rem, 5vw, 1.45rem); margin: 2rem 0 0.75rem; border-top: 1px solid #e5e7eb; padding-top: 1.25rem; }
+h3 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
+p, ul, ol, pre, .table-wrap, blockquote { margin: 0.8rem 0; }
+p, li, blockquote, td, th { overflow-wrap: anywhere; }
+ul, ol { padding-left: 1.4rem; }
+li { margin: 0.25rem 0; }
+pre { max-width: 100%; overflow-x: auto; background: #0f172a; color: #e5e7eb; border-radius: 10px; padding: 14px 16px; -webkit-overflow-scrolling: touch; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+p code, li code { background: #e5e7eb; border-radius: 4px; padding: 0.1rem 0.28rem; }
+blockquote { border-left: 4px solid #94a3b8; padding-left: 1rem; color: #475569; }
+.table-wrap { width: 100%; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table { border-collapse: collapse; width: 100%; min-width: 100%; }
+th, td { border: 1px solid #d1d5db; padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; }
+th { background: #f1f5f9; }
+img, svg, video { max-width: 100%; height: auto; }
+a { color: #2563eb; overflow-wrap: anywhere; }
+.meta { color: #64748b; font-size: 0.9rem; margin-bottom: 1.5rem; }
+@media (max-width: 640px) {
+  main { width: min(100% - 24px, 920px); margin: 24px auto 48px; }
+  table { min-width: 40rem; }
+  th, td { padding: 0.4rem 0.5rem; }
+}
+""".strip()
+
+TITLE_RE = re.compile(r"<title\b[^>]*>(.*?)</title\s*>", re.IGNORECASE | re.DOTALL)
+DRAFT_ID_RE = re.compile(r"[a-z0-9]{6,32}")
+# Tailplan limits blockquote depth to `MAX_QUOTE_DEPTH` to protect the Python recursion limit.
+# Tailplan renders additional blockquote markers as escaped text.
+MAX_QUOTE_DEPTH = 16
+
+
+def make_links_openable(doc: str) -> str:
+    """Rewrite anchor attributes with the same idempotent rules as the server."""
+    rewriter = _AnchorRewriter(doc)
+    rewriter.feed(doc)
+    rewriter.close()
+    pieces: list[str] = []
+    previous_end = 0
+    for start, end, replacement in sorted(rewriter.edits):
+        pieces.extend((doc[previous_end:start], replacement))
+        previous_end = end
+    pieces.append(doc[previous_end:])
+    return "".join(pieces)
+
+
+def _start_tag_attributes(raw: str) -> tuple[list[tuple[str, int, int]], int]:
+    spans: list[tuple[str, int, int]] = []
+    index = 1
+    while index < len(raw) and not raw[index].isspace() and raw[index] not in "/>":
+        index += 1
+    close_at = len(raw)
+    while index < len(raw):
+        while index < len(raw) and raw[index].isspace():
+            index += 1
+        if index >= len(raw):
+            break
+        if raw[index] == ">":
+            close_at = index
+            break
+        if raw[index] == "/" and index + 1 < len(raw) and raw[index + 1] == ">":
+            close_at = index
+            break
+        start = index
+        while (
+            index < len(raw)
+            and not raw[index].isspace()
+            and raw[index] not in "/=>"
+        ):
+            index += 1
+        if index == start:
+            index += 1
+            continue
+        name = raw[start:index].lower()
+        while index < len(raw) and raw[index].isspace():
+            index += 1
+        if index < len(raw) and raw[index] == "=":
+            index += 1
+            while index < len(raw) and raw[index].isspace():
+                index += 1
+            if index < len(raw) and raw[index] in {'"', "'"}:
+                quote = raw[index]
+                index += 1
+                while index < len(raw) and raw[index] != quote:
+                    index += 1
+                if index < len(raw):
+                    index += 1
+            else:
+                while (
+                    index < len(raw)
+                    and not raw[index].isspace()
+                    and raw[index] != ">"
+                ):
+                    index += 1
+        spans.append((name, start, index))
+    return spans, close_at
+
+
+class _AnchorRewriter(HTMLParser):
+    def __init__(self, doc: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.edits: list[tuple[int, int, str]] = []
+        self._line_offsets = [0]
+        self._line_offsets.extend(
+            index + 1 for index, character in enumerate(doc) if character == "\n"
+        )
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "a":
+            return
+        names = {name.lower() for name, _value in attrs}
+        if "href" not in names:
+            return
+        raw = self.get_starttag_text()
+        if raw is None:
+            return
+        spans, close_at = _start_tag_attributes(raw)
+        rel_spans = [(start, end) for name, start, end in spans if name == "rel"]
+        changes: list[tuple[int, int, str]] = []
+        additions = ""
+        if rel_spans:
+            changes.append((*rel_spans[0], 'rel="noopener noreferrer"'))
+            changes.extend((start, end, "") for start, end in rel_spans[1:])
+        else:
+            additions += ' rel="noopener noreferrer"'
+        if "target" not in names:
+            additions = ' target="_blank"' + additions
+        if additions:
+            changes.append((close_at, close_at, additions))
+        parts: list[str] = []
+        previous_end = 0
+        for start, end, replacement in sorted(changes):
+            parts.extend((raw[previous_end:start], replacement))
+            previous_end = end
+        parts.append(raw[previous_end:])
+        replacement = "".join(parts)
+        line, column = self.getpos()
+        start = self._line_offsets[line - 1] + column
+        self.edits.append((start, start + len(raw), replacement))
+
+
+def _safe_link_destination(destination: str) -> bool:
+    if not destination or "\\" in destination or any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in destination
+    ):
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(destination)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError:
+        return False
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc and hostname)
+
+
+def _anchor(destination: str, label: str) -> str:
+    href = html.escape(destination, quote=True)
+    return (
+        f'<a href="{href}" target="_blank" rel="noopener noreferrer">{label}</a>'
+    )
+
+
+def _scan_markdown_links(text: str) -> tuple[dict[int, tuple[int, int, int, int, int]], int]:
+    """Index complete Markdown links with at most two character visits per input byte."""
+    destination_closers: dict[int, int] = {}
+    destination_stack: list[int] = []
+    character_visits = 0
+    for cursor, character in enumerate(text):
+        character_visits += 1
+        escaped = cursor > 0 and text[cursor - 1] == "\\"
+        if character == "(" and not escaped:
+            destination_stack.append(cursor)
+        elif character == ")" and not escaped and destination_stack:
+            destination_closers[destination_stack.pop()] = cursor
+
+    links: dict[int, tuple[int, int, int, int, int]] = {}
+    next_label_end: int | None = None
+    for cursor in range(len(text) - 1, -1, -1):
+        character_visits += 1
+        character = text[cursor]
+        escaped = cursor > 0 and text[cursor - 1] == "\\"
+        if character == "]" and not escaped:
+            next_label_end = cursor
+        elif character == "[" and next_label_end is not None:
+            destination_open = next_label_end + 1
+            if destination_open < len(text) and text[destination_open] == "(":
+                destination_end = destination_closers.get(destination_open)
+                if destination_end is not None:
+                    links[cursor] = (
+                        destination_end + 1,
+                        cursor + 1,
+                        next_label_end,
+                        destination_open + 1,
+                        destination_end,
+                    )
+    return links, character_visits
+
+
+def _bare_url_at(text: str, start: int) -> tuple[int, str, str] | None:
+    if not (text.startswith("http://", start) or text.startswith("https://", start)):
+        return None
+    if start and (text[start - 1].isalnum() or text[start - 1] in "_@"):
+        return None
+
+    end = start
+    while end < len(text) and not text[end].isspace() and text[end] not in '<>"\'`':
+        end += 1
+    candidate = text[start:end]
+    url_end = len(candidate)
+    opening_parentheses = candidate.count("(")
+    closing_parentheses = candidate.count(")")
+    while url_end:
+        terminal = candidate[url_end - 1]
+        if terminal in ".,;:!?":
+            url_end -= 1
+        elif terminal == ")" and closing_parentheses > opening_parentheses:
+            closing_parentheses -= 1
+            url_end -= 1
+        else:
+            break
+    destination = candidate[:url_end]
+    if not _safe_link_destination(destination):
+        return None
+    return end, destination, candidate[url_end:]
+
+
+def _render_inline(text: str, *, allow_links: bool) -> str:
+    rendered: list[str] = []
+    markdown_links = _scan_markdown_links(text)[0] if allow_links else {}
+    cursor = 0
+    while cursor < len(text):
+        if text[cursor] == "`":
+            run_end = cursor
+            while run_end < len(text) and text[run_end] == "`":
+                run_end += 1
+            delimiter = text[cursor:run_end]
+            closer = text.find(delimiter, run_end)
+            if closer >= 0:
+                rendered.append(f"<code>{html.escape(text[run_end:closer])}</code>")
+                cursor = closer + len(delimiter)
+                continue
+
+        if text[cursor] == "<":
+            tag_end = text.find(">", cursor + 1)
+            if tag_end < 0:
+                rendered.append(html.escape(text[cursor:]))
+                break
+            rendered.append(html.escape(text[cursor : tag_end + 1]))
+            cursor = tag_end + 1
+            continue
+
+        if allow_links and text[cursor] == "[":
+            link = markdown_links.get(cursor)
+            if link is not None:
+                end, label_start, label_end, destination_start, destination_end = link
+                label = text[label_start:label_end]
+                destination = text[destination_start:destination_end]
+                if _safe_link_destination(destination):
+                    rendered.append(
+                        _anchor(destination, _render_inline(label, allow_links=False))
+                    )
+                else:
+                    rendered.append(html.escape(text[cursor:end]))
+                cursor = end
+                continue
+
+        if allow_links:
+            bare_url = _bare_url_at(text, cursor)
+            if bare_url is not None:
+                end, destination, suffix = bare_url
+                rendered.append(_anchor(destination, html.escape(destination)))
+                rendered.append(html.escape(suffix))
+                cursor = end
+                continue
+
+        if text.startswith("**", cursor):
+            closer = text.find("**", cursor + 2)
+            if closer > cursor + 2:
+                rendered.append(
+                    f"<strong>{_render_inline(text[cursor + 2:closer], allow_links=allow_links)}</strong>"
+                )
+                cursor = closer + 2
+                continue
+
+        if text[cursor] == "*" and not text.startswith("**", cursor):
+            closer = text.find("*", cursor + 1)
+            if closer > cursor + 1:
+                rendered.append(
+                    f"<em>{_render_inline(text[cursor + 1:closer], allow_links=allow_links)}</em>"
+                )
+                cursor = closer + 1
+                continue
+
+        rendered.append(html.escape(text[cursor]))
+        cursor += 1
+    return "".join(rendered)
+
+
+def inline(text: str) -> str:
+    """Render a safe, deterministic subset of CommonMark inline syntax."""
+    return _render_inline(text, allow_links=True)
+
+
+def split_table_row(line: str) -> list[str]:
+    """Split a GitHub-flavored Markdown table row.
+
+    Supports leading/trailing pipes and escaped literal pipes.
+    """
+    text = line.strip().removeprefix("|").removesuffix("|")
+    cells: list[str] = []
+    buf: list[str] = []
+    escaped = False
+    for ch in text:
+        if escaped:
+            buf.append(ch)
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == "|":
+            cells.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(ch)
+    if escaped:
+        buf.append("\\")
+    cells.append("".join(buf).strip())
+    return cells
+
+
+def parse_table_separator(line: str) -> list[str] | None:
+    cells = split_table_row(line)
+    if not cells:
+        return None
+    aligns: list[str] = []
+    for cell in cells:
+        compact = cell.replace(" ", "")
+        if not re.fullmatch(r":?-{3,}:?", compact):
+            return None
+        if compact.startswith(":") and compact.endswith(":"):
+            aligns.append("center")
+        elif compact.endswith(":"):
+            aligns.append("right")
+        elif compact.startswith(":"):
+            aligns.append("left")
+        else:
+            aligns.append("")
+    return aligns
+
+
+def render_table(headers: list[str], aligns: list[str], rows: list[list[str]]) -> str:
+    col_count = len(headers)
+
+    def cell_attr(index: int) -> str:
+        if index < len(aligns) and aligns[index]:
+            return f' style="text-align: {aligns[index]}"'
+        return ""
+
+    def normalize(row: list[str]) -> list[str]:
+        return (row + [""] * col_count)[:col_count]
+
+    head = "".join(
+        f"<th{cell_attr(i)}>{inline(value)}</th>" for i, value in enumerate(normalize(headers))
+    )
+    body_rows = []
+    for row in rows:
+        cells = "".join(
+            f"<td{cell_attr(i)}>{inline(value)}</td>" for i, value in enumerate(normalize(row))
+        )
+        body_rows.append(f"<tr>{cells}</tr>")
+    body = "\n<tbody>\n" + "\n".join(body_rows) + "\n</tbody>" if body_rows else ""
+    return f'<div class="table-wrap"><table>\n<thead><tr>{head}</tr></thead>{body}\n</table></div>'
+
+
+def _line_text(raw_line: str) -> str:
+    return raw_line.removesuffix("\n").removesuffix("\r")
+
+
+def _fence_opening(line: str) -> tuple[str, int, str] | None:
+    match = re.fullmatch(r" {0,3}(`{3,}|~{3,})([^\r\n]*)", line)
+    if match is None or (match.group(1)[0] == "`" and "`" in match.group(2)):
+        return None
+    info = match.group(2).strip()
+    language = info.split(maxsplit=1)[0] if info else ""
+    if language and re.fullmatch(r"[A-Za-z0-9_+-]+", language) is None:
+        language = ""
+    return match.group(1)[0], len(match.group(1)), language
+
+
+def _fence_closes(line: str, marker: str, minimum_length: int) -> bool:
+    match = re.fullmatch(rf" {{0,3}}({re.escape(marker)}{{{minimum_length},}})[ \t]*", line)
+    return match is not None
+
+
+def _heading(line: str) -> tuple[int, str] | None:
+    match = re.fullmatch(r" {0,3}(#{1,6})(?:[ \t]+(.*)|[ \t]*)", line)
+    if match is None:
+        return None
+    content = (match.group(2) or "").strip()
+    content = re.sub(r"[ \t]+#+[ \t]*$", "", content)
+    return len(match.group(1)), content
+
+
+def _is_horizontal_rule(line: str) -> bool:
+    compact = line.strip().replace(" ", "").replace("\t", "")
+    return len(compact) >= 3 and compact[0] in "*_-" and set(compact) == {compact[0]}
+
+
+def _list_item(line: str) -> tuple[str, str] | None:
+    unordered = re.fullmatch(r" {0,3}[-+*][ \t]+(.+)", line)
+    if unordered is not None:
+        return "ul", unordered.group(1)
+    ordered = re.fullmatch(r" {0,3}\d{1,9}[.)][ \t]+(.+)", line)
+    if ordered is not None:
+        return "ol", ordered.group(1)
+    return None
+
+
+def _is_blockquote(line: str) -> bool:
+    return re.match(r"^ {0,3}>", line) is not None
+
+
+def _starts_table(lines: list[str], index: int) -> tuple[list[str], list[str]] | None:
+    if index + 1 >= len(lines) or "|" not in lines[index]:
+        return None
+    aligns = parse_table_separator(lines[index + 1])
+    if aligns is None:
+        return None
+    headers = split_table_row(lines[index])
+    if len(headers) != len(aligns):
+        return None
+    return headers, aligns
+
+
+def markdown_to_body(markdown: str, *, _quote_depth: int = 0) -> str:
+    """Render a safe block-level subset of GitHub/CommonMark Markdown."""
+    raw_lines = markdown.splitlines(keepends=True)
+    lines = [_line_text(raw_line) for raw_line in raw_lines]
+    out: list[str] = []
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip():
+            index += 1
+            continue
+
+        fence = _fence_opening(line)
+        if fence is not None:
+            marker, minimum_length, language = fence
+            index += 1
+            code_lines: list[str] = []
+            while index < len(lines) and not _fence_closes(
+                lines[index], marker, minimum_length
+            ):
+                code_lines.append(raw_lines[index])
+                index += 1
+            if index < len(lines):
+                index += 1
+            class_attribute = (
+                f' class="language-{html.escape(language, quote=True)}"' if language else ""
+            )
+            out.append(
+                f"<pre><code{class_attribute}>"
+                + html.escape("".join(code_lines))
+                + "</code></pre>"
+            )
+            continue
+
+        table = _starts_table(lines, index)
+        if table is not None:
+            headers, aligns = table
+            index += 2
+            rows: list[list[str]] = []
+            while index < len(lines) and lines[index].strip() and "|" in lines[index]:
+                rows.append(split_table_row(lines[index]))
+                index += 1
+            out.append(render_table(headers, aligns, rows))
+            continue
+
+        heading = _heading(line)
+        if heading is not None:
+            level, content = heading
+            out.append(f"<h{level}>{inline(content)}</h{level}>")
+            index += 1
+            continue
+
+        if _is_horizontal_rule(line):
+            out.append("<hr>")
+            index += 1
+            continue
+
+        item = _list_item(line)
+        if item is not None:
+            list_type = item[0]
+            items: list[str] = []
+            while index < len(lines):
+                candidate = _list_item(lines[index])
+                if candidate is None or candidate[0] != list_type:
+                    break
+                items.append(candidate[1])
+                index += 1
+            rendered_items = "\n".join(f"<li>{inline(value)}</li>" for value in items)
+            out.append(f"<{list_type}>\n{rendered_items}\n</{list_type}>")
+            continue
+
+        if _quote_depth < MAX_QUOTE_DEPTH and _is_blockquote(line):
+            quoted: list[str] = []
+            while index < len(lines) and _is_blockquote(lines[index]):
+                quoted.append(re.sub(r"^ {0,3}>[ \t]?", "", lines[index]))
+                index += 1
+            quote_body = markdown_to_body("\n".join(quoted), _quote_depth=_quote_depth + 1)
+            out.append(f"<blockquote>\n{quote_body}\n</blockquote>")
+            continue
+
+        paragraph: list[str] = []
+        while index < len(lines):
+            candidate = lines[index]
+            if not candidate.strip() or paragraph and (
+                _fence_opening(candidate) is not None
+                or _starts_table(lines, index) is not None
+                or _heading(candidate) is not None
+                or _is_horizontal_rule(candidate)
+                or _list_item(candidate) is not None
+                or _is_blockquote(candidate)
+            ):
+                break
+            paragraph.append(candidate.strip())
+            index += 1
+        out.append(f"<p>{inline(' '.join(paragraph))}</p>")
+
+    return "\n".join(out)
+
+
+def title_from_content(path: Path, text: str) -> str:
+    for line in text.splitlines():
+        m = re.match(r"^#\s+(.+)", line.strip())
+        if m:
+            return m.group(1).strip()[:100]
+    return path.stem.replace("-", " ").replace("_", " ").strip().title() or "Tailplan Draft"
+
+
+def html_document(title: str, body: str, source_name: str) -> str:
+    return f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{html.escape(title)}</title>\n<style>{CSS}</style>\n</head>\n<body>\n<main>\n<div class=\"meta\">Published from {html.escape(source_name)} via Tailplan.</div>\n{body}\n</main>\n</body>\n</html>\n"
+
+
+def build_html(path: Path, *, home: Path | None = None) -> Path:
+    path = path.expanduser().resolve()
+    text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() in {".html", ".htm"}:
+        return path
+    out_dir = (home or Path.home()) / ".tailplan" / "generated"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(out_dir, 0o700)
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "-", path.stem).strip("-") or "draft"
+    source_digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:12]
+    out = out_dir / f"{safe_stem}-{source_digest}.html"
+    out.write_text(html_document(title_from_content(path, text), markdown_to_body(text), path.name), encoding="utf-8")
+    os.chmod(out, 0o600)
+    return out
+
+
+def final_html(html_path: Path) -> str:
+    """Return the exact document sent and expected on read-back."""
+    return make_links_openable(html_path.read_text(encoding="utf-8"))
+
+
+class MappingFailure(RuntimeError):
+    def __init__(self, detail: str) -> None:
+        self.category = "mapping"
+        self.detail = detail
+        super().__init__(
+            f"Draft mapping error: {detail} Fix or move ~/.tailplan/drafts.json, then retry."
+        )
+
+
+def mapped_draft_id(mappings: dict, source: Path) -> str | None:
+    """Return only the valid draft mapped to this resolved source identity."""
+    source_key = str(source.expanduser().resolve())
+    files = mappings["files"]
+    if source_key not in files:
+        return None
+    entry = files[source_key]
+    if not isinstance(entry, dict):
+        raise MappingFailure("the selected source entry must be an object.")
+    draft_id = entry.get("draftId")
+    if not isinstance(draft_id, str) or DRAFT_ID_RE.fullmatch(draft_id) is None:
+        raise MappingFailure("the selected source entry has an invalid draftId.")
+    if "publicUrl" in entry and not isinstance(entry["publicUrl"], str):
+        raise MappingFailure("the selected source entry has an invalid publicUrl.")
+    if "versionNumber" in entry and (
+        type(entry["versionNumber"]) is not int or entry["versionNumber"] <= 0
+    ):
+        raise MappingFailure("the selected source entry has an invalid versionNumber.")
+    return draft_id
+
+
+def legacy_generated_path(source: Path, state_home: Path) -> Path | None:
+    """Return the pre-source-identity generated path for Markdown/text inputs."""
+    if source.suffix.lower() not in {".md", ".txt"}:
+        return None
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "-", source.stem).strip("-") or "draft"
+    return state_home / ".tailplan" / "generated" / f"{safe_stem}.html"
+
+
+def legacy_mapped_draft_id(mappings: dict, source: Path, state_home: Path) -> str | None:
+    legacy_path = legacy_generated_path(source, state_home)
+    if legacy_path is None:
+        return None
+    return mapped_draft_id(mappings, legacy_path)
+
+
+def choose_draft_id(
+    mappings: dict,
+    source: Path,
+    *,
+    explicit_draft_id: str | None = None,
+    force_new: bool = False,
+) -> str | None:
+    if force_new:
+        return None
+    return explicit_draft_id or mapped_draft_id(mappings, source)
+
+
+def load_mappings(mapping_path: Path) -> dict:
+    try:
+        raw = mapping_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"files": {}}
+    except (OSError, UnicodeError) as error:
+        raise MappingFailure("the mapping file could not be read.") from error
+    try:
+        mappings = json.loads(raw)
+    except ValueError as error:
+        raise MappingFailure("the mapping file is not valid JSON.") from error
+    if not isinstance(mappings, dict):
+        raise MappingFailure("the top level must be an object.")
+    if "files" not in mappings or not isinstance(mappings["files"], dict):
+        raise MappingFailure("the files field must be an object.")
+    return mappings
+
+
+def update_mapping(mapping_path: Path, source: Path, result: dict) -> None:
+    """Atomically merge a result under an exclusive cross-process transaction lock."""
+    mapping_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = mapping_path.with_name(f".{mapping_path.name}.lock")
+    lock_flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_CLOEXEC"):
+        lock_flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        lock_flags |= os.O_NOFOLLOW
+    lock_fd = os.open(lock_path, lock_flags, 0o600)
+    try:
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        mappings = load_mappings(mapping_path)
+        source_key = str(source.expanduser().resolve())
+        existing = mappings["files"].get(source_key)
+        if existing is None:
+            entry = {}
+        elif isinstance(existing, dict):
+            entry = dict(existing)
+        else:
+            raise MappingFailure("the selected source entry must be an object.")
+        entry.update(
+            {
+                "draftId": result["draftId"],
+                "publicUrl": result["publicUrl"],
+                "versionNumber": result["versionNumber"],
+            }
+        )
+        mappings["files"][source_key] = entry
+        data = (json.dumps(mappings, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode(
+            "utf-8"
+        )
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{mapping_path.name}.", suffix=".tmp", dir=mapping_path.parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, mapping_path)
+            directory_fd = os.open(mapping_path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            temporary.unlink(missing_ok=True)
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
+
+
+def source_publish_lock_path(mapping_path: Path, source: Path) -> Path:
+    source_key = str(source.expanduser().resolve()).encode("utf-8")
+    digest = hashlib.sha256(source_key).hexdigest()
+    return mapping_path.parent / f".source-{digest}.lock"
+
+
+@contextlib.contextmanager
+def source_publish_lock(mapping_path: Path, source: Path):
+    """Serialize one source's complete publish transaction across processes."""
+    mapping_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = source_publish_lock_path(mapping_path, source)
+    lock_flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_CLOEXEC"):
+        lock_flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        lock_flags |= os.O_NOFOLLOW
+    lock_fd = os.open(lock_path, lock_flags, 0o600)
+    try:
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
+
+
+class ConfigurationFailure(RuntimeError):
+    def __init__(self, detail: str) -> None:
+        self.category = "configuration"
+        self.detail = detail
+        super().__init__(detail)
+
+
+def _validated_http_url(
+    value: object,
+    *,
+    label: str,
+    failure_type,
+    trim_trailing_slashes: bool = False,
+) -> str:
+    """Validate and normalize an absolute HTTP(S) URL without leaking parser errors."""
+
+    def fail(detail: str):
+        raise failure_type(detail)
+
+    if not isinstance(value, str) or not value.strip():
+        fail(f"{label} is missing; provide an http(s) URL.")
+    if value != value.strip() or "\\" in value or any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in value
+    ):
+        fail(f"{label} must be an unambiguous http(s) URL without whitespace.")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+        username = parsed.username
+        password = parsed.password
+    except ValueError as error:
+        raise failure_type(f"{label} must be a valid http(s) URL.") from error
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or hostname is None:
+        fail(f"{label} must be an http(s) URL.")
+    if username is not None or password is not None or "@" in parsed.netloc:
+        fail(f"{label} must not contain credentials or userinfo.")
+    if parsed.query or parsed.fragment:
+        fail(f"{label} must not contain a query or fragment.")
+    path = parsed.path.rstrip("/") if trim_trailing_slashes else parsed.path
+    segments = path.split("/")[1:] if path else []
+    if path.startswith("//") or any(segment in {"", ".", ".."} for segment in segments):
+        fail(f"{label} contains an ambiguous path.")
+    authority = hostname.lower()
+    if ":" in authority:
+        authority = f"[{authority}]"
+    if port is not None:
+        authority += f":{port}"
+    return urllib.parse.urlunsplit((parsed.scheme.lower(), authority, path, "", ""))
+
+
+TAILSCALE_NETWORKS = (
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("fd7a:115c:a1e0::/48"),
+)
+
+
+def _safe_http_hostname(hostname: str) -> bool:
+    if hostname.casefold() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return address.is_loopback or any(address in network for network in TAILSCALE_NETWORKS)
+
+
+def validate_base_url(
+    base_url: object,
+    *,
+    allow_insecure_http: bool = False,
+) -> str:
+    normalized = _validated_http_url(
+        base_url,
+        label="Base URL",
+        failure_type=ConfigurationFailure,
+        trim_trailing_slashes=True,
+    )
+    parsed = urllib.parse.urlsplit(normalized)
+    if (
+        parsed.scheme == "http"
+        and not allow_insecure_http
+        and not _safe_http_hostname(parsed.hostname or "")
+    ):
+        raise ConfigurationFailure(
+            "Base URL must use HTTPS for bearer-token uploads. "
+            "Use --allow-insecure-http only on a trusted network."
+        )
+    return normalized
+
+
+def _loopback_hostname(hostname: str | None) -> bool:
+    if hostname is None:
+        return False
+    if hostname.casefold() == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv4Address):
+        return address.packed[0] == 127
+    return address == ipaddress.IPv6Address("::1")
+
+
+def _equivalent_loopback_public_url(actual: str, expected: str) -> bool:
+    actual_url = urllib.parse.urlsplit(actual)
+    expected_url = urllib.parse.urlsplit(expected)
+    default_port = 443 if actual_url.scheme == "https" else 80
+    return (
+        actual_url.scheme == expected_url.scheme
+        and (actual_url.port or default_port) == (expected_url.port or default_port)
+        and actual_url.path == expected_url.path
+        and _loopback_hostname(actual_url.hostname)
+        and _loopback_hostname(expected_url.hostname)
+    )
+
+
+def default_base_url() -> str:
+    env_path = Path.home() / ".tailplan" / "env"
+    try:
+        env_text = env_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        env_text = ""
+    except (OSError, UnicodeError) as error:
+        raise ConfigurationFailure(
+            "Tailplan configuration could not be read; check ~/.tailplan/env permissions and UTF-8."
+        ) from error
+    for line in env_text.splitlines():
+        if line.startswith("TAILPLAN_BASE_URL="):
+            return line.split("=", 1)[1].strip().strip('"')
+    try:
+        ip = subprocess.check_output(
+            ["tailscale", "ip", "-4"], text=True, stderr=subprocess.DEVNULL
+        ).strip().splitlines()[0]
+        return f"http://{ip}:9127"
+    except (OSError, subprocess.SubprocessError, UnicodeError, IndexError):
+        return "http://127.0.0.1:9127"
+
+
+class ProtocolFailure(RuntimeError):
+    def __init__(self, detail: str = "server returned an invalid success response") -> None:
+        self.category = "protocol"
+        self.detail = detail
+        super().__init__(f"Upload failed (protocol): {detail}")
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _open_without_redirects(request: urllib.request.Request, *, timeout: float):
+    return urllib.request.build_opener(_NoRedirectHandler()).open(request, timeout=timeout)
+
+
+def validate_upload_result(
+    result: object,
+    base_url: object,
+    *,
+    allow_insecure_http: bool = False,
+) -> dict:
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise ProtocolFailure()
+    draft_id = result.get("draftId")
+    if not isinstance(draft_id, str) or DRAFT_ID_RE.fullmatch(draft_id) is None:
+        raise ProtocolFailure()
+    public_url = result.get("publicUrl")
+    normalized_public_url = _validated_http_url(
+        public_url,
+        label="Public URL",
+        failure_type=ProtocolFailure,
+    )
+    expected_public_url = (
+        f"{validate_base_url(base_url, allow_insecure_http=allow_insecure_http)}/d/{draft_id}"
+    )
+    if normalized_public_url != expected_public_url and not _equivalent_loopback_public_url(
+        normalized_public_url,
+        expected_public_url,
+    ):
+        raise ProtocolFailure()
+    version_number = result.get("versionNumber")
+    if type(version_number) is not int or version_number <= 0:
+        raise ProtocolFailure()
+    warnings = result.get("warnings", [])
+    if not isinstance(warnings, list) or any(not isinstance(item, str) for item in warnings):
+        raise ProtocolFailure()
+    return result
+
+
+class UploadFailure(RuntimeError):
+    def __init__(self, category: str, detail: str, *, status: int | None = None) -> None:
+        self.category = category
+        self.detail = detail
+        self.status = status
+        prefix = f"Upload failed ({category})"
+        super().__init__(f"{prefix}: {detail}")
+
+
+def _http_failure(status: int, detail: str) -> UploadFailure:
+    if status in {401, 403}:
+        category = "authentication"
+    elif status == 413:
+        category = "size"
+    elif status == 404:
+        category = "missing draft"
+    elif status == 409:
+        category = "conflict"
+    elif status in {400, 411, 422}:
+        category = "validation"
+    elif status >= 500:
+        category = "server unavailable"
+    else:
+        category = "request rejected"
+    return UploadFailure(category, detail, status=status)
+
+
+def _safe_server_detail(value: str, *, sensitive: tuple[str, ...]) -> str:
+    normalized = " ".join(value.split())
+    if "<" in normalized or ">" in normalized:
+        return "[redacted unsafe content]"
+    for secret in sensitive:
+        if secret and secret in normalized:
+            normalized = normalized.replace(secret, "[redacted]")
+    if len(normalized) > 160:
+        normalized = normalized[:157] + "..."
+    return normalized
+
+
+def _error_detail(
+    error: urllib.error.HTTPError, *, sensitive: tuple[str, ...] = ()
+) -> str:
+    try:
+        decoded = json.loads(error.read().decode("utf-8", "replace"))
+    except (ValueError, OSError, http.client.HTTPException):
+        return f"HTTP {error.code}"
+    if not isinstance(decoded, dict):
+        return f"HTTP {error.code}"
+    errors = decoded.get("errors")
+    if isinstance(errors, list):
+        safe_errors = [
+            _safe_server_detail(item, sensitive=sensitive)
+            for item in errors[:3]
+            if isinstance(item, str) and item.strip()
+        ]
+        if safe_errors:
+            return "; ".join(safe_errors)
+    detail = decoded.get("error")
+    if isinstance(detail, str) and detail.strip():
+        return _safe_server_detail(detail, sensitive=sensitive)
+    return f"HTTP {error.code}"
+
+
+def upload(
+    html_path: Path,
+    base_url: str,
+    draft_id: str | None,
+    *,
+    token_path: Path | None = None,
+    opener=None,
+    sleeper=time.sleep,
+    idempotency_key: str | None = None,
+    max_attempts: int = 3,
+    timeout: float = 20,
+    html_doc: str | None = None,
+    allow_insecure_http: bool = False,
+) -> dict:
+    token_file = token_path or (Path.home() / ".tailplan" / "token")
+    try:
+        token = token_file.read_text(encoding="utf-8").strip()
+    except FileNotFoundError as error:
+        raise ConfigurationFailure(
+            "Tailplan token is missing; create ~/.tailplan/token, then retry."
+        ) from error
+    except (OSError, UnicodeError) as error:
+        raise ConfigurationFailure(
+            "Tailplan token could not be read; check its permissions and UTF-8 encoding."
+        ) from error
+    if not token:
+        raise ConfigurationFailure("Tailplan token is empty; replace ~/.tailplan/token, then retry.")
+    upload_base_url = validate_base_url(
+        base_url,
+        allow_insecure_http=allow_insecure_http,
+    )
+    payload = {
+        "html": final_html(html_path) if html_doc is None else html_doc,
+        "filename": html_path.name,
+        "draftId": draft_id,
+    }
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request_key = idempotency_key or secrets.token_urlsafe(32)
+    attempts = max(1, max_attempts)
+    open_request = opener or _open_without_redirects
+    for attempt in range(1, attempts + 1):
+        retry_delay = 0.25 * (2 ** (attempt - 1))
+        request = urllib.request.Request(
+            upload_base_url + "/api/uploads",
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+                "Idempotency-Key": request_key,
+                "User-Agent": "tailplan-share/2.0",
+            },
+        )
+        try:
+            with open_request(request, timeout=timeout) as response:
+                status = getattr(response, "status", None)
+                if isinstance(status, int) and 300 <= status < 400:
+                    raise ProtocolFailure(
+                        f"upload endpoint returned HTTP {status}; redirects are not allowed"
+                    )
+                result = json.loads(response.read().decode("utf-8"))
+                if not isinstance(result, dict):
+                    raise TypeError("response is not an object")
+                return result
+        except urllib.error.HTTPError as error:
+            if 300 <= error.code < 400:
+                raise ProtocolFailure(
+                    f"upload endpoint returned HTTP {error.code}; redirects are not allowed"
+                ) from None
+            detail = _error_detail(error, sensitive=(token,))
+            failure = _http_failure(error.code, detail)
+            retryable = error.code == 429 or error.code >= 500
+            if not retryable or attempt == attempts:
+                raise failure from None
+            retry_after = _header_value(error.headers, "Retry-After")
+            if (
+                error.code == 429
+                and isinstance(retry_after, str)
+                and re.fullmatch(r"[0-9]+", retry_after) is not None
+                and int(retry_after) <= 60
+            ):
+                retry_delay = int(retry_after)
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            OSError,
+            http.client.HTTPException,
+        ) as error:
+            if attempt == attempts:
+                raise UploadFailure(
+                    "server unavailable", "network request failed after bounded retries"
+                ) from error
+        except (UnicodeDecodeError, TypeError, ValueError) as error:
+            raise UploadFailure("server unavailable", "server returned an invalid response") from error
+        sleeper(retry_delay)
+
+    raise AssertionError("unreachable")
+
+
+class VerificationFailure(RuntimeError):
+    pass
+
+
+def _header_value(headers, name: str) -> str | None:
+    value = headers.get(name)
+    if value is not None:
+        return value
+    target = name.lower()
+    for key, candidate in headers.items():
+        if key.lower() == target:
+            return candidate
+    return None
+
+
+def verify_readback(
+    public_url: str,
+    expected_html: str,
+    *,
+    opener=None,
+    timeout: float = 20,
+) -> None:
+    verification_url = (
+        public_url
+        + ("&" if "?" in public_url else "?")
+        + "verify="
+        + secrets.token_urlsafe(12)
+    )
+    request = urllib.request.Request(
+        verification_url,
+        method="GET",
+        headers={"User-Agent": "tailplan-share/2.0", "Accept": "text/html"},
+    )
+    open_request = opener or _open_without_redirects
+    try:
+        with open_request(request, timeout=timeout) as response:
+            status = getattr(response, "status", None)
+            if status != 200:
+                raise VerificationFailure(f"read-back returned HTTP {status}, expected 200")
+            content_type = _header_value(response.headers, "Content-Type")
+            if content_type is None or content_type.split(";", 1)[0].strip().lower() != "text/html":
+                raise VerificationFailure("read-back Content-Type is not text/html")
+            expected_headers = {
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+                "X-Frame-Options": "DENY",
+            }
+            for name, expected in expected_headers.items():
+                actual = _header_value(response.headers, name)
+                if actual != expected:
+                    raise VerificationFailure(
+                        f"read-back security header {name} was {actual!r}, expected {expected!r}"
+                    )
+            csp = _header_value(response.headers, "Content-Security-Policy")
+            if csp is None:
+                raise VerificationFailure("read-back Content-Security-Policy is missing")
+            directives: dict[str, list[str]] = {}
+            for raw_directive in csp.split(";"):
+                parts = raw_directive.strip().split()
+                if not parts:
+                    continue
+                if parts[0] in directives:
+                    raise VerificationFailure(
+                        f"read-back Content-Security-Policy repeats {parts[0]}"
+                    )
+                directives[parts[0]] = parts[1:]
+            for name in ("default-src", "script-src", "form-action", "frame-ancestors"):
+                if directives.get(name) != ["'none'"]:
+                    raise VerificationFailure(
+                        "read-back Content-Security-Policy requires " f"{name} 'none'"
+                    )
+            actual_bytes = response.read()
+    except VerificationFailure:
+        raise
+    except urllib.error.HTTPError as error:
+        if 300 <= error.code < 400:
+            raise VerificationFailure(
+                f"read-back returned HTTP {error.code}; redirects are not allowed"
+            ) from None
+        raise VerificationFailure(f"read-back unavailable (HTTP {error.code}); retry publish") from None
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        ConnectionError,
+        OSError,
+        http.client.HTTPException,
+    ) as error:
+        raise VerificationFailure("read-back unavailable; check Tailplan connectivity and retry") from error
+
+    expected_bytes = expected_html.encode("utf-8")
+    try:
+        actual_html = actual_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise VerificationFailure("read-back is not valid UTF-8") from error
+    expected_title = TITLE_RE.search(expected_html)
+    if expected_title is not None and expected_title.group(0) not in actual_html:
+        raise VerificationFailure("read-back title differs from uploaded document")
+    if actual_bytes != expected_bytes:
+        expected_digest = hashlib.sha256(expected_bytes).hexdigest()[:12]
+        actual_digest = hashlib.sha256(actual_bytes).hexdigest()[:12]
+        raise VerificationFailure(
+            "read-back content digest mismatch "
+            f"(expected {expected_digest}, got {actual_digest}); retry publish"
+        )
+
+
+def _emit_failure(
+    category: str,
+    error: str,
+    *,
+    json_output: bool,
+    stdout,
+    stderr,
+    exit_code: int = 1,
+) -> int:
+    if json_output:
+        print(
+            json.dumps(
+                {"ok": False, "category": category, "error": error},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            file=stdout,
+        )
+    else:
+        print(error, file=stderr)
+    return exit_code
+
+
+def _emit_success(result: dict, *, json_output: bool, stdout, stderr) -> int:
+    warnings = result.get("warnings") or []
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "draftId": result["draftId"],
+                    "publicUrl": result["publicUrl"],
+                    "versionNumber": result["versionNumber"],
+                    "warnings": warnings,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            file=stdout,
+        )
+        return 0
+    print("Uploaded draft" if result["versionNumber"] == 1 else "Updated draft", file=stdout)
+    print(f"URL: {result['publicUrl']}", file=stdout)
+    print(f"Draft ID: {result['draftId']}", file=stdout)
+    print(f"Version: {result['versionNumber']}", file=stdout)
+    for warning in warnings:
+        print(f"Warning: {warning}", file=stderr)
+    return 0
+
+
+def _publish_locked(
+    source: Path,
+    base_url: str,
+    *,
+    explicit_draft_id: str | None = None,
+    force_new: bool = False,
+    home: Path | None = None,
+    uploader=None,
+    verifier=None,
+    stdout=sys.stdout,
+    stderr=sys.stderr,
+    json_output: bool = False,
+    allow_insecure_http: bool = False,
+) -> int:
+    resolved_source = source.expanduser().resolve()
+    state_home = home or Path.home()
+    try:
+        html_path = build_html(resolved_source, home=state_home)
+    except UnicodeError:
+        return _emit_failure(
+            "file",
+            "Input file is not valid UTF-8; convert it to UTF-8, then retry.",
+            json_output=json_output,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    except OSError:
+        return _emit_failure(
+            "file",
+            "Could not read the input or write generated HTML; check file permissions, then retry.",
+            json_output=json_output,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    mapping_path = state_home / ".tailplan" / "drafts.json"
+    try:
+        mappings = load_mappings(mapping_path)
+        mapped_id = mapped_draft_id(mappings, resolved_source)
+        if explicit_draft_id is None and not force_new and mapped_id is None:
+            legacy_id = legacy_mapped_draft_id(mappings, resolved_source, state_home)
+            if legacy_id is not None:
+                raise MappingFailure(
+                    f"legacy draft {legacy_id} may belong to this source; "
+                    f"rerun once with --draft {legacy_id} to preserve continuity."
+                )
+        draft_id = choose_draft_id(
+            mappings,
+            resolved_source,
+            explicit_draft_id=explicit_draft_id,
+            force_new=force_new,
+        )
+    except MappingFailure as error:
+        return _emit_failure(
+            error.category,
+            str(error),
+            json_output=json_output,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    verify_function = verifier or verify_readback
+    try:
+        expected = final_html(html_path)
+    except UnicodeError:
+        return _emit_failure(
+            "file",
+            "Input file is not valid UTF-8; convert it to UTF-8, then retry.",
+            json_output=json_output,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    except OSError:
+        return _emit_failure(
+            "file",
+            "Could not read the input; check file permissions, then retry.",
+            json_output=json_output,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    def upload_once(selected_draft_id: str | None):
+        if uploader is None:
+            return upload(
+                html_path,
+                base_url,
+                selected_draft_id,
+                html_doc=expected,
+                allow_insecure_http=allow_insecure_http,
+            )
+        return uploader(html_path, base_url, selected_draft_id)
+
+    try:
+        result = upload_once(draft_id)
+    except UploadFailure as error:
+        stale_implicit_mapping = (
+            explicit_draft_id is None
+            and not force_new
+            and draft_id is not None
+            and error.status == 404
+            and error.category == "missing draft"
+        )
+        if not stale_implicit_mapping:
+            return _emit_failure(
+                error.category,
+                str(error),
+                json_output=json_output,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        try:
+            result = upload_once(None)
+        except (UploadFailure, ConfigurationFailure, ProtocolFailure) as fallback_error:
+            return _emit_failure(
+                fallback_error.category,
+                str(fallback_error),
+                json_output=json_output,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        except OSError:
+            return _emit_failure(
+                "file",
+                "Could not read the input or complete the upload; check permissions and retry.",
+                json_output=json_output,
+                stdout=stdout,
+                stderr=stderr,
+            )
+    except (ConfigurationFailure, ProtocolFailure) as error:
+        return _emit_failure(
+            error.category,
+            str(error),
+            json_output=json_output,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    except OSError:
+        return _emit_failure(
+            "file",
+            "Could not read the input or complete the upload; check permissions and retry.",
+            json_output=json_output,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    try:
+        result = validate_upload_result(
+            result,
+            base_url,
+            allow_insecure_http=allow_insecure_http,
+        )
+    except ProtocolFailure as error:
+        return _emit_failure(
+            error.category,
+            str(error),
+            json_output=json_output,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    try:
+        update_mapping(mapping_path, resolved_source, result)
+    except (MappingFailure, OSError):
+        return _emit_failure(
+            "mapping",
+            "Could not save the local draft mapping after upload; fix disk/permissions, then "
+            f"rerun with --draft {result['draftId']} to avoid creating a duplicate.",
+            json_output=json_output,
+            stdout=stdout,
+            stderr=stderr,
+        )
+    try:
+        verify_function(result["publicUrl"], expected)
+    except VerificationFailure as error:
+        return _emit_failure(
+            "verification",
+            f"Verification failed: {error}",
+            json_output=json_output,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    return _emit_success(result, json_output=json_output, stdout=stdout, stderr=stderr)
+
+
+def publish(
+    source: Path,
+    base_url: str,
+    *,
+    explicit_draft_id: str | None = None,
+    force_new: bool = False,
+    home: Path | None = None,
+    uploader=None,
+    verifier=None,
+    stdout=sys.stdout,
+    stderr=sys.stderr,
+    json_output: bool = False,
+    allow_insecure_http: bool = False,
+) -> int:
+    resolved_source = source.expanduser().resolve()
+    state_home = home or Path.home()
+    mapping_path = state_home / ".tailplan" / "drafts.json"
+    try:
+        with source_publish_lock(mapping_path, resolved_source):
+            return _publish_locked(
+                resolved_source,
+                base_url,
+                explicit_draft_id=explicit_draft_id,
+                force_new=force_new,
+                home=state_home,
+                uploader=uploader,
+                verifier=verifier,
+                stdout=stdout,
+                stderr=stderr,
+                json_output=json_output,
+                allow_insecure_http=allow_insecure_http,
+            )
+    except OSError:
+        return _emit_failure(
+            "mapping",
+            "Could not acquire the local source publish lock; check ~/.tailplan permissions, "
+            "then retry.",
+            json_output=json_output,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+
+class CliUsageFailure(RuntimeError):
+    pass
+
+
+class TailplanArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise CliUsageFailure(message)
+
+
+def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    json_output = "--json" in raw_argv
+    parser = TailplanArgumentParser(
+        description="Share a markdown/text/html artifact through Tailplan."
+    )
+    parser.add_argument("file", help="Path to .md, .txt, .html, or .htm file")
+    parser.add_argument("--base-url")
+    parser.add_argument("--json", action="store_true", help="Emit one machine-readable JSON object")
+    parser.add_argument(
+        "--allow-insecure-http",
+        action="store_true",
+        help="Allow bearer-token uploads to an HTTP host outside safe local and Tailscale ranges",
+    )
+    draft_mode = parser.add_mutually_exclusive_group()
+    draft_mode.add_argument("--draft", help="Update exactly this draft id")
+    draft_mode.add_argument("--new", action="store_true", help="Create a fresh draft")
+    try:
+        args = parser.parse_args(raw_argv)
+    except CliUsageFailure as error:
+        return _emit_failure(
+            "usage",
+            f"Invalid arguments: {error}",
+            json_output=json_output,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            exit_code=2,
+        )
+
+    try:
+        source = Path(args.file).expanduser().resolve()
+    except OSError:
+        return _emit_failure(
+            "file",
+            "Input path could not be resolved; check the path and retry.",
+            json_output=args.json,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            exit_code=2,
+        )
+    if not source.is_file():
+        return _emit_failure(
+            "file",
+            f"File does not exist or is not a regular file: {source}",
+            json_output=args.json,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            exit_code=2,
+        )
+    if source.suffix.lower() not in {".md", ".txt", ".html", ".htm"}:
+        return _emit_failure(
+            "file",
+            "Unsupported file type; use .md, .txt, .html, or .htm.",
+            json_output=args.json,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            exit_code=2,
+        )
+
+    try:
+        configured_base_url = (
+            args.base_url
+            if args.base_url is not None
+            else (os.getenv("TAILPLAN_BASE_URL") or default_base_url())
+        )
+        base_url = validate_base_url(
+            configured_base_url,
+            allow_insecure_http=args.allow_insecure_http,
+        )
+    except ConfigurationFailure as error:
+        return _emit_failure(
+            error.category,
+            str(error),
+            json_output=args.json,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            exit_code=2,
+        )
+
+    return publish(
+        source,
+        base_url,
+        explicit_draft_id=args.draft,
+        force_new=args.new,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+        json_output=args.json,
+        allow_insecure_http=args.allow_insecure_http,
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

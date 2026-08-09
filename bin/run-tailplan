@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="${TAILPLAN_APP_DIR:-$HOME/apps/tailplan}"
+SERVER="${TAILPLAN_SERVER:-$APP_DIR/tailplan_server.py}"
+DATA_DIR="${TAILPLAN_DATA_DIR:-$HOME/.tailplan}"
+TOKEN_FILE="${TAILPLAN_TOKEN_FILE:-$DATA_DIR/token}"
+HOST="${TAILPLAN_HOST:-}"
+PORT="${TAILPLAN_PORT:-9127}"
+PROXY_HOST="${TAILPLAN_PROXY_HOST:-127.0.0.1}"
+PROXY_PORT="${TAILPLAN_PROXY_PORT:-9128}"
+BASE_URL="${TAILPLAN_BASE_URL:-}"
+REDIRECT_VIEW_BASE_URL="${TAILPLAN_REDIRECT_VIEW_BASE_URL:-$BASE_URL}"
+
+if [[ -z "$HOST" ]]; then
+  echo "TAILPLAN_HOST is required; re-run the installer with valid Tailscale state or set it explicitly." >&2
+  exit 1
+fi
+if [[ -z "$BASE_URL" || -z "$REDIRECT_VIEW_BASE_URL" ]]; then
+  echo "TAILPLAN_BASE_URL and TAILPLAN_REDIRECT_VIEW_BASE_URL are required." >&2
+  exit 1
+fi
+if [[ -z "$PROXY_HOST" || -z "$PROXY_PORT" ]]; then
+  echo "TAILPLAN_PROXY_HOST and TAILPLAN_PROXY_PORT must be configured together." >&2
+  exit 1
+fi
+
+exec /usr/bin/env python3 "$SERVER" \
+  --host "$HOST" \
+  --port "$PORT" \
+  --proxy-host "$PROXY_HOST" \
+  --proxy-port "$PROXY_PORT" \
+  --data-dir "$DATA_DIR" \
+  --token-file "$TOKEN_FILE" \
+  --base-url "$BASE_URL" \
+  --redirect-view-base-url "$REDIRECT_VIEW_BASE_URL"
