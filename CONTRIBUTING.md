@@ -52,7 +52,7 @@ Record each legal-text or required-code-identifier exception in the pull request
 16. Compare the generated release notes with `CHANGELOG.md`.
 17. Publish the draft release after all release checks pass.
 
-Use these commands for release 0.2.0.
+Use these commands for release 0.2.1.
 Keep the private release signing key outside the repository:
 
 ```sh
@@ -60,12 +60,12 @@ RELEASE_SIGNING_KEY='<path-to-private-release-signing-key>'
 git \
   -c gpg.format=ssh \
   -c user.signingkey="$RELEASE_SIGNING_KEY" \
-  tag --sign v0.2.0 -m 'Tailplan v0.2.0'
+  tag --sign v0.2.1 -m 'Tailplan v0.2.1'
 git \
   -c gpg.format=ssh \
   -c gpg.ssh.allowedSignersFile=.github/release-allowed-signers \
-  verify-tag v0.2.0
-git push origin v0.2.0
+  verify-tag v0.2.1
+git push origin v0.2.1
 ```
 
 The Release workflow fetches protected `main` and the pushed tag from the repository.

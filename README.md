@@ -73,7 +73,7 @@ Replace `<owner>` with the public repository owner:
 
 ```sh
 REPOSITORY='<owner>/taildoc'
-TAG='v0.2.0'
+TAG='v0.2.1'
 SOURCE_DIR="$(mktemp -d)"
 git clone --filter=blob:none --no-checkout --no-tags \
   "https://github.com/${REPOSITORY}.git" "$SOURCE_DIR"
@@ -107,21 +107,21 @@ Verify both release assets with the repository, workflow, tag-reference, and sou
 ```sh
 gh release download "$TAG" \
   --repo "$REPOSITORY" \
-  --pattern 'tailplan-0.2.0.tar.gz' \
-  --pattern 'tailplan-0.2.0.tar.gz.sha256'
-gh attestation verify tailplan-0.2.0.tar.gz \
+  --pattern 'tailplan-0.2.1.tar.gz' \
+  --pattern 'tailplan-0.2.1.tar.gz.sha256'
+gh attestation verify tailplan-0.2.1.tar.gz \
   --repo "$REPOSITORY" \
   --signer-workflow "${REPOSITORY}/.github/workflows/release.yml" \
   --source-ref "refs/tags/${TAG}" \
   --source-digest "$COMMIT_SHA" \
   --deny-self-hosted-runners
-gh attestation verify tailplan-0.2.0.tar.gz.sha256 \
+gh attestation verify tailplan-0.2.1.tar.gz.sha256 \
   --repo "$REPOSITORY" \
   --signer-workflow "${REPOSITORY}/.github/workflows/release.yml" \
   --source-ref "refs/tags/${TAG}" \
   --source-digest "$COMMIT_SHA" \
   --deny-self-hosted-runners
-sha256sum --check tailplan-0.2.0.tar.gz.sha256
+sha256sum --check tailplan-0.2.1.tar.gz.sha256
 ```
 
 The archive attestation proves that the repository release workflow produced the archive for the verified source commit.
@@ -428,7 +428,18 @@ sudo ./install-ssh-publisher.sh \
 The installer creates a dedicated `tailplan-publisher` account by default.
 The installer installs the forced-command guard.
 The installer copies the upload token only to the dedicated publisher account on the server.
+The installer copies the selected local publisher to `/usr/local/libexec/tailplan-share`.
+The installed copy is root-owned and has mode `0755`.
+The forced-command guard uses the installed copy.
+It does not execute the source below the operator home.
+The installer sets the publisher account password field to `*`.
+No password can produce this value.
+OpenSSH can still use the configured public key because the account is not locked.
+The installer does not change the OpenSSH password-authentication policy.
 Run `./install-ssh-publisher.sh --help` for account and path overrides.
+Run the same SSH publisher installer command after every Tailplan upgrade.
+The normal Tailplan installer does not update the isolated local publisher.
+Complete this step before the next forced-command publication.
 
 The installer writes this forced-command key form:
 
@@ -580,10 +591,10 @@ Run the command only after you verify a data backup:
 docker compose down --volumes --remove-orphans
 ```
 
-Remove the version 0.2.0 image separately:
+Remove the version 0.2.1 image separately:
 
 ```sh
-docker image rm tailplan:0.2.0
+docker image rm tailplan:0.2.1
 ```
 
 ### Native service
@@ -593,6 +604,8 @@ Extract the new release.
 Run the same installer command that created the service.
 The installer keeps the upload token and drafts.
 The installer creates a backup and prints its path.
+If this server has an SSH publisher account, rerun the SSH publisher installer next.
+Use the same options that created the publisher account.
 
 Use the previous verified release for an application rollback.
 Run the same installer command again.
@@ -663,6 +676,7 @@ Remove the default forced-command publisher account from its server:
 ```sh
 sudo userdel --remove tailplan-publisher
 sudo rm -f /usr/local/libexec/tailplan-publish-guard
+sudo rm -f /usr/local/libexec/tailplan-share
 sudo rm -f /etc/tailplan-publisher.json
 ```
 

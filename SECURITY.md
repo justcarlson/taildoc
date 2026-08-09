@@ -5,6 +5,18 @@
 Security fixes apply to the latest tagged release.
 Upgrade to the latest release before you report an old defect.
 
+## SSH publisher account
+
+The SSH publisher installer sets the dedicated account password field to `*`.
+No password can produce this value.
+OpenSSH can use the forced public key because the account is not locked.
+The installer does not change the OpenSSH password-authentication policy.
+The installer copies the selected publisher to `/usr/local/libexec/tailplan-share`.
+Root owns the installed copy, and the file mode is `0755`.
+The forced-command guard uses only the installed copy.
+The normal Tailplan installer does not update this isolated copy.
+Run the SSH publisher installer again after every Tailplan upgrade.
+
 ## Release source authenticity
 
 The release workflow checks out protected `main`.

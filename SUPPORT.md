@@ -3,7 +3,7 @@
 ## Supported version
 
 The latest tagged release receives bug fixes and security fixes.
-Version 0.2.0 is the current release line.
+Version 0.2.1 is the current release line.
 Upgrade before you report a defect in an older version.
 
 ## Compatibility

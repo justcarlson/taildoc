@@ -15,7 +15,8 @@ Options:
   --publisher-home PATH   Set the account home. The default is /var/lib/tailplan-publisher.
   --token-file PATH       Set the server token source. The default is /var/lib/tailplan/token.
   --env-file PATH         Set the server environment source. The default is /etc/tailplan.env.
-  --share-command PATH    Set the local publisher. The default is /usr/local/bin/tailplan-share.
+  --share-command PATH    Set the local publisher source.
+                          The default is /usr/local/bin/tailplan-share.
 EOF
 }
 
@@ -25,6 +26,7 @@ PUBLISHER_HOME="/var/lib/tailplan-publisher"
 TOKEN_FILE="/var/lib/tailplan/token"
 ENV_FILE="/etc/tailplan.env"
 SHARE_COMMAND="/usr/local/bin/tailplan-share"
+INSTALLED_SHARE_COMMAND="/usr/local/libexec/tailplan-share"
 while (($#)); do
   case "$1" in
     --public-key-file|--publisher-user|--publisher-home|--token-file|--env-file|--share-command)
@@ -139,12 +141,13 @@ else
   useradd --system --user-group --create-home --home-dir "$PUBLISHER_HOME" \
     --shell /bin/bash "$PUBLISHER_USER"
 fi
-passwd -l "$PUBLISHER_USER" >/dev/null
+usermod --password '*' "$PUBLISHER_USER"
 PUBLISHER_GROUP="$(id -gn "$PUBLISHER_USER")"
 
 install -d -o root -g root -m 755 /usr/local/libexec
 install -o root -g root -m 755 "$GUARD_SOURCE" "$GUARD_PATH"
-python3 - "$STAGE_DIR/publisher.json" "$SHARE_COMMAND" <<'PY'
+install -o root -g root -m 755 "$SHARE_COMMAND" "$INSTALLED_SHARE_COMMAND"
+python3 - "$STAGE_DIR/publisher.json" "$INSTALLED_SHARE_COMMAND" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -170,5 +173,6 @@ install -o "$PUBLISHER_USER" -g "$PUBLISHER_GROUP" -m 600 \
 
 printf 'Installed Tailplan SSH publisher account: %s\n' "$PUBLISHER_USER"
 printf 'Installed forced-command guard: %s\n' "$GUARD_PATH"
+printf 'Installed local publisher: %s\n' "$INSTALLED_SHARE_COMMAND"
 printf 'Copied the token only within this server.\n'
-printf 'Run this installer again after token rotation or public-key rotation.\n'
+printf 'Run this installer again after each Tailplan upgrade, token rotation, or public-key rotation.\n'
