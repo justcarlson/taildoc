@@ -12,6 +12,7 @@ The project uses semantic version numbers.
 
 - The SSH publisher account now accepts its forced public key without enabling a password.
 - The SSH publisher guard now uses a root-owned copy of the selected local publisher.
+- The upgrade instructions now require a refresh of the isolated SSH publisher copy.
 
 ### Security
 

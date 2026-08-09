@@ -14,6 +14,8 @@ The installer does not change the OpenSSH password-authentication policy.
 The installer copies the selected publisher to `/usr/local/libexec/tailplan-share`.
 Root owns the installed copy, and the file mode is `0755`.
 The forced-command guard uses only the installed copy.
+The normal Tailplan installer does not update this isolated copy.
+Run the SSH publisher installer again after every Tailplan upgrade.
 
 ## Release source authenticity
 

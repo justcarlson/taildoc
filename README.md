@@ -437,6 +437,9 @@ No password can produce this value.
 OpenSSH can still use the configured public key because the account is not locked.
 The installer does not change the OpenSSH password-authentication policy.
 Run `./install-ssh-publisher.sh --help` for account and path overrides.
+Run the same SSH publisher installer command after every Tailplan upgrade.
+The normal Tailplan installer does not update the isolated local publisher.
+Complete this step before the next forced-command publication.
 
 The installer writes this forced-command key form:
 
@@ -601,6 +604,8 @@ Extract the new release.
 Run the same installer command that created the service.
 The installer keeps the upload token and drafts.
 The installer creates a backup and prints its path.
+If this server has an SSH publisher account, rerun the SSH publisher installer next.
+Use the same options that created the publisher account.
 
 Use the previous verified release for an application rollback.
 Run the same installer command again.

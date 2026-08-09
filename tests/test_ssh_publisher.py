@@ -230,6 +230,7 @@ def test_system_publisher_installer_enables_key_auth_and_installs_a_private_copy
         "share_command": "/usr/local/libexec/tailplan-share"
     }
     assert "Installed Tailplan SSH publisher account: tailplan-publisher" in completed.stdout
+    assert "after each Tailplan upgrade" in completed.stdout
 
 
 def test_publisher_installer_documents_the_stable_interface() -> None:
@@ -253,3 +254,10 @@ def test_documented_publisher_removal_removes_the_installed_copy() -> None:
     assert "sudo rm -f /usr/local/libexec/tailplan-publish-guard" in instructions
     assert "sudo rm -f /usr/local/libexec/tailplan-share" in instructions
     assert "sudo rm -f /etc/tailplan-publisher.json" in instructions
+
+
+def test_documented_upgrade_requires_an_isolated_publisher_refresh() -> None:
+    instructions = README.read_text(encoding="utf-8")
+
+    assert "Run the same SSH publisher installer command after every Tailplan upgrade." in instructions
+    assert "The normal Tailplan installer does not update the isolated local publisher." in instructions

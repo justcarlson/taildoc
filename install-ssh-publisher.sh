@@ -175,4 +175,4 @@ printf 'Installed Tailplan SSH publisher account: %s\n' "$PUBLISHER_USER"
 printf 'Installed forced-command guard: %s\n' "$GUARD_PATH"
 printf 'Installed local publisher: %s\n' "$INSTALLED_SHARE_COMMAND"
 printf 'Copied the token only within this server.\n'
-printf 'Run this installer again after token rotation or public-key rotation.\n'
+printf 'Run this installer again after each Tailplan upgrade, token rotation, or public-key rotation.\n'
