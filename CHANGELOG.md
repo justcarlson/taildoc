@@ -6,6 +6,17 @@ The project uses semantic version numbers.
 
 ## Unreleased
 
+## 0.2.1 - 2026-08-09
+
+### Fixed
+
+- The SSH publisher account now accepts its forced public key without enabling a password.
+- The SSH publisher guard now uses a root-owned copy of the selected local publisher.
+
+### Security
+
+- The publisher installer replaces a locked password with a value that no password can produce.
+
 ## 0.2.0 - 2026-08-09
 
 ### Added

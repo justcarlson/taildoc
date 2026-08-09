@@ -14,7 +14,7 @@ body:
     attributes:
       label: Tailplan version
       description: Give the release tag or commit identifier.
-      placeholder: v0.2.0
+      placeholder: v0.2.1
     validations:
       required: true
   - type: dropdown
