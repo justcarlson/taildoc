@@ -14,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = ROOT / "bin" / "tailplan-publish-guard"
 INSTALLER = ROOT / "install-ssh-publisher.sh"
+README = ROOT / "README.md"
 loader = importlib.machinery.SourceFileLoader("tailplan_publish_guard", str(GUARD))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 assert spec and spec.loader
@@ -244,3 +245,11 @@ def test_publisher_installer_documents_the_stable_interface() -> None:
     assert "tailplan-publisher" in completed.stdout
     assert "--token-file PATH" in completed.stdout
     assert "--share-command PATH" in completed.stdout
+
+
+def test_documented_publisher_removal_removes_the_installed_copy() -> None:
+    instructions = README.read_text(encoding="utf-8")
+
+    assert "sudo rm -f /usr/local/libexec/tailplan-publish-guard" in instructions
+    assert "sudo rm -f /usr/local/libexec/tailplan-share" in instructions
+    assert "sudo rm -f /etc/tailplan-publisher.json" in instructions

@@ -671,6 +671,7 @@ Remove the default forced-command publisher account from its server:
 ```sh
 sudo userdel --remove tailplan-publisher
 sudo rm -f /usr/local/libexec/tailplan-publish-guard
+sudo rm -f /usr/local/libexec/tailplan-share
 sudo rm -f /etc/tailplan-publisher.json
 ```
 
