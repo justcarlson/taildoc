@@ -62,32 +62,45 @@ Use an OpenSSH version that supports the `scp -O` option.
 ## Verify release source
 
 Source authenticity and archive integrity are different checks.
-GitHub verifies the signature on an annotated tag.
+The repository authorizes the release SSH key in protected `main`.
+The signed annotated tag does not depend on a GitHub account signing identity.
 The SHA-256 file detects archive changes after the release workflow creates the file.
 A checksum from the same release does not authenticate the source by itself.
 
-Install the GitHub CLI before source verification.
+Install Git and the GitHub CLI before source verification.
 Authenticate the GitHub CLI to GitHub.
 Replace `<owner>` with the public repository owner:
 
 ```sh
 REPOSITORY='<owner>/taildoc'
 TAG='v0.2.0'
-TAG_SHA="$(gh api \
-  "repos/${REPOSITORY}/git/ref/tags/${TAG}" \
-  --jq 'select(.object.type == "tag") | .object.sha')"
-test -n "$TAG_SHA"
-test "$(gh api "repos/${REPOSITORY}/git/tags/${TAG_SHA}" --jq '.tag')" = "$TAG"
-COMMIT_SHA="$(gh api \
-  "repos/${REPOSITORY}/git/tags/${TAG_SHA}" \
-  --jq 'select(.object.type == "commit" and .verification.verified == true) | .object.sha')"
-test -n "$COMMIT_SHA"
+SOURCE_DIR="$(mktemp -d)"
+git clone --filter=blob:none --no-checkout --no-tags \
+  "https://github.com/${REPOSITORY}.git" "$SOURCE_DIR"
+git -C "$SOURCE_DIR" fetch --force --no-tags origin \
+  "refs/heads/main:refs/remotes/origin/main"
+git -C "$SOURCE_DIR" fetch --force --no-tags origin \
+  "refs/tags/${TAG}:refs/tags/${TAG}"
+ALLOWED_SIGNERS="$SOURCE_DIR/release-allowed-signers"
+git -C "$SOURCE_DIR" show \
+  "refs/remotes/origin/main:.github/release-allowed-signers" > "$ALLOWED_SIGNERS"
+TAG_REF="refs/tags/${TAG}"
+test "$(git -C "$SOURCE_DIR" cat-file -t "$TAG_REF")" = tag
+test "$(git -C "$SOURCE_DIR" for-each-ref --format='%(tag)' "$TAG_REF")" = "$TAG"
+COMMIT_SHA="$(git -C "$SOURCE_DIR" rev-parse "${TAG_REF}^{commit}")"
+test "$COMMIT_SHA" = "$(git -C "$SOURCE_DIR" rev-parse refs/remotes/origin/main)"
+git -C "$SOURCE_DIR" \
+  -c gpg.format=ssh \
+  -c gpg.ssh.allowedSignersFile="$ALLOWED_SIGNERS" \
+  verify-tag "$TAG_REF"
 printf 'Verified release commit: %s\n' "$COMMIT_SHA"
 ```
 
-The first API query rejects a lightweight tag.
-The second API query requires GitHub cryptographic verification.
-Do not download release assets when either query fails.
+The tag-object check rejects a lightweight tag.
+The tag-name check requires the tag object name to match the release tag reference.
+The commit check requires the tag target to equal the protected `main` commit from the repository.
+The SSH check trusts only the public keys in the allowed-signers file from protected `main`.
+Do not download release assets when a source verification command fails.
 
 Verify both release assets with the repository, workflow, tag-reference, and source-digest options in the following commands:
 

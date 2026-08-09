@@ -7,17 +7,20 @@ Upgrade to the latest release before you report an old defect.
 
 ## Release source authenticity
 
-The release workflow accepts only a cryptographically verified annotated tag.
-The workflow rejects a lightweight tag.
-The workflow reads the tag reference from `repos/<owner>/taildoc/git/ref/tags/<tag>`.
-The workflow then requires `verification.verified == true` from `repos/<owner>/taildoc/git/tags/<tag-object-sha>`.
+The release workflow checks out protected `main`.
+The workflow loads `.github/release-allowed-signers` from the fetched `origin/main` commit.
+The file authorizes principal `taildoc-release` with the dedicated public SSH key.
+The workflow fetches the pushed tag and rejects a lightweight tag.
+The workflow requires the tag object name to match the pushed tag reference.
+The workflow requires the tag target commit to equal the fetched `origin/main` commit.
+Git verifies the tag SSH signature with the allowed-signers trust anchor before tests or builds.
 
-Use the commands in [README.md](README.md) to repeat the tag-reference and tag-object API checks.
-Download the archive only when the tag-reference and tag-object API checks pass.
+Use the commands in [README.md](README.md) to repeat the tag-object, tag-name, commit, and SSH signature checks.
+Download the archive only when all source verification commands pass.
 For each release asset, run the complete `gh attestation verify` command from `README.md`.
 
-Attestation verification proves that the named repository workflow produced the release asset for the verified source commit.
-The attestation signature also binds the release asset digest to that provenance record.
+The SSH signature proves that a key authorized by protected `main` signed the annotated tag object.
+The commit check proves that the signed tag identifies the protected `main` commit.
 The SHA-256 result proves that the archive matches the attested checksum file.
 The SHA-256 result does not authenticate the source by itself.
 

@@ -15,31 +15,47 @@ jobs:
       commit-sha: ${{ steps.tag.outputs.commit-sha }}
       version: ${{ steps.tag.outputs.version }}
     steps:
-      - name: Require a verified annotated tag
+      - name: Check out protected main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Verify the release tag
         id: tag
-        env:
-          GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          ref_json="$(gh api -H "Accept: application/vnd.github+json" "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}")"
-          object_type="$(jq -r '.object.type // empty' <<<"$ref_json")"
-          if [[ "$object_type" != "tag" ]]; then
-            echo "GitHub must cryptographically verify an annotated release tag." >&2
+          tag_ref="refs/tags/${GITHUB_REF_NAME}"
+          main_ref="refs/remotes/origin/main"
+          allowed_signers="${RUNNER_TEMP}/release-allowed-signers"
+
+          git fetch --force --no-tags origin \
+            "refs/heads/main:${main_ref}"
+          git show "${main_ref}:.github/release-allowed-signers" > "$allowed_signers"
+          git fetch --force --no-tags origin \
+            "${tag_ref}:${tag_ref}"
+
+          if [[ "$(git cat-file -t "$tag_ref")" != "tag" ]]; then
+            echo "The release tag must be an annotated tag." >&2
             exit 1
           fi
-          tag_sha="$(jq -r '.object.sha // empty' <<<"$ref_json")"
-          tag_json="$(gh api -H "Accept: application/vnd.github+json" "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}")"
-          if ! jq -e --arg tag "$GITHUB_REF_NAME" \
-            '.tag == $tag and .object.type == "commit" and .verification.verified == true' \
-            <<<"$tag_json" >/dev/null; then
-            echo "Release tag verification failed." >&2
+          if [[ "$(git for-each-ref --format='%(tag)' "$tag_ref")" != "$GITHUB_REF_NAME" ]]; then
+            echo "The tag object name must match the release tag reference." >&2
             exit 1
           fi
-          commit_sha="$(jq -r '.object.sha // empty' <<<"$tag_json")"
-          if [[ ! "$commit_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "The verified tag does not identify a commit." >&2
+
+          tag_commit="$(git rev-parse "${tag_ref}^{commit}")"
+          main_commit="$(git rev-parse "${main_ref}^{commit}")"
+          if [[ "$tag_commit" != "$main_commit" ]]; then
+            echo "The signed release tag must identify the protected main commit." >&2
             exit 1
           fi
-          echo "commit-sha=$commit_sha" >> "$GITHUB_OUTPUT"
+
+          git \
+            -c gpg.format=ssh \
+            -c gpg.ssh.allowedSignersFile="$allowed_signers" \
+            verify-tag "$tag_ref"
+
+          echo "commit-sha=$tag_commit" >> "$GITHUB_OUTPUT"
           echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
   release:
