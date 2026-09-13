@@ -1,11 +1,11 @@
 [project]
 name = "tailplan"
-version = "0.2.1"
+version = "0.3.0"
 description = "Tailnet-only static HTML draft publishing for agents"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 keywords = ["agents", "static-html", "tailscale"]
 classifiers = [
     "Development Status :: 4 - Beta",

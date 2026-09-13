@@ -134,7 +134,7 @@ def test_guard_allows_publish_options_and_rejects_other_options(tmp_path: Path) 
         )
 
         with pytest.raises(SystemExit) as raised:
-            mod.execute(["tailplan-share", str(source), "--json"])
+            mod.execute(["tailplan-share", str(source), "--base-url", "https://other.example.test"])
         assert raised.value.code == 126
     finally:
         source.unlink()
@@ -155,6 +155,34 @@ def test_guard_allows_only_scoped_owned_cleanup() -> None:
         execute.assert_called_once_with("/usr/bin/rm", command)
     finally:
         directory.rmdir()
+
+
+@pytest.mark.parametrize("arguments", [
+    ["list", "--json"], ["history", "draft123", "--json"],
+    ["disable", "draft123", "--reason", "Revision pending"],
+    ["enable", "draft123"], ["delete", "draft123"],
+    ["keys", "create", "Agent key"], ["keys", "revoke", "key12345"],
+])
+def test_guard_allows_account_management_without_shell_execution(arguments) -> None:
+    with (
+        patch.object(mod, "configured_share_command", return_value="/publisher"),
+        patch.object(mod.os, "execv", side_effect=SystemExit(0)) as execute,
+        pytest.raises(SystemExit) as exited,
+    ):
+        mod.execute(["tailplan-share", *arguments])
+    assert exited.value.code == 0
+    execute.assert_called_once_with("/publisher", ["/publisher", *arguments])
+
+
+@pytest.mark.parametrize("arguments", [
+    ["list", "--api-url", "https://other.test"], ["auth", "set", "new-token"],
+    ["history", "../../token"], ["keys", "revoke", "bad;id"],
+    ["delete", "draft123", "--base-url", "https://other.test"],
+])
+def test_guard_rejects_credential_and_endpoint_overrides(arguments) -> None:
+    with pytest.raises(SystemExit) as exited:
+        mod.execute(["tailplan-share", *arguments])
+    assert exited.value.code == 126
 
 
 def test_guard_parses_the_original_command_without_shell_evaluation() -> None:

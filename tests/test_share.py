@@ -840,6 +840,8 @@ class MappingTests(unittest.TestCase):
                 *,
                 html_doc,
                 allow_insecure_http,
+                description,
+                metadata,
             ):
                 return real_upload(
                     html_path,
@@ -1335,7 +1337,7 @@ class UploadRetryTests(unittest.TestCase):
             data_dir = root / "data"
             data_dir.mkdir()
             html_path = root / "blocked.html"
-            html_path.write_text("<title>Blocked</title><script>alert(1)</script>", encoding="utf-8")
+            html_path.write_text('<title>Blocked</title><iframe src="https://example.test"></iframe>', encoding="utf-8")
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]

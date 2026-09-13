@@ -6,6 +6,23 @@ The project uses semantic version numbers.
 
 ## Unreleased
 
+## 0.3.0 - 2026-09-13
+
+### Added
+
+- The dashboard groups drafts by repository and displays descriptions, version history, and upload audit fields.
+- Named API keys support account ownership, browser sign-in, CLI setup, and revocation.
+- Optional Tailscale identity sign-in connects tailnet users to their accounts.
+- The `tailplan` CLI adds list, history, whoami, auth, keys, disable, enable, and delete commands.
+- The SSH client preserves source mappings and sends local repository metadata.
+- Upload rate limits return `Retry-After`, and anonymous publication is an explicit server option.
+
+### Changed
+
+- Draft routes return exact uploaded HTML, including original line endings.
+- Raw aliases and draft identity headers match the Postplan publishing contract.
+- Inline classic scripts are accepted as source. Browser execution remains blocked by the response policy.
+
 ## 0.2.1 - 2026-08-09
 
 ### Fixed

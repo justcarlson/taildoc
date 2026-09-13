@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import getpass
 import hashlib
-import ipaddress
 import html
 import http.client
+import ipaddress
 import json
 import os
 import re
@@ -179,7 +180,7 @@ def _safe_link_destination(destination: str) -> bool:
     try:
         parsed = urllib.parse.urlsplit(destination)
         hostname = parsed.hostname
-        parsed.port
+        _ = parsed.port
     except ValueError:
         return False
     return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc and hostname)
@@ -593,7 +594,7 @@ def build_html(path: Path, *, home: Path | None = None) -> Path:
 
 def final_html(html_path: Path) -> str:
     """Return the exact document sent and expected on read-back."""
-    return make_links_openable(html_path.read_text(encoding="utf-8"))
+    return html_path.read_bytes().decode("utf-8")
 
 
 class MappingFailure(RuntimeError):
@@ -1024,10 +1025,12 @@ def upload(
     timeout: float = 20,
     html_doc: str | None = None,
     allow_insecure_http: bool = False,
+    description: str | None = None,
+    metadata: dict | None = None,
 ) -> dict:
-    token_file = token_path or (Path.home() / ".tailplan" / "token")
+    token_file = token_path or Path(os.getenv("TAILPLAN_TOKEN_FILE", str(Path.home() / ".tailplan" / "token")))
     try:
-        token = token_file.read_text(encoding="utf-8").strip()
+        token = os.getenv("TAILPLAN_API_KEY") or token_file.read_text(encoding="utf-8").strip()
     except FileNotFoundError as error:
         raise ConfigurationFailure(
             "Tailplan token is missing; create ~/.tailplan/token, then retry."
@@ -1047,6 +1050,10 @@ def upload(
         "filename": html_path.name,
         "draftId": draft_id,
     }
+    if description is not None:
+        payload["description"] = description
+    if metadata is not None:
+        payload["metadata"] = metadata
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request_key = idempotency_key or secrets.token_urlsafe(32)
     attempts = max(1, max_attempts)
@@ -1252,6 +1259,7 @@ def _emit_success(result: dict, *, json_output: bool, stdout, stderr) -> int:
                     "publicUrl": result["publicUrl"],
                     "versionNumber": result["versionNumber"],
                     "warnings": warnings,
+                    **{key: result[key] for key in ("rawUrl", "versionId", "fileSha256", "requestId") if key in result},
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -1261,6 +1269,8 @@ def _emit_success(result: dict, *, json_output: bool, stdout, stderr) -> int:
         return 0
     print("Uploaded draft" if result["versionNumber"] == 1 else "Updated draft", file=stdout)
     print(f"URL: {result['publicUrl']}", file=stdout)
+    if result.get("rawUrl"):
+        print(f"Raw HTML: {result['rawUrl']}", file=stdout)
     print(f"Draft ID: {result['draftId']}", file=stdout)
     print(f"Version: {result['versionNumber']}", file=stdout)
     for warning in warnings:
@@ -1281,6 +1291,8 @@ def _publish_locked(
     stderr=sys.stderr,
     json_output: bool = False,
     allow_insecure_http: bool = False,
+    description: str | None = None,
+    metadata: dict | None = None,
 ) -> int:
     resolved_source = source.expanduser().resolve()
     state_home = home or Path.home()
@@ -1357,6 +1369,8 @@ def _publish_locked(
                 selected_draft_id,
                 html_doc=expected,
                 allow_insecure_http=allow_insecure_http,
+                description=description,
+                metadata=metadata if metadata is not None else collect_provenance(resolved_source.parent),
             )
         return uploader(html_path, base_url, selected_draft_id)
 
@@ -1466,6 +1480,8 @@ def publish(
     stderr=sys.stderr,
     json_output: bool = False,
     allow_insecure_http: bool = False,
+    description: str | None = None,
+    metadata: dict | None = None,
 ) -> int:
     resolved_source = source.expanduser().resolve()
     state_home = home or Path.home()
@@ -1484,6 +1500,8 @@ def publish(
                 stderr=stderr,
                 json_output=json_output,
                 allow_insecure_http=allow_insecure_http,
+                description=description,
+                metadata=metadata,
             )
     except OSError:
         return _emit_failure(
@@ -1507,12 +1525,20 @@ class TailplanArgumentParser(argparse.ArgumentParser):
 
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and raw_argv[0] in {"auth", "whoami", "list", "history", "keys", "disable", "enable", "delete"}:
+        return management_main(raw_argv)
+    if raw_argv and raw_argv[0] == "upload":
+        raw_argv.pop(0)
     json_output = "--json" in raw_argv
     parser = TailplanArgumentParser(
-        description="Share a markdown/text/html artifact through Tailplan."
+        description="Share a markdown/text/html artifact through Tailplan.",
+        epilog="Commands: upload, list, history, whoami, auth, keys, disable, enable, delete. Use COMMAND --help.",
     )
+    parser.add_argument("--version", action="version", version="tailplan 0.3.0")
     parser.add_argument("file", help="Path to .md, .txt, .html, or .htm file")
-    parser.add_argument("--base-url")
+    parser.add_argument("--base-url", "--api-url", dest="base_url")
+    parser.add_argument("--description", help="Set a stable draft description")
+    parser.add_argument("--metadata-file", help="Read source provenance from a JSON file")
     parser.add_argument("--json", action="store_true", help="Emit one machine-readable JSON object")
     parser.add_argument(
         "--allow-insecure-http",
@@ -1584,6 +1610,15 @@ def main(argv: list[str] | None = None) -> int:
             exit_code=2,
         )
 
+    metadata = None
+    if args.metadata_file:
+        try:
+            metadata = json.loads(Path(args.metadata_file).read_text(encoding="utf-8"))
+            if not isinstance(metadata, dict):
+                raise TypeError("metadata must be an object")
+        except (OSError, ValueError, TypeError, UnicodeError):
+            return _emit_failure("file", "Metadata file must contain a JSON object.",
+                                 json_output=args.json, stdout=sys.stdout, stderr=sys.stderr, exit_code=2)
     return publish(
         source,
         base_url,
@@ -1593,7 +1628,163 @@ def main(argv: list[str] | None = None) -> int:
         stderr=sys.stderr,
         json_output=args.json,
         allow_insecure_http=args.allow_insecure_http,
+        description=args.description,
+        metadata=metadata,
     )
+
+
+def collect_provenance(cwd: Path) -> dict:
+    def git(*args):
+        try:
+            return subprocess.check_output(["git", *args], cwd=cwd, text=True,
+                                           stderr=subprocess.DEVNULL, timeout=5).strip()
+        except (OSError, subprocess.SubprocessError, UnicodeError):
+            return None
+
+    metadata = {"cliVersion": "0.3.0"}
+    root = git("rev-parse", "--show-toplevel")
+    if root:
+        remote = git("config", "--get", "remote.origin.url") or ""
+        scp = re.fullmatch(r"[^@\s]+@([^:/\s]+):(.+)", remote)
+        try:
+            parsed = urllib.parse.urlparse("ssh://" + scp[1] + "/" + scp[2] if scp else remote)
+            parts = parsed.path.removesuffix(".git").strip("/").split("/")
+            metadata.update(repoHost=parsed.hostname, repoOrg=parts[0] if len(parts) > 1 else None,
+                            repoName=parts[-1] if parsed.hostname else Path(root).name)
+        except ValueError:
+            metadata["repoName"] = Path(root).name
+        status = git("status", "--porcelain")
+        metadata.update(gitBranch=git("rev-parse", "--abbrev-ref", "HEAD"),
+                        gitCommitSha=git("rev-parse", "HEAD"),
+                        gitCommitSubject=git("log", "-1", "--format=%s"),
+                        gitDirty=bool(status) if status is not None else None)
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        repo, run = os.getenv("GITHUB_REPOSITORY"), os.getenv("GITHUB_RUN_ID")
+        server = os.getenv("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
+        metadata.update(ciProvider="github_actions", ciActor=os.getenv("GITHUB_ACTOR"),
+                        ciRunUrl=f"{server}/{repo}/actions/runs/{run}" if repo and run else None)
+    elif os.getenv("CI"):
+        metadata["ciProvider"] = "unknown"
+    return metadata
+
+
+def management_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Manage Tailplan drafts and API keys.")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    def options(command):
+        command.add_argument("--base-url", "--api-url", dest="base_url")
+        command.add_argument("--json", action="store_true")
+        command.add_argument("--allow-insecure-http", action="store_true")
+        return command
+
+    for name in ("whoami", "list"):
+        options(commands.add_parser(name))
+    for name in ("history", "disable", "enable", "delete"):
+        command = options(commands.add_parser(name))
+        command.add_argument("draft")
+        if name == "disable":
+            command.add_argument("--reason")
+    auth = commands.add_parser("auth").add_subparsers(dest="action", required=True)
+    options(auth.add_parser("login"))
+    options(auth.add_parser("set")).add_argument("key", nargs="?")
+    options(auth.add_parser("logout"))
+    keys = commands.add_parser("keys").add_subparsers(dest="action", required=True)
+    options(keys.add_parser("list"))
+    options(keys.add_parser("create")).add_argument("name")
+    options(keys.add_parser("revoke")).add_argument("key_id")
+    args = parser.parse_args(argv)
+    try:
+        base = validate_base_url(args.base_url or os.getenv("TAILPLAN_BASE_URL") or default_base_url(),
+                                 allow_insecure_http=args.allow_insecure_http)
+        state = Path.home() / ".tailplan"
+        token_path = Path(os.getenv("TAILPLAN_TOKEN_FILE", str(state / "token")))
+
+        def request(path, method="GET", payload=None, token=None):
+            credential = token if token is not None else (os.getenv("TAILPLAN_API_KEY") or token_path.read_text().strip())
+            body = json.dumps(payload).encode() if payload is not None else None
+            req = urllib.request.Request(base + path, data=body, method=method, headers={
+                "Authorization": "Bearer " + credential, "Content-Type": "application/json",
+                "User-Agent": "tailplan/0.3.0",
+            })
+            try:
+                with _open_without_redirects(req, timeout=20) as response:
+                    result = json.loads(response.read())
+                    if not isinstance(result, dict):
+                        raise ConfigurationFailure("Server returned an invalid response.")
+                    return result
+            except urllib.error.HTTPError as error:
+                raise ConfigurationFailure(_error_detail(error, sensitive=(credential,))) from None
+
+        if args.command == "auth":
+            if args.action == "logout":
+                token_path.unlink(missing_ok=True)
+                result = {"ok": True, "message": "Local credentials removed."}
+            else:
+                key = getattr(args, "key", None)
+                if not key:
+                    if args.action == "login":
+                        print(f"Open {base}/cli/auth\nGenerate a key, then paste it here.", file=sys.stderr)
+                    key = getpass.getpass("API key: ") if sys.stdin.isatty() else sys.stdin.readline().strip()
+                if not key:
+                    raise ConfigurationFailure("No key entered. Nothing saved.")
+                identity = request("/api/me", token=key)
+                state.mkdir(mode=0o700, parents=True, exist_ok=True)
+                os.chmod(state, 0o700)
+                for path, text in ((token_path, key + "\n"), (state / "env", f'TAILPLAN_BASE_URL="{base}"\n')):
+                    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".auth-")
+                    try:
+                        with os.fdopen(fd, "w") as stream:
+                            os.fchmod(stream.fileno(), 0o600)
+                            stream.write(text)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                        os.replace(temporary, path)
+                    finally:
+                        Path(temporary).unlink(missing_ok=True)
+                result = {"ok": True, "message": f"Logged in as {identity['accountName']}.", **identity}
+        elif args.command == "whoami":
+            result = request("/api/me")
+        elif args.command == "list":
+            result = request("/api/drafts")
+        elif args.command == "keys":
+            if args.action == "list":
+                result = request("/api/api-keys")
+            elif args.action == "create":
+                result = request("/api/api-keys", "POST", {"name": args.name})
+            else:
+                if DRAFT_ID_RE.fullmatch(args.key_id) is None:
+                    raise ConfigurationFailure("API key ID is invalid.")
+                result = request(f"/api/api-keys/{args.key_id}/revoke", "POST", {})
+        else:
+            if DRAFT_ID_RE.fullmatch(args.draft) is None:
+                raise ConfigurationFailure("Draft ID is invalid.")
+            path = f"/api/drafts/{args.draft}"
+            if args.command == "history":
+                result = request(path)
+            elif args.command == "delete":
+                result = request(path, "DELETE")
+            else:
+                result = request(path + "/" + args.command, "POST", {"reason": getattr(args, "reason", None)})
+        if args.json:
+            print(json.dumps(result.get("drafts", result), ensure_ascii=False))
+        elif args.command == "list":
+            for draft in result["drafts"]:
+                repo = "/".join(filter(None, (draft.get("repoOrg"), draft.get("repoName")))) or "No repository"
+                print(f"{draft['title']}\n  {repo} · v{draft['latestVersionNumber']} · {draft['versionCount']} versions · {draft['updatedAt']}")
+                print(f"  {draft['publicUrl']}")
+                if draft.get("description"):
+                    print(f"  {draft['description']}")
+            if not result["drafts"]:
+                print("No drafts yet. Publish with: tailplan upload FILE")
+        elif result.get("message"):
+            print(result["message"])
+        else:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    except (ConfigurationFailure, OSError, ValueError, UnicodeError, http.client.HTTPException) as error:
+        message = str(error) if isinstance(error, ConfigurationFailure) else "Request failed. Check credentials, configuration, and connectivity."
+        return _emit_failure("management", message, json_output=args.json, stdout=sys.stdout, stderr=sys.stderr)
 
 
 if __name__ == "__main__":

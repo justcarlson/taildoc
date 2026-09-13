@@ -189,12 +189,11 @@ with tempfile.TemporaryDirectory() as td:
         assert "🚀" in historical_view
         assert 'title="1 > 0"' in historical_view
         assert 'href="https://example.com/path?q=1>0"' in historical_view
-        assert 'target="_blank"' in historical_view
-        assert 'rel="noopener noreferrer"' in historical_view
+        assert historical_view == first_document
 
         status, _headers, bad = urlopen(
             base + "/api/uploads",
-            data={"html": "<script>alert(1)</script>", "filename": "bad.html"},
+            data={"html": '<script type="module">x</script>', "filename": "bad.html"},
             token=TOKEN,
         )
         assert status == 422, (status, bad)

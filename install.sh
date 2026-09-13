@@ -472,6 +472,7 @@ for name, path in (
     ("installed runner", os.path.join(app_dir, "bin", "run-tailplan")),
     ("obsolete runner", os.path.join(app_dir, "run-tailplan.sh")),
     ("tailplan-share", os.path.join(bin_dir, "tailplan-share")),
+    ("tailplan", os.path.join(bin_dir, "tailplan")),
     ("tailplan-share-public", os.path.join(bin_dir, "tailplan-share-public")),
     ("environment file", env_file),
     ("token file", os.path.join(data_dir, "token")),
@@ -570,6 +571,7 @@ for source in \
   tailplan_server.py \
   bin/run-tailplan \
   bin/tailplan-share \
+  bin/tailplan \
   bin/tailplan-share-public \
   skills/tailplan/SKILL.md \
   systemd/tailplan.service; do
@@ -580,6 +582,7 @@ mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/skills/tailplan" "$STAGE_DIR/systemd"
 install -m 755 "$SCRIPT_DIR/tailplan_server.py" "$STAGE_DIR/tailplan_server.py"
 install -m 755 "$SCRIPT_DIR/bin/run-tailplan" "$STAGE_DIR/bin/run-tailplan"
 install -m 755 "$SCRIPT_DIR/bin/tailplan-share" "$STAGE_DIR/bin/tailplan-share"
+install -m 755 "$SCRIPT_DIR/bin/tailplan" "$STAGE_DIR/bin/tailplan"
 install -m 755 "$SCRIPT_DIR/bin/tailplan-share-public" "$STAGE_DIR/bin/tailplan-share-public"
 install -m 644 "$SCRIPT_DIR/skills/tailplan/SKILL.md" "$STAGE_DIR/skills/tailplan/SKILL.md"
 install -m 644 "$SCRIPT_DIR/systemd/tailplan.service" "$STAGE_DIR/systemd/tailplan.service"
@@ -587,6 +590,7 @@ bash -n "$STAGE_DIR/bin/run-tailplan"
 python3 - \
   "$STAGE_DIR/tailplan_server.py" \
   "$STAGE_DIR/bin/tailplan-share" \
+  "$STAGE_DIR/bin/tailplan" \
   "$STAGE_DIR/bin/tailplan-share-public" <<'PY'
 import ast
 import sys
@@ -801,6 +805,7 @@ backup_item() {
 backup_item app-server "$APP_DIR/tailplan_server.py"
 backup_item app-runner "$APP_DIR/bin/run-tailplan"
 backup_item cli-share "$BIN_DIR/tailplan-share"
+backup_item cli-management "$BIN_DIR/tailplan"
 backup_item cli-public "$BIN_DIR/tailplan-share-public"
 backup_item env "$ENV_FILE"
 backup_item unit "$UNIT_FILE"
@@ -853,6 +858,7 @@ rollback() {
   restore_item app-server "$APP_DIR/tailplan_server.py" || rollback_failed=1
   restore_item app-runner "$APP_DIR/bin/run-tailplan" || rollback_failed=1
   restore_item cli-share "$BIN_DIR/tailplan-share" || rollback_failed=1
+  restore_item cli-management "$BIN_DIR/tailplan" || rollback_failed=1
   restore_item cli-public "$BIN_DIR/tailplan-share-public" || rollback_failed=1
   restore_item env "$ENV_FILE" || rollback_failed=1
   restore_item unit "$UNIT_FILE" || rollback_failed=1
@@ -1015,6 +1021,7 @@ fi
 install -m 755 "$STAGE_DIR/tailplan_server.py" "$APP_DIR/tailplan_server.py"
 install -m 755 "$STAGE_DIR/bin/run-tailplan" "$APP_DIR/bin/run-tailplan"
 install -m 755 "$STAGE_DIR/bin/tailplan-share" "$BIN_DIR/tailplan-share"
+install -m 755 "$STAGE_DIR/bin/tailplan" "$BIN_DIR/tailplan"
 install -m 755 "$STAGE_DIR/bin/tailplan-share-public" "$BIN_DIR/tailplan-share-public"
 install -m 644 "$STAGE_DIR/skills/tailplan/SKILL.md" "$SKILL_FILE"
 if [[ "$SKILLS_FOR_OPERATOR" == 1 ]]; then
@@ -1047,7 +1054,10 @@ python3 - \
   "$PROXY_HOST" \
   "$PROXY_PORT" \
   "$BASE_URL" \
-  "$REDIRECT_VIEW_BASE_URL" <<'PY'
+  "$REDIRECT_VIEW_BASE_URL" \
+  "$ENV_FILE" <<'PY'
+import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -1061,6 +1071,7 @@ from pathlib import Path
     proxy_port,
     base_url,
     redirect_view_base_url,
+    previous_env,
 ) = sys.argv[1:]
 
 
@@ -1081,6 +1092,24 @@ values = (
     ("TAILPLAN_REDIRECT_VIEW_BASE_URL", redirect_view_base_url),
 )
 content = "".join(f"{name}={quote(value)}\n" for name, value in values)
+previous = {}
+if Path(previous_env).exists():
+    for line in Path(previous_env).read_text().splitlines():
+        if "=" in line and not line.startswith("#"):
+            name, value = line.split("=", 1)
+            parts = shlex.split(value)
+            previous[name] = parts[0] if parts else ""
+for name, default in (
+    ("TAILPLAN_TRUST_TAILSCALE_IDENTITY", "0"),
+    ("TAILPLAN_OWNER_LOGIN", ""),
+    ("TAILPLAN_ALLOW_ANONYMOUS_UPLOADS", "0"),
+    ("TAILPLAN_UPLOAD_IP_LIMIT", "60"),
+    ("TAILPLAN_UPLOAD_KEY_LIMIT", "30"),
+):
+    value = os.environ.get(name, previous.get(name, default))
+    if any(ord(character) < 32 for character in value):
+        raise SystemExit("Invalid management setting")
+    content += f"{name}={quote(value)}\n"
 Path(destination).write_text(content, encoding="utf-8")
 PY
 chmod 600 "$env_tmp"
@@ -1179,6 +1208,7 @@ verify_installed_file() {
 verify_installed_file "$STAGE_DIR/tailplan_server.py" "$APP_DIR/tailplan_server.py" 755
 verify_installed_file "$STAGE_DIR/bin/run-tailplan" "$APP_DIR/bin/run-tailplan" 755
 verify_installed_file "$STAGE_DIR/bin/tailplan-share" "$BIN_DIR/tailplan-share" 755
+verify_installed_file "$STAGE_DIR/bin/tailplan" "$BIN_DIR/tailplan" 755
 verify_installed_file "$STAGE_DIR/bin/tailplan-share-public" "$BIN_DIR/tailplan-share-public" 755
 verify_installed_file "$STAGE_DIR/skills/tailplan/SKILL.md" "$SKILL_FILE" 644
 [[ "$(stat -c '%a' "$ENV_FILE")" == 600 ]] || die "Installed environment file mode mismatch."

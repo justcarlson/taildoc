@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import json
 import os
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -147,6 +150,63 @@ def test_remote_share_rejects_unscoped_remote_directories(
 
 def test_remote_client_uses_a_generic_default_target() -> None:
     assert mod.DEFAULT_TARGET == "tailplan-server"
+
+
+def test_remote_publish_transports_description_json_and_local_provenance(tmp_path: Path) -> None:
+    source = tmp_path / "report.md"
+    source.write_text("# Report\n")
+    metadata = tmp_path / "provenance.json"
+    metadata.write_text(json.dumps({"repoName": "source-repo", "gitBranch": "feature"}))
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        output = "/tmp/tailplan-upload.Ab12Cd34\n" if "mktemp" in command else ""
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    description = "Plan; $(this-is-text)"
+    mod.share_file(source, target="tailplan-server", new=True, draft=None, run=run,
+                   description=description, json_output=True, metadata_path=metadata)
+    published = next(call for call in calls if call[:3] == ["ssh", "tailplan-server", "tailplan-share"])
+    parsed = shlex.split(" ".join(published[2:]))
+    assert parsed[parsed.index("--description") + 1] == description
+    assert "--json" in parsed
+    assert parsed[parsed.index("--metadata-file") + 1].endswith("/provenance.json")
+    assert ["scp", "-O", "--", str(metadata), "tailplan-server:/tmp/tailplan-upload.Ab12Cd34/provenance.json"] in calls
+
+
+def test_remote_main_reuses_source_mapping_across_transfers(tmp_path: Path) -> None:
+    mock_bin = tmp_path / "bin"
+    mock_bin.mkdir()
+    log = tmp_path / "calls.jsonl"
+    script = '''#!/usr/bin/env python3
+import json,os,sys
+from pathlib import Path
+args=sys.argv[1:]
+with open(os.environ["CLIENT_LOG"],"a") as output:
+    output.write(json.dumps(args)+"\\n")
+if "mktemp" in args:
+    print("/tmp/tailplan-upload.Ab12Cd34")
+elif "tailplan-share" in args:
+    print(json.dumps({"ok":True,"draftId":"remote123","versionNumber":2 if "--draft" in args else 1,
+        "publicUrl":"https://tailplan.example.test/d/remote123","rawUrl":"https://tailplan.example.test/d/remote123/raw"}))
+'''
+    for name in ("ssh", "scp"):
+        path = mock_bin / name
+        path.write_text(script)
+        path.chmod(0o755)
+    source = tmp_path / "report.md"
+    source.write_text("# Remote report\n")
+    env = {**os.environ, "HOME": str(tmp_path), "PATH": str(mock_bin) + os.pathsep + os.environ["PATH"],
+           "CLIENT_LOG": str(log)}
+    for version in (1, 2):
+        completed = subprocess.run([sys.executable, str(REMOTE_CLIENT), str(source), "--json"],
+                                   env=env, capture_output=True, text=True, check=True)
+        assert json.loads(completed.stdout)["versionNumber"] == version
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    published = [call for call in calls if "tailplan-share" in call]
+    assert "--draft" not in published[0]
+    assert published[1][published[1].index("--draft") + 1] == "remote123"
 
 
 def test_client_installer_installs_and_removes_only_client_files(tmp_path: Path) -> None:
