@@ -718,7 +718,14 @@ class Store:
         if request_key and request_key in data["idempotency"]:
             receipt = data["idempotency"][request_key]
             self._owned_draft(data, receipt["result"]["draftId"], account_id)
-            if receipt.get("fingerprint") != fingerprint:
+            legacy_match = False
+            if (account_id == "local" and "versionId" not in receipt["result"]
+                    and description is None and all(value is None for value in metadata.values())):
+                legacy_match = receipt.get("fingerprint") == sha256_text(json.dumps(
+                    {"html": html_doc, "filename": filename, "draftId": draft_id},
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+                ))
+            if receipt.get("fingerprint") != fingerprint and not legacy_match:
                 raise IdempotencyConflict("Request key was reused with a different payload.")
             return {**receipt["result"], "created": False, "replayed": True}
         creating = not draft_id

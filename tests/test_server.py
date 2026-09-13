@@ -706,6 +706,34 @@ class StoreTests(unittest.TestCase):
                     "request-123",
                 )
 
+    def test_legacy_receipt_replays_after_upgrade_and_rejects_new_fields(self) -> None:
+        with TemporaryDirectory() as td:
+            store = server.Store(Path(td))
+            first = store.upsert("<title>Retry</title>", "retry.html", None,
+                                 "https://tailplan.test", "upgrade-retry")
+            data = store.load_meta()
+            receipt = data["idempotency"]["upgrade-retry"]
+            # Captured from 0.2.1 for this exact request.
+            receipt["fingerprint"] = "6190b510bd3ade60dd6eb4575ae62a9b7a93e65b7597b1b299db13ecdad3a091"
+            receipt["result"] = {key: first[key] for key in
+                                 ("draftId", "title", "versionNumber", "publicUrl")}
+            store.save_meta(data)
+            reopened = server.Store(Path(td))
+            replay = reopened.upsert("<title>Retry</title>", "retry.html", None,
+                                     "https://tailplan.test", "upgrade-retry",
+                                     metadata=server.upload_metadata({}))
+            self.assertTrue(replay["replayed"])
+            self.assertEqual(first["draftId"], replay["draftId"])
+            self.assertEqual(1, replay["versionNumber"])
+            for changes in ({"description": "Added"}, {"metadata": {"gitDirty": False}},
+                            {"metadata": {"repoName": "Added"}}):
+                with self.subTest(changes=changes), self.assertRaises(server.IdempotencyConflict):
+                    reopened.upsert("<title>Retry</title>", "retry.html", None,
+                                    "https://tailplan.test", "upgrade-retry", **changes)
+            with self.assertRaises(server.IdempotencyConflict):
+                reopened.upsert("<title>Changed</title>", "retry.html", None,
+                                "https://tailplan.test", "upgrade-retry")
+
     def test_idempotency_receipts_keep_newest_in_insertion_order_at_configured_limit(
         self,
     ) -> None:

@@ -48,7 +48,8 @@ Taildoc also supports draft re-enabling and an API for complete version history.
 The server returns uploaded HTML without rewriting anchors or changing line endings.
 The Markdown client can add link attributes before upload.
 The server accepts inline classic scripts for source compatibility.
-Its response policy blocks script execution, network requests, forms, and embedding in browsers.
+Its response policy blocks script execution, script-driven network requests, forms, and embedding in browsers.
+External HTTPS images and fonts remain permitted by the response policy.
 
 Old drafts belong to the local account.
 Historical versions keep their original bytes.

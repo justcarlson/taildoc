@@ -66,7 +66,8 @@ Draft responses include `X-Tailplan-Draft-Id`, `X-Tailplan-Draft-Version`, and `
 Equivalent `X-Postplan-Draft-Id` and `X-Postplan-Draft-Version` headers support existing Postplan clients.
 
 Inline classic JavaScript is accepted as source.
-The browser response policy blocks script execution, form submission, network requests, and page embedding.
+The browser response policy blocks script execution, form submission, script-driven network requests, and page embedding.
+External HTTPS images and fonts remain permitted by the response policy.
 External scripts, module scripts, inline event handlers, forms, embeds, and unsafe URL attributes are rejected.
 
 ### Server settings
