@@ -96,15 +96,15 @@ def share_file(
 
 def main() -> int:
     argv = sys.argv[1:]
+    target = os.getenv("TAILPLAN_SSH_TARGET", DEFAULT_TARGET)
+    if "--target" in argv:
+        index = argv.index("--target")
+        if index + 1 >= len(argv):
+            print("--target requires an SSH alias", file=sys.stderr)
+            return 2
+        target = argv[index + 1]
+        argv = argv[:index] + argv[index + 2:]
     if argv and argv[0] in {"list", "whoami", "history", "disable", "enable", "delete", "keys"}:
-        target = os.getenv("TAILPLAN_SSH_TARGET", DEFAULT_TARGET)
-        if "--target" in argv:
-            index = argv.index("--target")
-            if index + 1 >= len(argv):
-                print("--target requires an SSH alias", file=sys.stderr)
-                return 2
-            target = argv[index + 1]
-            argv = argv[:index] + argv[index + 2:]
         try:
             validate_target(target)
             return subprocess.run(["ssh", target, "tailplan-share", *map(shlex.quote, argv)], check=False).returncode
@@ -119,7 +119,7 @@ def main() -> int:
     parser.add_argument("file", help="Path to .md, .txt, or .html file")
     parser.add_argument(
         "--target",
-        default=os.getenv("TAILPLAN_SSH_TARGET", DEFAULT_TARGET),
+        default=target,
         help=f"Configured SSH host alias (default: {DEFAULT_TARGET})",
     )
     version = parser.add_mutually_exclusive_group()

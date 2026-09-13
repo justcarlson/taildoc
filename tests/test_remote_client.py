@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 REMOTE_CLIENT = ROOT / "bin" / "tailplan-share-remote"
 CLIENT_INSTALLER = ROOT / "install-client.sh"
@@ -150,6 +149,24 @@ def test_remote_share_rejects_unscoped_remote_directories(
 
 def test_remote_client_uses_a_generic_default_target() -> None:
     assert mod.DEFAULT_TARGET == "tailplan-server"
+
+
+@pytest.mark.parametrize("argv", [
+    ["--target", "publisher-host", "list", "--json"],
+    ["list", "--json", "--target", "publisher-host"],
+])
+def test_remote_management_accepts_target_before_or_after_command(
+    tmp_path: Path, argv: list[str],
+) -> None:
+    ssh = tmp_path / "ssh"
+    ssh.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+    ssh.chmod(0o755)
+    completed = subprocess.run(
+        [sys.executable, str(REMOTE_CLIENT), *argv],
+        env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
+        capture_output=True, text=True, check=True,
+    )
+    assert json.loads(completed.stdout) == ["publisher-host", "tailplan-share", "list", "--json"]
 
 
 def test_remote_publish_transports_description_json_and_local_provenance(tmp_path: Path) -> None:
