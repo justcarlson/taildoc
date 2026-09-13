@@ -13,7 +13,7 @@ RUN groupadd --gid 10001 tailplan \
     && install -d -o tailplan -g tailplan -m 0700 /var/lib/tailplan
 
 WORKDIR /app
-COPY pyproject.toml README.md LICENSE tailplan_server.py ./
+COPY pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES.md tailplan_server.py ./
 COPY --chmod=0755 docker-entrypoint.py /usr/local/bin/tailplan-container-entrypoint
 RUN python -m pip install --no-cache-dir --no-compile .
 

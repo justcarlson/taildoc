@@ -2,7 +2,8 @@
 name: tailplan
 description: >-
   Publish plans, recaps, reports, and static HTML files to a private Tailplan
-  service. Use this skill when a user requests a Tailplan or a private draft URL.
+  service. Use this skill when a user requests a Tailplan, a private draft URL,
+  draft history, dashboard access, or publishing key management.
 metadata:
   visibility: exported
 ---
@@ -32,7 +33,7 @@ The name Tailplan does not mean a checklist or an agent plan mode.
 11. Return the URL and one short description.
 12. If step 4 created a durable repository document, report its repository path.
 
-The remote client transfers only the source file through OpenSSH.
+The remote client transfers the source file and repository metadata through OpenSSH.
 The upload token remains on the Tailplan server.
 The local publisher uploads directly.
 
@@ -51,3 +52,17 @@ tailplan-share /path/to/artifact.md --draft <draft-id>
 
 Use `--new` for all other requests.
 Use the public mirror command only after the user approves public access.
+
+## Manage published drafts
+
+Use `tailplan list --json` to find drafts and `tailplan history ID --json` to inspect their versions.
+Use `tailplan upload FILE --description TEXT` to attach a stable description.
+Open `/dashboard` under the configured base URL for repository groups and version history.
+Open `/cli/auth` to generate or revoke named API keys.
+The direct client accepts those keys through `tailplan auth login`.
+The SSH client uses the existing SSH identity.
+
+Use `tailplan disable ID`, `tailplan enable ID`, or `tailplan delete ID` for requested lifecycle changes.
+Verify the resulting state with the draft list and viewer URL.
+Inline script source can be published, but the viewer blocks its execution.
+Use static HTML and CSS for content that must work in the browser.

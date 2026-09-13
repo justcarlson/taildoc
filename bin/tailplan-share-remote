@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
+import runpy
+import shlex
 import subprocess
 import sys
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
-
 
 DEFAULT_TARGET = "tailplan-server"
 TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -43,6 +46,9 @@ def share_file(
     new: bool,
     draft: str | None,
     run: Run = subprocess.run,
+    description: str | None = None,
+    json_output: bool = False,
+    metadata_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     source = source.expanduser().resolve()
     if not source.is_file():
@@ -63,11 +69,21 @@ def share_file(
 
     try:
         run(["scp", "-O", "--", str(source), f"{target}:{remote_path}"], check=True)
+        if metadata_path:
+            run(["scp", "-O", "--", str(metadata_path), f"{target}:{remote_dir}/provenance.json"], check=True)
         command = ["ssh", target, "tailplan-share", remote_path]
         if new:
             command.append("--new")
         elif draft:
             command.extend(["--draft", draft])
+        if json_output:
+            command.append("--json")
+        if description is not None:
+            if len(description) > 1000 or any(ord(character) < 32 for character in description):
+                raise ValueError("Description must contain at most 1000 characters without control characters.")
+            command.extend(["--description", shlex.quote(description)])
+        if metadata_path:
+            command.extend(["--metadata-file", f"{remote_dir}/provenance.json"])
         return run(command, check=True, capture_output=True, text=True)
     finally:
         run(
@@ -79,28 +95,73 @@ def share_file(
 
 
 def main() -> int:
+    argv = sys.argv[1:]
+    target = os.getenv("TAILPLAN_SSH_TARGET", DEFAULT_TARGET)
+    if "--target" in argv:
+        index = argv.index("--target")
+        if index + 1 >= len(argv):
+            print("--target requires an SSH alias", file=sys.stderr)
+            return 2
+        target = argv[index + 1]
+        argv = argv[:index] + argv[index + 2:]
+    if argv and argv[0] in {"list", "whoami", "history", "disable", "enable", "delete", "keys"}:
+        try:
+            validate_target(target)
+            return subprocess.run(["ssh", target, "tailplan-share", *map(shlex.quote, argv)], check=False).returncode
+        except (ValueError, OSError) as exc:
+            print(f"tailplan: {exc}", file=sys.stderr)
+            return 2
+    if argv and argv[0] == "upload":
+        argv = argv[1:]
     parser = argparse.ArgumentParser(
         description="Publish a local Markdown, text, or HTML file through a remote Tailplan server."
     )
     parser.add_argument("file", help="Path to .md, .txt, or .html file")
     parser.add_argument(
         "--target",
-        default=os.getenv("TAILPLAN_SSH_TARGET", DEFAULT_TARGET),
+        default=target,
         help=f"Configured SSH host alias (default: {DEFAULT_TARGET})",
     )
     version = parser.add_mutually_exclusive_group()
     version.add_argument("--new", action="store_true", help="Create a fresh Tailplan draft")
     version.add_argument("--draft", help="Update a specific Tailplan draft id")
-    args = parser.parse_args()
+    parser.add_argument("--description")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
 
     try:
-        result = share_file(
-            Path(args.file),
-            target=args.target,
-            new=args.new,
-            draft=args.draft,
-        )
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        library_path = Path(__file__).resolve().with_name("tailplan-publisher")
+        if not library_path.exists():
+            library_path = Path(__file__).resolve().with_name("tailplan-share")
+        if library_path == Path(__file__).resolve():
+            raise RuntimeError("Client helpers are missing. Run install-client.sh again.")
+        library = runpy.run_path(str(library_path))
+        source = Path(args.file).expanduser().resolve()
+        validate_target(args.target)
+        mapping_path = Path.home() / ".tailplan" / f"remote-{args.target}-drafts.json"
+        with library["source_publish_lock"](mapping_path, source), tempfile.TemporaryDirectory(prefix="tailplan-client-") as temporary:
+            mappings = library["load_mappings"](mapping_path)
+            selected = library["choose_draft_id"](mappings, source, explicit_draft_id=args.draft, force_new=args.new)
+            metadata_path = Path(temporary) / "provenance.json"
+            metadata_path.write_text(json.dumps(library["collect_provenance"](source.parent)), encoding="utf-8")
+            try:
+                result = share_file(source, target=args.target, new=args.new, draft=selected,
+                                    description=args.description, json_output=True, metadata_path=metadata_path)
+            except subprocess.CalledProcessError as exc:
+                try:
+                    stale = json.loads(exc.stdout).get("category") == "missing draft"
+                except (TypeError, ValueError):
+                    stale = False
+                if args.draft or not selected or not stale:
+                    raise
+                result = share_file(source, target=args.target, new=True, draft=None,
+                                    description=args.description, json_output=True, metadata_path=metadata_path)
+            value = json.loads(result.stdout)
+            if not isinstance(value, dict) or value.get("ok") is not True:
+                raise RuntimeError("Publisher returned an invalid response.")
+            library["update_mapping"](mapping_path, source, value)
+            return library["_emit_success"](value, json_output=args.json, stdout=sys.stdout, stderr=sys.stderr)
+    except (FileNotFoundError, ValueError, RuntimeError, KeyError) as exc:
         print(f"tailplan-share: {exc}", file=sys.stderr)
         return 2
     except subprocess.CalledProcessError as exc:
@@ -110,13 +171,6 @@ def main() -> int:
             print(exc.stderr, end="", file=sys.stderr)
         print(f"tailplan-share: remote publish failed with exit {exc.returncode}", file=sys.stderr)
         return exc.returncode or 1
-
-    if result.stdout:
-        print(result.stdout, end="")
-    if result.stderr:
-        print(result.stderr, end="", file=sys.stderr)
-    return result.returncode
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

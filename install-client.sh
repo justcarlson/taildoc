@@ -27,7 +27,7 @@ CLIENT_PATH="$BIN_DIR/tailplan-share"
 SKILL_PATH="$SKILLS_ROOT/tailplan/SKILL.md"
 
 if [[ "$ACTION" == uninstall ]]; then
-  rm -f -- "$CLIENT_PATH" "$SKILL_PATH"
+  rm -f -- "$CLIENT_PATH" "$BIN_DIR/tailplan" "$BIN_DIR/tailplan-publisher" "$SKILL_PATH"
   rmdir -- "$SKILLS_ROOT/tailplan" 2>/dev/null || true
   printf 'Removed Tailplan client: %s\n' "$CLIENT_PATH"
   printf 'Removed Tailplan agent skill: %s\n' "$SKILL_PATH"
@@ -49,9 +49,14 @@ done
   printf 'Skill source is missing: %s\n' "$SCRIPT_DIR/skills/tailplan/SKILL.md" >&2
   exit 1
 }
+for source in bin/tailplan bin/tailplan-share; do
+  [[ -f "$SCRIPT_DIR/$source" ]] || { printf 'Client source is missing: %s\n' "$source" >&2; exit 1; }
+done
 
 install -d "$BIN_DIR" "$SKILLS_ROOT/tailplan"
 install -m 755 "$SCRIPT_DIR/bin/tailplan-share-remote" "$CLIENT_PATH"
+install -m 755 "$SCRIPT_DIR/bin/tailplan" "$BIN_DIR/tailplan"
+install -m 755 "$SCRIPT_DIR/bin/tailplan-share" "$BIN_DIR/tailplan-publisher"
 install -m 644 "$SCRIPT_DIR/skills/tailplan/SKILL.md" "$SKILL_PATH"
 
 printf 'Installed Tailplan client: %s\n' "$CLIENT_PATH"

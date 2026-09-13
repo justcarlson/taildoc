@@ -10,7 +10,6 @@ import stat
 import sys
 from pathlib import Path
 
-
 CONFIG_PATH = Path("/etc/tailplan-publisher.json")
 DIRECTORY_RE = re.compile(r"/tmp/tailplan-upload\.[A-Za-z0-9]{8}")
 FILE_RE = re.compile(
@@ -72,18 +71,54 @@ def execute(argv: list[str]) -> None:
             deny("upload directory has an invalid owner or type")
         os.execv("/usr/bin/scp", argv)
 
-    if len(argv) in {2, 3, 4} and argv[0] == "tailplan-share":
+    if argv and argv[0] == "tailplan-share" and len(argv) > 1 and argv[1] in {
+        "list", "whoami", "history", "disable", "enable", "delete", "keys",
+    }:
+        values = argv[1:]
+        if "--json" in values:
+            values = [value for value in values if value != "--json"]
+        valid = values in (["list"], ["whoami"], ["keys", "list"])
+        if len(values) == 2 and values[0] in {"history", "disable", "enable", "delete"}:
+            valid = DRAFT_RE.fullmatch(values[1]) is not None
+        if len(values) == 3 and values[:2] == ["keys", "revoke"]:
+            valid = DRAFT_RE.fullmatch(values[2]) is not None
+        if len(values) == 3 and values[:2] == ["keys", "create"]:
+            valid = 0 < len(values[2]) <= 255 and not values[2].startswith("-")
+        if len(values) == 4 and values[0] == "disable" and values[2] == "--reason":
+            valid = DRAFT_RE.fullmatch(values[1]) is not None and len(values[3]) <= 1000
+        if not valid:
+            deny("management arguments are invalid")
+        command = configured_share_command()
+        os.execv(command, [command, *argv[1:]])
+
+    if 2 <= len(argv) <= 11 and argv[0] == "tailplan-share":
         match = FILE_RE.fullmatch(argv[1])
         if match is None:
             deny("publish path is invalid")
-        if len(argv) == 3 and argv[2] != "--new":
-            deny("publish option is invalid")
-        if len(argv) == 4 and (
-            argv[2] != "--draft" or DRAFT_RE.fullmatch(argv[3]) is None
-        ):
-            deny("draft option is invalid")
-        if len(argv) not in {2, 3, 4}:
-            deny("publish arguments are invalid")
+        options = argv[2:]
+        seen = set()
+        while options:
+            option, *options = options
+            if option in seen:
+                deny("duplicate publish option")
+            seen.add(option)
+            if option in {"--new", "--json"}:
+                continue
+            if option not in {"--draft", "--description", "--metadata-file"} or not options:
+                deny("publish option is invalid")
+            value, *options = options
+            if option == "--draft" and DRAFT_RE.fullmatch(value) is None:
+                deny("draft option is invalid")
+            if option == "--description" and (len(value) > 1000 or value.startswith("-")):
+                deny("description is invalid")
+            if option == "--metadata-file":
+                if value != str(Path(argv[1]).parent / "provenance.json"):
+                    deny("metadata path is invalid")
+                info = Path(value).stat(follow_symlinks=False)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > 65536:
+                    deny("metadata file is invalid")
+        if {"--draft", "--new"}.issubset(seen):
+            deny("draft options conflict")
         source = Path(argv[1])
         try:
             source_stat = source.stat(follow_symlinks=False)

@@ -1,8 +1,24 @@
 # Security model
 
 Tailplan uses the tailnet as the viewer security boundary.
-The upload API also requires an upload token.
-Tailplan does not provide individual viewer accounts.
+The upload API requires an upload token unless anonymous publication is explicitly enabled.
+Management accounts restrict draft listings, changes, history, and API key operations.
+Viewer URLs remain accessible to authorized tailnet devices.
+
+Named keys are stored as SHA-256 hashes.
+Each key belongs to one account.
+Browser sessions expire after 30 days and use signed cookies with form tokens.
+The bootstrap token also signs browser sessions.
+Token rotation invalidates all browser sessions.
+
+Tailscale identity headers are optional.
+Only the configured loopback proxy listener accepts those headers.
+The primary listener always ignores identity headers.
+The operator must keep the proxy listener behind Tailscale Serve.
+
+Uploaded HTML is served without rewriting.
+Inline classic scripts remain in the source, but the browser response policy blocks execution.
+Forms, external scripts, module scripts, embeds, and inline event handlers are rejected.
 
 ## Suitable content
 

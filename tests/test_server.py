@@ -116,7 +116,8 @@ class HtmlValidationTests(unittest.TestCase):
 
     def test_active_html_and_obfuscated_unsafe_urls_are_rejected(self) -> None:
         cases = {
-            "active tag": "<script>alert(1)</script>",
+            "external script": '<script src="https://example.test/app.js"></script>',
+            "module script": '<script type="module">import "x"</script>',
             "event handler": '<p OnClick="alert(1)">x</p>',
             "srcdoc": '<div SRCDOC="<p>x</p>"></div>',
             "meta refresh": '<meta HTTP-EQUIV="Refresh" content="0; URL=https://example.com">',
@@ -397,7 +398,7 @@ class StoreTests(unittest.TestCase):
         def invalid_html(
             _old_root: Path, new_root: Path, draft_id: str, draft: dict
         ) -> None:
-            doc = "<!doctype html><title>Unsafe</title><script>alert(1)</script>"
+            doc = '<!doctype html><title>Unsafe</title><script src="https://example.test/x.js"></script>'
             (new_root / "drafts" / draft_id / "v1.html").write_text(
                 doc, encoding="utf-8"
             )
@@ -705,6 +706,34 @@ class StoreTests(unittest.TestCase):
                     "request-123",
                 )
 
+    def test_legacy_receipt_replays_after_upgrade_and_rejects_new_fields(self) -> None:
+        with TemporaryDirectory() as td:
+            store = server.Store(Path(td))
+            first = store.upsert("<title>Retry</title>", "retry.html", None,
+                                 "https://tailplan.test", "upgrade-retry")
+            data = store.load_meta()
+            receipt = data["idempotency"]["upgrade-retry"]
+            # Captured from 0.2.1 for this exact request.
+            receipt["fingerprint"] = "6190b510bd3ade60dd6eb4575ae62a9b7a93e65b7597b1b299db13ecdad3a091"
+            receipt["result"] = {key: first[key] for key in
+                                 ("draftId", "title", "versionNumber", "publicUrl")}
+            store.save_meta(data)
+            reopened = server.Store(Path(td))
+            replay = reopened.upsert("<title>Retry</title>", "retry.html", None,
+                                     "https://tailplan.test", "upgrade-retry",
+                                     metadata=server.upload_metadata({}))
+            self.assertTrue(replay["replayed"])
+            self.assertEqual(first["draftId"], replay["draftId"])
+            self.assertEqual(1, replay["versionNumber"])
+            for changes in ({"description": "Added"}, {"metadata": {"gitDirty": False}},
+                            {"metadata": {"repoName": "Added"}}):
+                with self.subTest(changes=changes), self.assertRaises(server.IdempotencyConflict):
+                    reopened.upsert("<title>Retry</title>", "retry.html", None,
+                                    "https://tailplan.test", "upgrade-retry", **changes)
+            with self.assertRaises(server.IdempotencyConflict):
+                reopened.upsert("<title>Changed</title>", "retry.html", None,
+                                "https://tailplan.test", "upgrade-retry")
+
     def test_idempotency_receipts_keep_newest_in_insertion_order_at_configured_limit(
         self,
     ) -> None:
@@ -827,7 +856,7 @@ class ApiTests(unittest.TestCase):
             413,
             self.raw_status(base_request + b"Content-Length: " + oversized + b"\r\n\r\n"),
         )
-        unsafe = server.json.dumps({"html": "<script>x</script>"}).encode()
+        unsafe = server.json.dumps({"html": '<script type="module">x</script>'}).encode()
         self.assertEqual(
             422,
             self.request("POST", path, unsafe, self.auth_headers())[0],
@@ -932,7 +961,7 @@ class ApiTests(unittest.TestCase):
             )
 
         self.assertEqual(200, status)
-        spy.assert_called_once_with("Bearer secret-token", "Bearer secret-token")
+        spy.assert_called_once_with(b"secret-token", b"secret-token")
 
     def test_content_length_accepts_only_positive_bounded_ascii_decimal(self) -> None:
         base_request = (
@@ -1209,8 +1238,7 @@ class ApiTests(unittest.TestCase):
         historical = historical_raw.decode("utf-8")
         self.assertIn('<title>First > Title</title>', historical)
         self.assertIn('title="1 > 0"', historical)
-        self.assertIn('target="_blank"', historical)
-        self.assertIn('rel="noopener noreferrer"', historical)
+        self.assertEqual(first_doc, historical)
 
     def test_primary_viewer_get_and_head_redirect_preserve_path_and_safe_query(self) -> None:
         self.httpd.redirect_view_base_url = "https://tailplan-https.example/view"
@@ -1512,6 +1540,11 @@ class DualListenerTests(unittest.TestCase):
                 token_file=str(token_file),
                 base_url="https://tailplan.example.test/",
                 redirect_view_base_url="https://tailplan-https.example.test",
+                allow_anonymous_uploads=False,
+                trust_tailscale_identity=False,
+                owner_login="",
+                upload_ip_limit=60,
+                upload_key_limit=30,
             )
             primary = Mock(server_address=("100.64.0.1", 9127))
             proxy = Mock(server_address=("127.0.0.1", 9128))

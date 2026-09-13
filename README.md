@@ -1,7 +1,7 @@
 # Tailplan
 
 Tailplan publishes static drafts inside a Tailscale tailnet.
-Agents can publish plans, reports, Markdown files, text files, and HTML files without active content.
+Agents can publish plans, reports, Markdown files, text files, and static HTML files.
 Tailplan returns a URL that tailnet devices can open.
 
 Read [SUPPORT.md](SUPPORT.md) for compatibility and support information.
@@ -17,12 +17,87 @@ Read [CHANGELOG.md](CHANGELOG.md) for release changes.
 - Tailplan rejects active HTML content and prohibited URL attributes.
 - Tailplan renders Markdown tables as responsive HTML tables.
 - Tailplan can mirror one approved draft to Postplan.
+- The dashboard groups drafts by repository and displays every version.
+- Named API keys identify the account that owns each draft.
+- Draft descriptions and Git metadata remain available through the dashboard and CLI.
+
+Read [Postplan compatibility](docs/postplan-parity.md) for the observed API and behavior contracts.
+
+## Draft dashboard and CLI
+
+Open `/dashboard` under your Tailplan base URL.
+Sign in with an existing API key, or use configured Tailscale identity sign-in.
+The existing upload token opens the local account, which owns all earlier drafts.
+
+Open `/cli/auth` to generate a named key.
+Tailplan shows the key once and stores only its hash.
+Use a named key with the direct client:
+
+```sh
+tailplan auth login --api-url https://host.example.ts.net/tailplan
+tailplan whoami
+tailplan upload ./plan.html --description "Migration plan" --new
+tailplan upload ./plan.html
+tailplan list --json
+tailplan history <draft-id> --json
+tailplan disable <draft-id> --reason "Revision in progress"
+tailplan enable <draft-id>
+tailplan delete <draft-id>
+tailplan keys create "Build agent"
+tailplan keys list
+tailplan keys revoke <key-id>
+```
+
+The `tailplan-share FILE` command remains available.
+Both upload commands accept `--description`, `--json`, and `--api-url`.
+The CLI collects Git repository, branch, commit, dirty state, and supported CI metadata from the source directory.
+An update retains the description when `--description` is omitted.
+`--metadata-file FILE` supplies a JSON object instead of automatic metadata collection.
+
+The SSH client supports upload, list, history, whoami, keys, disable, enable, and delete through the existing SSH alias.
+The SSH client keeps source mappings on the workstation and sends local Git metadata with each upload.
+The direct client uses `TAILPLAN_API_KEY` or the configured token file.
+`TAILPLAN_TOKEN_FILE` overrides `~/.tailplan/token`.
+
+Draft responses include `publicUrl`, `rawUrl`, `versionId`, `versionNumber`, and `fileSha256`.
+The canonical URL and its `/raw` alias return identical uploaded bytes.
+Append `/v/N` or `/v/N/raw` to retrieve an immutable version.
+Draft responses include `X-Tailplan-Draft-Id`, `X-Tailplan-Draft-Version`, and `X-Tailplan-Content-SHA256` headers.
+Equivalent `X-Postplan-Draft-Id` and `X-Postplan-Draft-Version` headers support existing Postplan clients.
+
+Inline classic JavaScript is accepted as source.
+The browser response policy blocks script execution, form submission, script-driven network requests, and page embedding.
+External HTTPS images and fonts remain permitted by the response policy.
+External scripts, module scripts, inline event handlers, forms, embeds, and unsafe URL attributes are rejected.
+
+### Server settings
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `TAILPLAN_TRUST_TAILSCALE_IDENTITY` | `0` | Trust identity headers only on the loopback proxy listener. |
+| `TAILPLAN_OWNER_LOGIN` | Empty | Map this Tailscale login to the existing local account. |
+| `TAILPLAN_ALLOW_ANONYMOUS_UPLOADS` | `0` | Allow uploads into a separate anonymous account. |
+| `TAILPLAN_UPLOAD_IP_LIMIT` | `60` | Maximum uploads per client address each minute. |
+| `TAILPLAN_UPLOAD_KEY_LIMIT` | `30` | Maximum uploads per API key each minute. |
+
+Set these values in the installer environment or service environment file.
+The native installer preserves existing values on later installations.
+Enable identity-header trust only when Tailscale Serve is the sole remote path to the proxy listener.
+Other tailnet users receive separate accounts when they sign in.
+The owner mapping does not transfer drafts between accounts.
+
+The APIs require bearer keys for management operations.
+Browser sessions use signed cookies with a 30-day lifetime and form tokens.
+Revoking a named key also invalidates browser sessions created with that key.
+Deleted drafts disappear from listings, and every viewer URL returns 404.
+The files remain on disk for operator recovery.
 
 ## Security model
 
 The tailnet is the default viewer security boundary.
-The upload API also requires an upload token.
-Tailplan does not provide individual viewer accounts.
+The upload API requires an upload token unless anonymous publication is explicitly enabled.
+Management accounts restrict draft updates, listings, history, and key operations.
+Viewer access remains a tailnet boundary.
 Any tailnet user with a draft URL can view that draft.
 
 Do not upload credentials or access links.
