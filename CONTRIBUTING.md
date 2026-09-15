@@ -39,6 +39,8 @@ The `quality-gate` job requires every CI lane to pass.
 Keep this check required on the protected main branch.
 The signed release workflow runs the same CI before creating release assets.
 Unit, browser, and root-installer reports reject skipped tests.
+CI selects privileged installer tests only in the root lane.
+Hosted unprivileged runners cannot reliably create user namespaces.
 Update minimum counts only when an intentional coverage change explains the difference.
 
 The distribution lane installs wheels and source archives outside the checkout.

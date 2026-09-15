@@ -34,8 +34,8 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --python "$pythonLocation/bin/python"
       - run: uv run --no-sync tailplan-server --help
-      - run: uv run --no-sync python -m pytest -q -rs --strict-config --strict-markers --ignore=tests/test_theme_browser.py --junitxml=test-results/unit.xml
-      - run: uv run --no-sync python tests/check_junit.py test-results/unit.xml --minimum 380
+      - run: uv run --no-sync python -m pytest -q -rs --strict-config --strict-markers --ignore=tests/test_theme_browser.py -k "not (system or failed_rotation_restores_both_private_token_copies) or system_install_requires_root" --junitxml=test-results/unit.xml
+      - run: uv run --no-sync python tests/check_junit.py test-results/unit.xml --minimum 362
       - run: uv run --no-sync bash tests/smoke.sh
       - run: uv run --no-sync python tests/check_ste100.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -64,7 +64,7 @@ jobs:
           tests/test_install.py tests/test_ssh_publisher.py
           -k "(system or failed_rotation_restores_both_private_token_copies) and not system_install_requires_root"
           --junitxml=test-results/system.xml
-      - run: uv run --no-sync python tests/check_junit.py test-results/system.xml
+      - run: uv run --no-sync python tests/check_junit.py test-results/system.xml --minimum 18
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
