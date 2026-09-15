@@ -22,13 +22,16 @@ def browser():
 
 @pytest.mark.parametrize('ident', list(themes.registry()))
 @pytest.mark.parametrize('width', [375, 1280])
-def test_reading_layout_table_code_and_print(browser, tmp_path, ident, width):
+@pytest.mark.parametrize('typography', ['serif-sans', 'all-sans'])
+def test_reading_layout_table_code_and_print(browser, tmp_path, ident, width, typography):
     page = browser.new_page(viewport={'width':width, 'height':900})
     errors = []
+    requests = []
+    page.on('request', lambda request: requests.append(request.url))
     page.on('pageerror', lambda error: errors.append(str(error)))
     code = 'long_code_' * 35
     source = '# Field notes\n\nA readable paragraph with [a link](https://example.com).\n\n> Context and detail.\n\n| Task | Owner | Status |\n| --- | --- | --- |\n| Layout | Reader | Ready |\n\n```text\n' + code + '\n```'
-    doc, _ = themes.render(source, theme=ident)
+    doc, _ = themes.render(source, theme=ident, typography=typography)
     page.set_content(doc)
     metrics = page.evaluate('''() => {
       const main = document.querySelector('main');
@@ -47,7 +50,11 @@ def test_reading_layout_table_code_and_print(browser, tmp_path, ident, width):
     assert metrics['column'] <= 690
     assert metrics['padding'] == '24px'
     assert metrics['font'] == '17px' and metrics['line'] == '26.35px'
-    assert 'Georgia' in metrics['heading'] and 'system-ui' in metrics['family']
+    assert 'system-ui' in metrics['family']
+    assert ('Georgia' in metrics['heading']) == (typography == 'serif-sans')
+    if typography == 'all-sans':
+        assert metrics['heading'] == metrics['family']
+    assert 'monospace' in page.locator('code').first.evaluate('(e) => getComputedStyle(e).fontFamily')
     assert page.locator('.table-wrap').get_attribute('tabindex') == '0'
     page.locator('.table-wrap').focus()
     assert page.locator('.table-wrap').evaluate('(e) => e === document.activeElement')
@@ -69,6 +76,31 @@ def test_reading_layout_table_code_and_print(browser, tmp_path, ident, width):
     assert page.locator('body').evaluate('(e) => getComputedStyle(e).color') == 'rgb(0, 0, 0)'
     assert page.locator('pre').evaluate('(e) => getComputedStyle(e).whiteSpace') == 'pre-wrap'
     assert page.locator('table').evaluate('(e) => getComputedStyle(e).minWidth') == '0px'
+    assert page.locator('h1').evaluate('(e) => getComputedStyle(e).fontFamily') == metrics['heading']
+    assert page.locator('body').evaluate('(e) => getComputedStyle(e).fontFamily') == metrics['family']
+    assert 'monospace' in page.locator('code').first.evaluate('(e) => getComputedStyle(e).fontFamily')
+    assert page.evaluate('document.documentElement.scrollWidth') == width
     assert page.pdf().startswith(b'%PDF')
     assert not errors
+    assert not requests
+    page.close()
+
+
+@pytest.mark.parametrize('typography', ['serif-sans', 'all-sans'])
+def test_all_heading_levels_inline_code_and_literal_text(browser, typography):
+    page = browser.new_page(viewport={'width': 375, 'height': 812})
+    headings = '\n\n'.join('#' * level + ' Heading `code`' for level in range(1, 7))
+    page.set_content(themes.render(headings + '\n\nBody text.', typography=typography)[0])
+    for medium in ['screen', 'print']:
+        page.emulate_media(media=medium)
+        families = page.locator('h1,h2,h3,h4,h5,h6').evaluate_all('(es) => es.map(e => getComputedStyle(e).fontFamily)')
+        assert len(families) == 6 and len(set(families)) == 1
+        assert ('Georgia' in families[0]) == (typography == 'serif-sans')
+        assert all('monospace' in f for f in page.locator('code').evaluate_all('(es) => es.map(e => getComputedStyle(e).fontFamily)'))
+        assert page.evaluate('document.documentElement.scrollWidth') == 375
+    source = '# Literal **text**\n' + 'longword' * 120
+    page.set_content(themes.render(source, format='text', typography=typography)[0])
+    assert page.locator('.plain-text').inner_text() == source
+    assert 'sans-serif' in page.locator('.plain-text').evaluate('(e) => getComputedStyle(e).fontFamily')
+    assert page.evaluate('document.documentElement.scrollWidth') == 375
     page.close()

@@ -72,12 +72,12 @@ def execute(argv: list[str]) -> None:
         os.execv("/usr/bin/scp", argv)
 
     if argv and argv[0] == "tailplan-share" and len(argv) > 1 and argv[1] in {
-        "list", "whoami", "history", "disable", "enable", "delete", "keys", "themes",
+        "list", "whoami", "history", "disable", "enable", "delete", "keys", "themes", "typography",
     }:
         values = argv[1:]
         if "--json" in values:
             values = [value for value in values if value != "--json"]
-        valid = values in (["list"], ["whoami"], ["keys", "list"], ["themes"])
+        valid = values in (["list"], ["whoami"], ["keys", "list"], ["themes"], ["typography"])
         if len(values) == 2 and values[0] in {"history", "disable", "enable", "delete"}:
             valid = DRAFT_RE.fullmatch(values[1]) is not None
         if len(values) == 3 and values[:2] == ["keys", "revoke"]:
@@ -91,7 +91,7 @@ def execute(argv: list[str]) -> None:
         command = configured_share_command()
         os.execv(command, [command, *argv[1:]])
 
-    if 2 <= len(argv) <= 17 and argv[0] == "tailplan-share":
+    if 2 <= len(argv) <= 19 and argv[0] == "tailplan-share":
         match = FILE_RE.fullmatch(argv[1])
         if match is None:
             deny("publish path is invalid")
@@ -104,10 +104,10 @@ def execute(argv: list[str]) -> None:
             seen.add(option)
             if option in {"--new", "--json"}:
                 continue
-            if option not in {"--draft", "--description", "--metadata-file", "--theme", "--document-type", "--layout"} or not options:
+            if option not in {"--draft", "--description", "--metadata-file", "--theme", "--document-type", "--layout", "--typography"} or not options:
                 deny("publish option is invalid")
             value, *options = options
-            if option in {"--theme", "--document-type", "--layout"} and not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", value):
+            if option in {"--theme", "--document-type", "--layout", "--typography"} and not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", value):
                 deny("theme option is invalid")
             if option == "--draft" and DRAFT_RE.fullmatch(value) is None:
                 deny("draft option is invalid")

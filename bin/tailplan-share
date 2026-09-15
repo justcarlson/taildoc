@@ -1309,11 +1309,12 @@ def _publish_locked(
     theme: str | None = None,
     document_type: str | None = None,
     layout: str | None = None,
+    typography: str | None = None,
 ) -> int:
     resolved_source = source.expanduser().resolve()
     state_home = home or Path.home()
     is_html = resolved_source.suffix.lower() in {".html", ".htm"}
-    if is_html and any(value is not None for value in (theme, document_type, layout)):
+    if is_html and any(value is not None for value in (theme, document_type, layout, typography)):
         return _emit_failure("theme", "Theme options require Markdown or text input.",
                              json_output=json_output, stdout=stdout, stderr=stderr)
     content_request = None
@@ -1324,6 +1325,8 @@ def _publish_locked(
                                "format": "text" if resolved_source.suffix.lower() == ".txt" else "markdown",
                                "theme": theme or "auto", "documentType": document_type or "document",
                                "layout": layout or "reading"}
+            if typography is not None:
+                content_request["typography"] = typography
         except (OSError, UnicodeError):
             return _emit_failure("file", "Cannot read UTF-8 input.", json_output=json_output,
                                  stdout=stdout, stderr=stderr)
@@ -1524,6 +1527,7 @@ def publish(
     theme: str | None = None,
     document_type: str | None = None,
     layout: str | None = None,
+    typography: str | None = None,
 ) -> int:
     resolved_source = source.expanduser().resolve()
     state_home = home or Path.home()
@@ -1544,7 +1548,7 @@ def publish(
                 allow_insecure_http=allow_insecure_http,
                 description=description,
                 metadata=metadata,
-                theme=theme, document_type=document_type, layout=layout,
+                theme=theme, document_type=document_type, layout=layout, typography=typography,
             )
     except OSError:
         return _emit_failure(
@@ -1568,7 +1572,7 @@ class TailplanArgumentParser(argparse.ArgumentParser):
 
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
-    if raw_argv and raw_argv[0] in {"auth", "whoami", "list", "history", "keys", "disable", "enable", "delete", "themes"}:
+    if raw_argv and raw_argv[0] in {"auth", "whoami", "list", "history", "keys", "disable", "enable", "delete", "themes", "typography"}:
         return management_main(raw_argv)
     if raw_argv and raw_argv[0] == "upload":
         raw_argv.pop(0)
@@ -1583,6 +1587,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--description", help="Set a stable draft description")
     parser.add_argument("--theme", help="Theme ID or auto; list with tailplan themes")
     parser.add_argument("--document-type", help="Deterministic selection hint, such as plan or technical")
+    parser.add_argument("--typography", help="Font preset ID; list with tailplan typography")
     parser.add_argument("--layout", help="Document layout: reading")
     parser.add_argument("--metadata-file", help="Read source provenance from a JSON file")
     parser.add_argument("--json", action="store_true", help="Emit one machine-readable JSON object")
@@ -1676,7 +1681,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_insecure_http=args.allow_insecure_http,
         description=args.description,
         metadata=metadata,
-        theme=args.theme, document_type=args.document_type, layout=args.layout,
+        theme=args.theme, document_type=args.document_type, layout=args.layout, typography=args.typography,
     )
 
 
@@ -1725,7 +1730,7 @@ def management_main(argv: list[str]) -> int:
         command.add_argument("--allow-insecure-http", action="store_true")
         return command
 
-    for name in ("whoami", "list", "themes"):
+    for name in ("whoami", "list", "themes", "typography"):
         options(commands.add_parser(name))
     for name in ("history", "disable", "enable", "delete"):
         command = options(commands.add_parser(name))
@@ -1748,7 +1753,7 @@ def management_main(argv: list[str]) -> int:
         token_path = Path(os.getenv("TAILPLAN_TOKEN_FILE", str(state / "token")))
 
         def request(path, method="GET", payload=None, token=None):
-            credential = "" if path == "/api/themes" else (token if token is not None else (os.getenv("TAILPLAN_API_KEY") or token_path.read_text().strip()))
+            credential = "" if path in {"/api/themes", "/api/typography"} else (token if token is not None else (os.getenv("TAILPLAN_API_KEY") or token_path.read_text().strip()))
             body = json.dumps(payload).encode() if payload is not None else None
             req = urllib.request.Request(base + path, data=body, method=method, headers={
                 "Authorization": "Bearer " + credential, "Content-Type": "application/json",
@@ -1790,8 +1795,8 @@ def management_main(argv: list[str]) -> int:
                     finally:
                         Path(temporary).unlink(missing_ok=True)
                 result = {"ok": True, "message": f"Logged in as {identity['accountName']}.", **identity}
-        elif args.command == "themes":
-            result = request("/api/themes")
+        elif args.command in {"themes", "typography"}:
+            result = request("/api/" + args.command)
         elif args.command == "whoami":
             result = request("/api/me")
         elif args.command == "list":

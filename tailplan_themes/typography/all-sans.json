@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "all-sans",
+  "version": 1,
+  "name": "Sans-serif headings and body",
+  "tokens": {
+    "font-heading": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Arial, system-ui, sans-serif",
+    "font-body": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Arial, system-ui, sans-serif"
+  }
+}

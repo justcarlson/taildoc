@@ -1,6 +1,6 @@
 # Document themes
 
-Tailplan separates content, layout, and palette.
+Tailplan separates content, layout, palette, and typography.
 The server renders Markdown or plain text once, when you publish a version.
 Each version stores complete HTML, inline CSS, and resolved theme metadata.
 Later palette changes do not change stored versions.
@@ -84,7 +84,8 @@ The upstream links below identify the original projects.
 | solarized-light | Light | [Solarized](https://github.com/altercation/solarized) | MIT |
 
 These are document adaptations of upstream colors.
-All palettes share the reading layout, Georgia headings, and system sans body text.
+All palettes share the reading layout.
+Typography defaults to Georgia headings and system sans-serif body text.
 Only code uses a monospace font.
 The reading column is at most 690px, with 24px side padding and 17px body text at 1.55 line height.
 
@@ -128,9 +129,10 @@ Increase the palette version when its values change. Keep the ID stable.
 | code-background | Inline and block code background |
 | code-text | Inline and block code text |
 
-`reading.css` owns layout, typography, mobile rules, and print rules.
+`reading.css` owns layout, code typography, mobile rules, and print rules.
+Typography presets supply heading and body font stacks.
 Palette files contain no content or layout CSS.
-The current layout ID is `reading`, version 1. Other layout IDs return an error.
+The current layout ID is `reading`, version 2. Other layout IDs return an error.
 The content parser supports escaped Markdown headings, paragraphs, links, lists, quotes, pipe tables, and fenced code.
 
 ## Validate
@@ -152,3 +154,62 @@ TAILPLAN_BROWSER_TESTS=1 python -m pytest -q tests/test_theme_browser.py
 
 Set `TAILPLAN_CHROMIUM` to use an existing Chromium executable.
 Browser tests check all palettes at 375px and 1280px, horizontal table and code scrolling, and print output.
+
+## Typography presets
+
+Typography is independent of the palette and document type.
+Every palette supports both built-in presets:
+
+| Stable ID | Headings | Body |
+| --- | --- | --- |
+| serif-sans | Georgia with serif fallbacks | System sans-serif |
+| all-sans | System sans-serif | System sans-serif |
+
+The default is `serif-sans`. This preserves the warm editorial appearance.
+Code always uses the layout's monospace stack, including code inside headings.
+System fonts require no downloads, images, or network requests.
+
+```sh
+tailplan typography --json
+tailplan upload plan.md --new --typography serif-sans
+tailplan-share notes.md --new --theme flexoki-light --typography all-sans
+tailplan upload report.md --new --theme auto --document-type technical --typography all-sans
+```
+
+Direct, local, and SSH clients support these commands.
+`GET /api/typography` returns the presets and `typographySelection` without upload credentials.
+`GET /api/themes` includes the same typography fields.
+For API publication, add `"typography": "all-sans"` to a Markdown or text upload.
+Omitting `typography`, or sending `null`, uses the declared default.
+Unknown IDs and invalid value types return HTTP 422.
+Typography options on static HTML return HTTP 422. HTML without these options keeps its original bytes.
+Missing or invalid registry assets make catalog and readiness checks fail.
+
+Each version records the resolved preset under `theme.typography`.
+The snapshot includes its ID, schema version, preset version, name, tokens, and canonical JSON SHA-256.
+The HTML embeds the same snapshot and complete CSS.
+Registry or default changes affect only later publications.
+Existing HTML, historical versions, and legacy local HTML helpers remain unchanged.
+
+### Add a typography preset
+
+1. Copy `tailplan_themes/typography/serif-sans.json` to a new JSON file.
+2. Assign a unique stable `id`, a name, and a positive integer `version`.
+3. Keep `schemaVersion` at `1`.
+4. Set both `font-heading` and `font-body` tokens.
+5. Use comma-separated system font names, ending in `serif`, `sans-serif`, or `system-ui`.
+6. Quote font names that contain spaces with double quotes.
+7. Run the tests and install the updated server package.
+
+The schema is `tailplan_themes/typography-schema.json`.
+The registry discovers `typography/*.json` without renderer edits.
+Use `TAILPLAN_TYPOGRAPHY_DIR` for additional administrator presets.
+Duplicate IDs, unknown fields, invalid font syntax, and unsupported schema versions fail validation.
+CSS declarations, URLs, escapes, and font downloads are prohibited.
+Increment the preset version when its tokens change.
+The versioned default policy is `tailplan_themes/typography-selection.json`.
+Native installers, wheels, source archives, and containers include the preset assets.
+Clients need no font assets.
+
+Browser tests cover both presets with every palette at mobile and desktop sizes.
+They verify heading, body, and code fonts, print output, and horizontal overflow.
