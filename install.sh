@@ -574,6 +574,10 @@ for source in \
   tailplan_themes/schema.json \
   tailplan_themes/selection.json \
   tailplan_themes/reading.css \
+  tailplan_themes/typography-schema.json \
+  tailplan_themes/typography-selection.json \
+  tailplan_themes/typography/serif-sans.json \
+  tailplan_themes/typography/all-sans.json \
   bin/run-tailplan \
   bin/tailplan-share \
   bin/tailplan \

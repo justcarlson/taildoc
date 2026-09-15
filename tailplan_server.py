@@ -2033,9 +2033,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         parsed_target = urlparse(self.path)
         path = self.route_path()
-        if path == "/api/themes":
+        if path in {"/api/themes", "/api/typography"}:
             try:
-                self.send_json(200, tailplan_themes.catalog())
+                self.send_json(200, tailplan_themes.catalog() if path == "/api/themes"
+                               else tailplan_themes.typography_catalog())
             except tailplan_themes.ThemeError as error:
                 self.send_json(503, {"ok": False, "error": str(error)})
             return
@@ -2161,9 +2162,10 @@ class Handler(BaseHTTPRequestHandler):
                     theme=payload.get("theme", "auto"),
                     document_type=payload.get("documentType", "document"),
                     layout=payload.get("layout", "reading"),
+                    typography=payload.get("typography"),
                 )
             else:
-                if any(key in payload for key in ("theme", "documentType", "layout", "format")):
+                if any(key in payload for key in ("theme", "documentType", "layout", "format", "typography")):
                     raise tailplan_themes.ThemeError("Theme options require Markdown or text content")
                 html_doc = payload.get("html")
             ok, errors, warnings = validate_html(html_doc)

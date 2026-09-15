@@ -28,7 +28,7 @@ py-modules = ["tailplan_server"]
 packages = ["tailplan_themes"]
 
 [tool.setuptools.package-data]
-tailplan_themes = ["*.json", "*.css", "palettes/*.json", "licenses/*.txt"]
+tailplan_themes = ["*.json", "*.css", "palettes/*.json", "typography/*.json", "licenses/*.txt"]
 
 [tool.ruff]
 line-length = 100

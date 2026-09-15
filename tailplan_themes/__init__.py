@@ -1,4 +1,4 @@
-"""Versioned document palettes, selection policy, and reading layout."""
+"""Versioned document palettes, typography, selection policy, and reading layout."""
 from __future__ import annotations
 
 import hashlib
@@ -51,7 +51,7 @@ def contrast(first, second):
 
 
 def validate_theme(theme):
-    _validate(theme, json.loads((ROOT / "schema.json").read_text()))
+    _validate(theme, _json_asset(ROOT / "schema.json"))
     tokens = theme["tokens"]
     for foreground, background in (("text", "background"), ("heading", "background"),
                                    ("accent", "background"), ("muted", "background"),
@@ -86,7 +86,7 @@ def registry(extra_dir=None):
 
 
 def policy(themes):
-    value = json.loads((ROOT / "selection.json").read_text())
+    value = _json_asset(ROOT / "selection.json")
     if value.get("schemaVersion") != 1 or set(value) != {"schemaVersion", "fallback", "documentTypes"}:
         raise ThemeError("Invalid theme selection policy")
     if not isinstance(value["documentTypes"], dict):
@@ -107,14 +107,82 @@ def resolve(theme="auto", document_type="document", *, themes=None):
     return themes[ident]
 
 
+def _asset(path):
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ThemeError(f"Missing or unreadable theme asset: {path.name}") from error
+
+
+def _json_asset(path):
+    try:
+        return json.loads(_asset(path))
+    except json.JSONDecodeError as error:
+        raise ThemeError(f"Invalid theme asset: {path.name}") from error
+
+
+def validate_typography(preset):
+    _validate(preset, _json_asset(ROOT / "typography-schema.json"), "typography")
+    return preset
+
+
+def typography_registry(extra_dir=None):
+    """Discover font presets without permitting CSS declarations or external resources."""
+    directory = ROOT / "typography"
+    for name in ("serif-sans.json", "all-sans.json"):
+        if not (directory / name).is_file():
+            raise ThemeError(f"Missing typography asset: {name}")
+    directories = [directory]
+    extra = extra_dir if extra_dir is not None else os.getenv("TAILPLAN_TYPOGRAPHY_DIR")
+    if extra:
+        if not Path(extra).is_dir():
+            raise ThemeError("Typography directory does not exist")
+        directories.append(Path(extra))
+    result = {}
+    for directory in directories:
+        for path in sorted(directory.glob("*.json")):
+            preset = validate_typography(_json_asset(path))
+            if preset["id"] in result:
+                raise ThemeError(f"Duplicate typography ID: {preset['id']}")
+            result[preset["id"]] = preset
+    return dict(sorted(result.items()))
+
+
+def typography_policy(presets):
+    rules = _json_asset(ROOT / "typography-selection.json")
+    _validate(rules, {"type": "object", "additionalProperties": False,
+                     "required": ["schemaVersion", "default"],
+                     "properties": {"schemaVersion": {"const": 1},
+                                    "default": {"type": "string"}}}, "typography selection")
+    if rules["default"] not in presets:
+        raise ThemeError("Typography policy references an unknown preset")
+    return rules
+
+
+def typography_catalog():
+    presets = typography_registry()
+    return {"ok": True, "schemaVersion": 1, "typography": list(presets.values()),
+            "typographySelection": typography_policy(presets)}
+
+
+def resolve_typography(typography=None):
+    presets = typography_registry()
+    rules = typography_policy(presets)
+    ident = rules["default"] if typography is None else typography
+    if not isinstance(ident, str) or ident not in presets:
+        raise ThemeError("Unknown typography preset. List presets with tailplan typography --json")
+    return presets[ident]
+
+
 def catalog():
     themes = registry()
-    return {"ok": True, "schemaVersion": 1, "themes": list(themes.values()),
-            "selection": policy(themes), "layouts": [{"id": "reading", "version": 1}]}
+    _asset(ROOT / "reading.css")
+    return {**typography_catalog(), "themes": list(themes.values()),
+            "selection": policy(themes), "layouts": [{"id": "reading", "version": 2}]}
 
 
 def render(content, *, format="markdown", filename="document.md", theme="auto",
-           document_type="document", layout="reading"):
+           document_type="document", layout="reading", typography=None):
     if not isinstance(content, str) or not content.strip():
         raise ThemeError("Content must be a nonempty string")
     if not isinstance(format, str) or format not in {"markdown", "text"}:
@@ -124,15 +192,18 @@ def render(content, *, format="markdown", filename="document.md", theme="auto",
     if not isinstance(filename, str):
         raise ThemeError("Filename must be a string")
     palette = resolve(theme, document_type)
-    css = (ROOT / "reading.css").read_text(encoding="utf-8")
+    css = _asset(ROOT / "reading.css")
+    fonts = resolve_typography(typography)
+    font_json = json.dumps(fonts, sort_keys=True, separators=(",", ":"))
     canonical = json.dumps(palette, sort_keys=True, separators=(",", ":"))
     frozen = {"id": palette["id"], "version": palette["version"], "schemaVersion": 1,
               "sha256": hashlib.sha256(canonical.encode()).hexdigest(),
               "tokens": dict(palette["tokens"]), "source": dict(palette["source"]),
-              "layout": layout, "layoutVersion": 1,
+              "typography": {**fonts, "sha256": hashlib.sha256(font_json.encode()).hexdigest()},
+              "layout": layout, "layoutVersion": 2,
               "layoutSha256": hashlib.sha256(css.encode()).hexdigest(),
-              "rendererVersion": 1, "documentType": document_type, "selection": theme}
-    variables = "; ".join(f"--{key}: {value}" for key, value in palette["tokens"].items())
+              "rendererVersion": 2, "documentType": document_type, "selection": theme}
+    variables = "; ".join(f"--{key}: {value}" for key, value in {**palette["tokens"], **fonts["tokens"]}.items())
     body = markdown_to_body(content) if format == "markdown" else '<div class="plain-text">' + html.escape(content) + '</div>'
     body = body.replace('<div class="table-wrap">', '<div class="table-wrap" tabindex="0" role="region" aria-label="Table">')
     body = body.replace("<pre>", '<pre tabindex="0" role="region" aria-label="Code block">')

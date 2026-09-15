@@ -63,6 +63,28 @@ An explicit theme ID overrides automatic selection.
 The only supported layout is `reading`, selected with `--layout reading`.
 Both direct and SSH clients support these commands.
 
+### User typography preference
+
+Use `serif-sans` by default, with serif headings and sans-serif body text.
+Use `all-sans` when the user requests all sans-serif typography.
+The requested alternatives are serif headings with sans-serif body, and all sans-serif.
+Do not interpret this preference as all-serif.
+Typography is independent of the color palette. Keep code monospace.
+Use system font stacks without external fonts or images.
+
+```sh
+tailplan typography --json
+tailplan-share plan.md --new --typography serif-sans
+tailplan-share notes.md --new --theme flexoki-light --typography all-sans
+```
+
+Direct, local, and SSH publication support `--typography ID`.
+The API accepts `typography` on Markdown or text uploads.
+List presets at `GET /api/typography`.
+Add presets through `tailplan_themes/typography/*.json` and its schema, as described in `docs/themes.md`.
+Each version stores resolved font tokens and a preset checksum.
+Never regenerate historical documents to change typography.
+
 The server stores resolved HTML and theme metadata in each published version.
 Palette updates do not change stored documents.
 Plain `.txt` files preserve literal markup and line breaks in the reading layout.

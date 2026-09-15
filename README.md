@@ -796,3 +796,19 @@ tests/                       Test suite and smoke test
 
 Tailplan uses the MIT License.
 Read [LICENSE](LICENSE) for the legal terms.
+
+## Choose document typography
+
+Typography is independent of the color palette.
+The default `serif-sans` preset uses Georgia headings and system sans-serif body text.
+The `all-sans` preset uses system sans-serif headings and body text.
+Code stays monospace with both presets.
+
+```sh
+tailplan typography --json
+tailplan upload plan.md --new --typography serif-sans
+tailplan-share notes.md --new --theme nord --typography all-sans
+```
+
+These commands work through direct and SSH clients.
+See [document themes](docs/themes.md#typography-presets) for API fields, preset extension, and immutable snapshots.
