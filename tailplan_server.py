@@ -2001,7 +2001,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_html(404, not_found())
             return
         version = version or draft["latestVersionNumber"]
-        title = title_from_html(doc)
+        record = draft.get("versions", {}).get(str(version), {})
+        title = (draft["title"] if version == draft["latestVersionNumber"]
+                 else title_from_html(doc, record.get("filename")))
         if match.group(3) == "preview.png":
             raw = preview_png(title, urlparse(self.base_url).hostname or "Taildoc")
             self.send_response(200)

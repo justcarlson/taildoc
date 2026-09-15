@@ -130,6 +130,19 @@ class PreviewTests(unittest.TestCase):
                 self.assertNotIn(b"https://untrusted.test/a", body)
                 self.assertIn(b"<p>unchanged</p>", body)
 
+    def test_titleless_documents_keep_latest_and_historical_filenames(self):
+        store = self.httpd.store
+        first = store.upsert('<p>First</p>', 'quarterly-report.html', None, self.httpd.base_url)
+        route = f"/d/{first['draftId']}"
+        image = self.get(route + '/v/1/preview.png')[2]
+        store.upsert('<p>Second</p>', 'annual-report.html', first['draftId'], self.httpd.base_url)
+        for suffix, expected in (('/share', 'annual-report.html'),
+                                 ('/v/1/share', 'quarterly-report.html')):
+            meta = Meta(self.get(route + suffix)[2].decode()).tags
+            self.assertEqual([expected], meta['og:title'])
+        self.assertEqual(image, self.get(route + '/v/1/preview.png')[2])
+        self.assertNotEqual(image, self.get(route + '/preview.png')[2])
+
     def test_unicode_line_separators_do_not_shift_metadata_edits(self):
         doc = '<html>\u2028\n<head><title>Résumé</title><meta property="og:image" content="old"></head><body>Keep</body></html>'
         output = server.preview_document(doc, "Résumé", "https://example.test/image.png",
