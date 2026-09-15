@@ -178,7 +178,7 @@ def catalog():
     themes = registry()
     _asset(ROOT / "reading.css")
     return {**typography_catalog(), "themes": list(themes.values()),
-            "selection": policy(themes), "layouts": [{"id": "reading", "version": 2}]}
+            "selection": policy(themes), "layouts": [{"id": "reading", "version": 3}]}
 
 
 def render(content, *, format="markdown", filename="document.md", theme="auto",
@@ -200,9 +200,9 @@ def render(content, *, format="markdown", filename="document.md", theme="auto",
               "sha256": hashlib.sha256(canonical.encode()).hexdigest(),
               "tokens": dict(palette["tokens"]), "source": dict(palette["source"]),
               "typography": {**fonts, "sha256": hashlib.sha256(font_json.encode()).hexdigest()},
-              "layout": layout, "layoutVersion": 2,
+              "layout": layout, "layoutVersion": 3,
               "layoutSha256": hashlib.sha256(css.encode()).hexdigest(),
-              "rendererVersion": 2, "documentType": document_type, "selection": theme}
+              "rendererVersion": 3, "documentType": document_type, "selection": theme}
     variables = "; ".join(f"--{key}: {value}" for key, value in {**palette["tokens"], **fonts["tokens"]}.items())
     body = markdown_to_body(content) if format == "markdown" else '<div class="plain-text">' + html.escape(content) + '</div>'
     body = body.replace('<div class="table-wrap">', '<div class="table-wrap" tabindex="0" role="region" aria-label="Table">')

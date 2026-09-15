@@ -132,7 +132,7 @@ Increase the palette version when its values change. Keep the ID stable.
 `reading.css` owns layout, code typography, mobile rules, and print rules.
 Typography presets supply heading and body font stacks.
 Palette files contain no content or layout CSS.
-The current layout ID is `reading`, version 2. Other layout IDs return an error.
+The current layout ID is `reading`, version 3. Other layout IDs return an error.
 The content parser supports escaped Markdown headings, paragraphs, links, lists, quotes, pipe tables, and fenced code.
 
 ## Validate
@@ -153,7 +153,26 @@ TAILPLAN_BROWSER_TESTS=1 python -m pytest -q tests/test_theme_browser.py
 ```
 
 Set `TAILPLAN_CHROMIUM` to use an existing Chromium executable.
-Browser tests check all palettes at 375px and 1280px, horizontal table and code scrolling, and print output.
+Browser tests check every palette and typography preset at 375px and 1280px.
+Prose table tests also cover 320px, 390px, and the 640px breakpoint on both sides.
+CI runs these browser tests in a separate required-to-pass job.
+The checks cover readable cell widths, accessible table roles, links, code scrolling, and print output.
+
+## Responsive tables
+
+Markdown tables need no extra options. At screen widths up to 640px, each row
+becomes a full-width group of labeled values. Labels use the visible header text.
+An empty header uses `Column N`. The renderer keeps one semantic table with
+column headers and hides duplicate visual labels from assistive technology.
+
+At larger widths, columns have a 12rem minimum width. Wide tables scroll inside
+the existing keyboard-accessible region instead of squeezing columns or widening
+the page. Print uses a normal table without the screen minimum widths.
+
+This behavior lives in the shared Markdown renderer and `reading.css`. All
+palettes and typography presets use it. It needs no JavaScript, content heuristics,
+new runtime packages, or client updates. Custom HTML keeps its original styles.
+Stored versions keep their original HTML; publish a new version to use the fix.
 
 ## Typography presets
 

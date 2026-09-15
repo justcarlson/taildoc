@@ -39,7 +39,7 @@ def test_palette_schema_contrast_and_deterministic_document(ident):
     assert (doc, frozen) == themes.render(KITCHEN_SINK, theme=ident)
     assert server.validate_html(doc)[0]
     assert '<script>' not in doc
-    assert '<table>' in doc and 'aria-label="Code block"><code' in doc
+    assert '<table role="table">' in doc and 'aria-label="Code block"><code' in doc
     assert frozen['tokens'] == palette['tokens']
     assert (themes.ROOT / palette['source']['licenseFile']).is_file()
 
@@ -92,7 +92,8 @@ def test_text_is_prose_with_literal_markup():
     doc, _ = themes.render('# Literal\n<script>x</script>\n**text**', format='text')
     assert '<div class="plain-text"># Literal\n&lt;script&gt;' in doc
     assert '<strong>' not in doc and '<h1>' not in doc
-    assert themes.markdown_to_body(KITCHEN_SINK) == legacy.markdown_to_body(KITCHEN_SINK)
+    # The server renderer adds responsive table markup; legacy helpers stay frozen.
+    assert themes.markdown_to_body('# Heading\n\nPlain text.') == legacy.markdown_to_body('# Heading\n\nPlain text.')
 
 
 def test_api_publication_freezes_theme_and_preserves_html(api):
