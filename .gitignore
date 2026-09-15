@@ -10,3 +10,4 @@ build/
 .env
 tailplan-data*.tar.gz
 .DS_Store
+test-results/

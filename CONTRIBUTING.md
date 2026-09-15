@@ -10,10 +10,42 @@ Do not add a test for an internal implementation detail.
 Run the required checks:
 
 ```sh
-python -m pytest -q
-bash tests/smoke.sh
-python tests/check_ste100.py
+uv sync --locked
+uv run --no-sync python -m pytest -q --ignore=tests/test_theme_browser.py
+uv run --no-sync bash tests/smoke.sh
+uv run --no-sync python tests/check_ste100.py
 ```
+
+## Verify browser changes
+
+Install both browser engines and run the same checks as CI:
+
+```sh
+uv run python -m playwright install --with-deps chromium webkit
+TAILPLAN_BROWSER_TESTS=1 uv run python -m pytest -q tests/test_theme_browser.py \
+  --browser chromium --browser webkit --tracing retain-on-failure \
+  --screenshot only-on-failure --output test-results/browser \
+  --junitxml=test-results/browser.xml
+uv run python tests/check_junit.py test-results/browser.xml --minimum 84
+```
+
+WebKit exercises the Safari engine, not an actual iPhone.
+Both engines check phone, desktop, accessible table roles, and print CSS.
+Chromium also verifies PDF generation.
+Failed tests retain screenshots and traces in CI artifacts for seven days.
+Open a trace with `uv run playwright show-trace <trace.zip>`.
+
+The `quality-gate` job requires every CI lane to pass.
+Keep this check required on the protected main branch.
+The signed release workflow runs the same CI before creating release assets.
+Unit, browser, and root-installer reports reject skipped tests.
+CI selects privileged installer tests only in the root lane.
+Hosted unprivileged runners cannot reliably create user namespaces.
+Update minimum counts only when an intentional coverage change explains the difference.
+
+The distribution lane installs wheels and source archives outside the checkout.
+It verifies all packaged assets and every palette and typography combination.
+Runtime tests must not import editable source or depend on development packages.
 
 ## Write controlled text
 

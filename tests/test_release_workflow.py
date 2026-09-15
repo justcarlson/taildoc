@@ -33,7 +33,8 @@ def test_release_assets_require_an_ssh_signed_annotated_tag() -> None:
     assert "verification.verified" not in verify
     assert "commit-sha=$tag_commit" in verify
 
-    assert "needs: verify-tag" in release
+    assert "needs: [verify-tag, quality]" in release
+    assert "uses: ./.github/workflows/ci.yml" in verify
     assert "contents: write" in release
     assert "ref: ${{ needs.verify-tag.outputs.commit-sha }}" in release
     assert "RELEASE_COMMIT: ${{ needs.verify-tag.outputs.commit-sha }}" in release
