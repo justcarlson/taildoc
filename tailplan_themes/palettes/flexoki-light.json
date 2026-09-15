@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "flexoki-light",
+  "version": 1,
+  "name": "Flexoki Light",
+  "variant": "Light",
+  "mode": "light",
+  "source": {
+    "url": "https://github.com/kepano/flexoki/blob/8d723bac4a9ac46adfdf99d42155286977aac72a/css/flexoki.css",
+    "revision": "8d723bac4a9ac46adfdf99d42155286977aac72a",
+    "license": "MIT",
+    "licenseFile": "licenses/flexoki-light.txt"
+  },
+  "tokens": {
+    "background": "#fffcf0",
+    "text": "#100f0f",
+    "heading": "#100f0f",
+    "accent": "#205ea6",
+    "surface": "#f2f0e5",
+    "border": "#dad8ce",
+    "muted": "#575653",
+    "code-background": "#f2f0e5",
+    "code-text": "#100f0f"
+  }
+}

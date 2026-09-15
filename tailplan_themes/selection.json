@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "fallback": "warm-editorial",
+  "documentTypes": {
+    "plan": "warm-editorial",
+    "report": "warm-editorial",
+    "essay": "warm-editorial",
+    "notes": "flexoki-light",
+    "reference": "solarized-light",
+    "technical": "tokyo-night"
+  }
+}

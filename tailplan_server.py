@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import tailplan_themes
 import base64
 import hashlib
 import hmac
@@ -1566,6 +1567,7 @@ class Store:
             "versionId": version_id,
             "fileSha256": sha256_text(html_doc),
             "requestId": audit.get("requestId"),
+            **({"theme": metadata["theme"]} if "theme" in metadata else {}),
         }
         if request_key:
             data["idempotency"][request_key] = {"fingerprint": fingerprint, "result": result}
@@ -2031,6 +2033,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         parsed_target = urlparse(self.path)
         path = self.route_path()
+        if path == "/api/themes":
+            try:
+                self.send_json(200, tailplan_themes.catalog())
+            except tailplan_themes.ThemeError as error:
+                self.send_json(503, {"ok": False, "error": str(error)})
+            return
         if path == "/healthz":
             self.send_json(
                 200,
@@ -2040,7 +2048,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/readyz":
             try:
                 self.store.check_ready()
-            except (StorageError, OSError) as exc:
+                tailplan_themes.catalog()
+            except (StorageError, OSError, tailplan_themes.ThemeError) as exc:
                 self.log_message("readiness storage error: %r", exc)
                 self.send_json(
                     503,
@@ -2142,7 +2151,21 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 self.send_json(400, {"ok": False, "error": "JSON payload must be an object."})
                 return
-            html_doc = payload.get("html")
+            frozen_theme = None
+            if "content" in payload:
+                if "html" in payload:
+                    raise tailplan_themes.ThemeError("Send content or html, not both")
+                html_doc, frozen_theme = tailplan_themes.render(
+                    payload["content"], format=payload.get("format", "markdown"),
+                    filename=payload.get("filename", "document.md"),
+                    theme=payload.get("theme", "auto"),
+                    document_type=payload.get("documentType", "document"),
+                    layout=payload.get("layout", "reading"),
+                )
+            else:
+                if any(key in payload for key in ("theme", "documentType", "layout", "format")):
+                    raise tailplan_themes.ThemeError("Theme options require Markdown or text content")
+                html_doc = payload.get("html")
             ok, errors, warnings = validate_html(html_doc)
             if not ok:
                 self.send_json(422, {"ok": False, "errors": errors, "warnings": warnings})
@@ -2176,7 +2199,8 @@ class Handler(BaseHTTPRequestHandler):
                 html_doc, filename, draft_id, self.base_url, request_key,
                 account_id=identity["accountId"],
                 description=clean_text(payload.get("description"), 1000),
-                metadata=upload_metadata(payload.get("metadata", {})),
+                metadata={**upload_metadata(payload.get("metadata", {})),
+                          **({"theme": frozen_theme} if frozen_theme else {})},
                 audit={"apiKeyId": identity["apiKeyId"], "sourceIp": self.source_ip(),
                        "userAgent": clean_text(self.headers.get("User-Agent")),
                        "requestId": secrets.token_hex(16)},
@@ -2185,6 +2209,8 @@ class Handler(BaseHTTPRequestHandler):
             status = 201 if created else 200
             self.send_json(status, {"ok": True, **result, "warnings": warnings,
                                     "shareUrl": result["publicUrl"] + "/share"})
+        except tailplan_themes.ThemeError as error:
+            self.send_json(422, {"ok": False, "error": str(error)})
         except (UnicodeDecodeError, json.JSONDecodeError):
             self.send_json(400, {"ok": False, "error": "Request body must be valid UTF-8 JSON."})
         except (ValueError, TypeError, UnicodeEncodeError):

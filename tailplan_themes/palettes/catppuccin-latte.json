@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "catppuccin-latte",
+  "version": 1,
+  "name": "Catppuccin",
+  "variant": "Latte",
+  "mode": "light",
+  "source": {
+    "url": "https://github.com/catppuccin/palette/blob/07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd/palette.json",
+    "revision": "07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd",
+    "license": "MIT",
+    "licenseFile": "licenses/catppuccin-latte.txt"
+  },
+  "tokens": {
+    "background": "#eff1f5",
+    "text": "#4c4f69",
+    "heading": "#8839ef",
+    "accent": "#4c4f69",
+    "surface": "#e6e9ef",
+    "border": "#bcc0cc",
+    "muted": "#5c5f77",
+    "code-background": "#e6e9ef",
+    "code-text": "#4c4f69"
+  }
+}

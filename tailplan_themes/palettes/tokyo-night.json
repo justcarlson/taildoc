@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "tokyo-night",
+  "version": 1,
+  "name": "Tokyo Night",
+  "variant": "Night",
+  "mode": "dark",
+  "source": {
+    "url": "https://github.com/folke/tokyonight.nvim/blob/cdc07ac78467a233fd62c493de29a17e0cf2b2b6/lua/tokyonight/colors/night.lua",
+    "revision": "cdc07ac78467a233fd62c493de29a17e0cf2b2b6",
+    "license": "Apache-2.0",
+    "licenseFile": "licenses/tokyo-night.txt"
+  },
+  "tokens": {
+    "background": "#1a1b26",
+    "text": "#c0caf5",
+    "heading": "#c0caf5",
+    "accent": "#7aa2f7",
+    "surface": "#24283b",
+    "border": "#565f89",
+    "muted": "#a9b1d6",
+    "code-background": "#24283b",
+    "code-text": "#c0caf5"
+  }
+}

@@ -44,6 +44,36 @@ Do not return only the path to a Markdown source file as a fallback.
 If `tailplan-share` is unavailable, run `./install-client.sh` from the repository.
 Start a new agent session after skill installation.
 
+## Built-in document themes
+
+Use the server theme system for Markdown and plain text documents.
+List installed themes before choosing a non-default palette:
+
+```sh
+tailplan themes --json
+tailplan upload /path/to/plan.md --new --theme warm-editorial
+tailplan-share /path/to/notes.md --new --theme flexoki-light
+tailplan upload /path/to/report.md --new --theme auto --document-type technical
+```
+
+Omitted theme options use automatic selection with warm editorial as the fallback.
+Types `plan`, `report`, and `essay` use warm editorial. `notes` uses Flexoki Light.
+Type `technical` uses Tokyo Night. `reference` uses Solarized Light.
+An explicit theme ID overrides automatic selection.
+The only supported layout is `reading`, selected with `--layout reading`.
+Both direct and SSH clients support these commands.
+
+The server stores resolved HTML and theme metadata in each published version.
+Palette updates do not change stored documents.
+Plain `.txt` files preserve literal markup and line breaks in the reading layout.
+Arbitrary static HTML keeps its original styles. Do not pass theme options with HTML files.
+Use HTML when the document requires a custom layout beyond the reading layout.
+Do not claim unsupported theme flags or a popularity ranking.
+For custom HTML, retain the warm cream and olive palette unless the user requests another style.
+Use a narrow reading column, generous spacing, restrained panels, and Georgia headings.
+Avoid gradients, heavy dashboard controls, or dense card grids by default.
+Adapt the layout to the material. Preserve existing drafts unless the user requests an update.
+
 ## Update a draft
 
 Update a draft only when the user requests a revision:

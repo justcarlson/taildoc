@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "solarized-light",
+  "version": 1,
+  "name": "Solarized",
+  "variant": "Light",
+  "mode": "light",
+  "source": {
+    "url": "https://github.com/altercation/solarized/blob/62f656a02f93c5190a8753159e34b385588d5ff3/README.md",
+    "revision": "62f656a02f93c5190a8753159e34b385588d5ff3",
+    "license": "MIT",
+    "licenseFile": "licenses/solarized-light.txt"
+  },
+  "tokens": {
+    "background": "#fdf6e3",
+    "text": "#073642",
+    "heading": "#073642",
+    "accent": "#073642",
+    "surface": "#eee8d5",
+    "border": "#93a1a1",
+    "muted": "#586e75",
+    "code-background": "#eee8d5",
+    "code-text": "#073642"
+  }
+}
