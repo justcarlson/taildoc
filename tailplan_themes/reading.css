@@ -19,20 +19,29 @@ pre code { padding: 0; }
 .plain-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .table-wrap { width: 100%; overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; }
-th, td { border: 1px solid var(--border); padding: 0.6rem 0.75rem; text-align: left; vertical-align: top; }
+th, td { min-width: 12rem; border: 1px solid var(--border); padding: 0.6rem 0.75rem; text-align: left; vertical-align: top; }
 th { background: var(--surface); }
+.table-cell-label { display: none; }
 hr { border: 0; border-top: 1px solid var(--border); margin: 2rem 0; }
 img, svg { max-width: 100%; height: auto; }
-@media (max-width: 640px) {
+@media screen and (max-width: 640px) {
   main { margin-top: 28px; margin-bottom: 48px; }
-  table { min-width: 36rem; }
+  /* One semantic table, reflowed by CSS. Keep headers in the accessibility tree. */
+  table, tbody, tr, th, td { display: block; width: 100%; min-width: 0; }
+  thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  thead:only-child, thead:focus-within { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
+  tbody tr { border: 1px solid var(--border); margin-bottom: 1rem; }
+  td { border: 0; text-align: left !important; }
+  td + td { border-top: 1px solid var(--border); }
+  .table-cell-label { display: block; font-weight: 600; color: var(--heading); margin-bottom: 0.25rem; }
+  .table-cell-value { display: block; }
 }
 @media print {
   :root { color-scheme: light; --background: #ffffff; --text: #000000; --heading: #000000; --accent: #000000; --surface: #ffffff; --border: #777777; --muted: #333333; --code-background: #ffffff; --code-text: #000000; }
   main { max-width: none; margin: 0; padding: 0; }
   pre, .table-wrap { overflow: visible; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-  table { min-width: 0; }
+  table, th, td { min-width: 0; }
   thead { display: table-header-group; }
   tr, blockquote { break-inside: avoid; }
   h1, h2, h3 { break-after: avoid; }

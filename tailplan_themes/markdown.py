@@ -2,6 +2,7 @@
 import html
 import re
 import urllib.parse
+from html.parser import HTMLParser
 from pathlib import Path
 
 MAX_QUOTE_DEPTH = 16
@@ -226,17 +227,35 @@ def render_table(headers: list[str], aligns: list[str], rows: list[list[str]]) -
     def normalize(row: list[str]) -> list[str]:
         return (row + [""] * col_count)[:col_count]
 
+    class HeaderText(HTMLParser):
+        """Copy visible header text, never duplicate interactive markup."""
+        def __init__(self, markup):
+            super().__init__(convert_charrefs=True)
+            self.parts = []
+            self.feed(markup)
+
+        def handle_data(self, data):
+            self.parts.append(data)
+
+    rendered_headers = [inline(value) for value in normalize(headers)]
+    labels = [html.escape(''.join(HeaderText(value).parts).strip() or f'Column {i + 1}')
+              for i, value in enumerate(rendered_headers)]
     head = "".join(
-        f"<th{cell_attr(i)}>{inline(value)}</th>" for i, value in enumerate(normalize(headers))
+        f'<th role="columnheader" scope="col"{cell_attr(i)}>{value}</th>'
+        for i, value in enumerate(rendered_headers)
     )
     body_rows = []
     for row in rows:
         cells = "".join(
-            f"<td{cell_attr(i)}>{inline(value)}</td>" for i, value in enumerate(normalize(row))
+            f'<td role="cell"{cell_attr(i)}>'
+            f'<span class="table-cell-label" aria-hidden="true">{labels[i]}</span>'
+            f'<span class="table-cell-value">{inline(value)}</span></td>'
+            for i, value in enumerate(normalize(row))
         )
-        body_rows.append(f"<tr>{cells}</tr>")
-    body = "\n<tbody>\n" + "\n".join(body_rows) + "\n</tbody>" if body_rows else ""
-    return f'<div class="table-wrap"><table>\n<thead><tr>{head}</tr></thead>{body}\n</table></div>'
+        body_rows.append(f'<tr role="row">{cells}</tr>')
+    body = '\n<tbody role="rowgroup">\n' + "\n".join(body_rows) + "\n</tbody>" if body_rows else ""
+    return (f'<div class="table-wrap"><table role="table">\n'
+            f'<thead role="rowgroup"><tr role="row">{head}</tr></thead>{body}\n</table></div>')
 
 
 def _line_text(raw_line: str) -> str:

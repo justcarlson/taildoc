@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 import pytest
+
 import tailplan_themes as themes
 
 pytestmark = pytest.mark.skipif(not os.getenv('TAILPLAN_BROWSER_TESTS'), reason='Set TAILPLAN_BROWSER_TESTS=1 for Chromium checks')
@@ -64,13 +65,12 @@ def test_reading_layout_table_code_and_print(browser, tmp_path, ident, width, ty
       return c.measureText('iii').width < c.measureText('WWW').width;
     }""")
     assert metrics['codeOverflow']
-    assert metrics['tableOverflow'] == (width == 375)
+    assert not metrics['tableOverflow']
     assert page.locator('pre').inner_text().strip() == code
     assert page.locator('table tbody tr').count() == 1
     assert page.locator('script').count() == 0
     page.locator('.table-wrap').evaluate('(e) => e.scrollLeft = 100')
-    if width == 375:
-        assert page.locator('.table-wrap').evaluate('(e) => e.scrollLeft') == 100
+    assert page.locator('.table-wrap').evaluate('(e) => e.scrollLeft') == 0
     page.emulate_media(media='print')
     assert page.locator('body').evaluate('(e) => getComputedStyle(e).backgroundColor') == 'rgb(255, 255, 255)'
     assert page.locator('body').evaluate('(e) => getComputedStyle(e).color') == 'rgb(0, 0, 0)'
@@ -84,6 +84,69 @@ def test_reading_layout_table_code_and_print(browser, tmp_path, ident, width, ty
     assert not errors
     assert not requests
     page.close()
+
+
+@pytest.mark.parametrize('width', [320, 375, 390, 640, 641, 768, 1280])
+def test_prose_tables_remain_readable(browser, width):
+    source = (Path(__file__).parent / 'fixtures/readable-tables.md').read_text()
+    page = browser.new_page(viewport={'width': width, 'height': 900})
+    try:
+        page.set_content(themes.render(source)[0])
+        metrics = page.locator('table').first.evaluate('''table => {
+          const wrap = table.parentElement;
+          return {pageWidth: document.documentElement.scrollWidth,
+            wrapWidth: wrap.clientWidth, wrapScroll: wrap.scrollWidth,
+            cells: [...table.querySelectorAll('td')].map(cell => ({
+              width: cell.getBoundingClientRect().width,
+              font: getComputedStyle(cell).fontSize,
+              label: cell.querySelector('.table-cell-label')?.textContent,
+              labelDisplay: cell.querySelector('.table-cell-label') &&
+                getComputedStyle(cell.querySelector('.table-cell-label')).display
+            }))};
+        }''')
+        assert metrics['pageWidth'] == width
+        if width <= 640:
+            assert metrics['wrapScroll'] == metrics['wrapWidth']
+            assert all(cell['width'] >= metrics['wrapWidth'] - 4 for cell in metrics['cells'])
+            assert [cell['label'] for cell in metrics['cells'][:4]] == [
+                'Host', 'Good use', 'Main risk', 'Recommendation']
+            assert all(cell['labelDisplay'] != 'none' for cell in metrics['cells'])
+        else:
+            assert all(cell['width'] >= 192 for cell in metrics['cells'])
+            assert all(cell['labelDisplay'] == 'none' for cell in metrics['cells'])
+            assert metrics['wrapScroll'] > metrics['wrapWidth']
+        assert all(cell['font'] == '17px' for cell in metrics['cells'])
+        assert page.get_by_role('table').count() == 3
+        assert page.get_by_role('columnheader', name='Good use', exact=True).count() == 1
+        assert page.get_by_role('cell', name='Laptop', exact=True).count() == 1
+        assert page.get_by_role('link', name='Read the guide').count() == 1
+        assert page.locator('.table-cell-label a').count() == 0
+        assert page.locator('td code').inner_text() == 'check --read-only'
+        # A screen-sized viewport must not accidentally activate stacked print rules.
+        page.emulate_media(media='print')
+        assert page.locator('table').first.evaluate('(e) => getComputedStyle(e).display') == 'table'
+        assert page.locator('thead').first.evaluate('(e) => getComputedStyle(e).position') == 'static'
+        assert all(value == 'none' for value in page.locator('.table-cell-label').evaluate_all(
+            '(es) => es.map(e => getComputedStyle(e).display)'))
+        assert page.locator('td').first.evaluate('(e) => getComputedStyle(e).minWidth') == '0px'
+        assert page.pdf().startswith(b'%PDF')
+    finally:
+        page.close()
+
+
+def test_header_only_tables_remain_visible_and_header_links_can_receive_focus(browser):
+    page = browser.new_page(viewport={'width': 375, 'height': 900})
+    try:
+        page.set_content(themes.render('| Name | Value |\n| --- | --- |')[0])
+        assert page.locator('thead').evaluate('(e) => getComputedStyle(e).clipPath') == 'none'
+        source = '| [Guide](https://example.com) | Value |\n| --- | --- |\n| A | B |'
+        page.set_content(themes.render(source)[0])
+        page.get_by_role('link', name='Guide').focus()
+        assert page.locator('thead').evaluate('(e) => getComputedStyle(e).clipPath') == 'none'
+        assert page.get_by_role('link', name='Guide').evaluate('(e) => e === document.activeElement')
+        assert page.evaluate('document.documentElement.scrollWidth') == 375
+    finally:
+        page.close()
 
 
 @pytest.mark.parametrize('typography', ['serif-sans', 'all-sans'])

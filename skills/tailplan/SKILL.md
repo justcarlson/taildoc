@@ -92,7 +92,11 @@ Arbitrary static HTML keeps its original styles. Do not pass theme options with 
 Use HTML when the document requires a custom layout beyond the reading layout.
 Do not claim unsupported theme flags or a popularity ranking.
 For custom HTML, retain the warm cream and olive palette unless the user requests another style.
-Use a narrow reading column, generous spacing, restrained panels, and Georgia headings.
+Use readable full-width prose on phones with modest padding. Generated Markdown
+tables automatically stack into labeled rows on screens up to 640px; larger
+screens retain readable-width columns with local scrolling. Do not rewrite
+content to work around a renderer defect. Test prose-heavy tables, not only short
+status cells. Old frozen versions and custom HTML do not inherit new layout CSS.
 Avoid gradients, heavy dashboard controls, or dense card grids by default.
 Adapt the layout to the material. Preserve existing drafts unless the user requests an update.
 
