@@ -940,6 +940,8 @@ def validate_upload_result(
         expected_public_url,
     ):
         raise ProtocolFailure()
+    if "shareUrl" in result and result["shareUrl"] != public_url.rstrip("/") + "/share":
+        raise ProtocolFailure("server returned an invalid share URL")
     version_number = result.get("versionNumber")
     if type(version_number) is not int or version_number <= 0:
         raise ProtocolFailure()
@@ -1259,7 +1261,7 @@ def _emit_success(result: dict, *, json_output: bool, stdout, stderr) -> int:
                     "publicUrl": result["publicUrl"],
                     "versionNumber": result["versionNumber"],
                     "warnings": warnings,
-                    **{key: result[key] for key in ("rawUrl", "versionId", "fileSha256", "requestId") if key in result},
+                    **{key: result[key] for key in ("rawUrl", "shareUrl", "versionId", "fileSha256", "requestId") if key in result},
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -1268,7 +1270,7 @@ def _emit_success(result: dict, *, json_output: bool, stdout, stderr) -> int:
         )
         return 0
     print("Uploaded draft" if result["versionNumber"] == 1 else "Updated draft", file=stdout)
-    print(f"URL: {result['publicUrl']}", file=stdout)
+    print(f"URL: {result.get('shareUrl') or result['publicUrl']}", file=stdout)
     if result.get("rawUrl"):
         print(f"Raw HTML: {result['rawUrl']}", file=stdout)
     print(f"Draft ID: {result['draftId']}", file=stdout)
@@ -1772,7 +1774,7 @@ def management_main(argv: list[str]) -> int:
             for draft in result["drafts"]:
                 repo = "/".join(filter(None, (draft.get("repoOrg"), draft.get("repoName")))) or "No repository"
                 print(f"{draft['title']}\n  {repo} · v{draft['latestVersionNumber']} · {draft['versionCount']} versions · {draft['updatedAt']}")
-                print(f"  {draft['publicUrl']}")
+                print(f"  {draft.get('shareUrl') or draft['publicUrl']}")
                 if draft.get("description"):
                     print(f"  {draft['description']}")
             if not result["drafts"]:

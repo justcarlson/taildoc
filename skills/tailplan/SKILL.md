@@ -27,7 +27,9 @@ The name Tailplan does not mean a checklist or an agent plan mode.
    tailplan-share /path/to/artifact.md --new
    ```
 
-8. Copy the `URL:` value from the command output.
+8. Copy the `URL:` value from the command output. It uses the automatic preview
+   page at `/d/ID/share` when the server supports it. For JSON output, prefer
+   `shareUrl` and fall back to `publicUrl`.
 9. Verify the URL with `curl -fsS` from a tailnet device.
 10. If the source material describes a change to a rendered Tailplan page, open the published page with the `agent-browser` UAT tool.
 11. Return the URL and one short description.
@@ -52,6 +54,19 @@ tailplan-share /path/to/artifact.md --draft <draft-id>
 
 Use `--new` for all other requests.
 Use the public mirror command only after the user approves public access.
+
+## Automatic link cards
+
+Share pages add Open Graph metadata and a programmatic PNG from the document title.
+No image-generation step, browser renderer, or external font service is needed.
+Existing drafts also support `/share`; fixed versions support `/v/N/share`.
+Original document, `/raw`, and `/content` routes still return exact stored bytes.
+
+The image and share page remain tailnet-private. Verify the page and image over
+HTTPS, then distinguish those checks from the receiving app actually showing a card.
+iMessage requires a preview fetcher with tailnet access. Do not enable public
+access to make a card appear without the user's approval. Cached previews in
+receiving apps can outlive a draft update or revocation.
 
 ## Manage published drafts
 
