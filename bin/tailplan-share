@@ -1029,6 +1029,7 @@ def upload(
     allow_insecure_http: bool = False,
     description: str | None = None,
     metadata: dict | None = None,
+    content_request: dict | None = None,
 ) -> dict:
     token_file = token_path or Path(os.getenv("TAILPLAN_TOKEN_FILE", str(Path.home() / ".tailplan" / "token")))
     try:
@@ -1052,6 +1053,9 @@ def upload(
         "filename": html_path.name,
         "draftId": draft_id,
     }
+    if content_request is not None:
+        payload.pop("html")
+        payload.update(content_request)
     if description is not None:
         payload["description"] = description
     if metadata is not None:
@@ -1137,8 +1141,9 @@ def _header_value(headers, name: str) -> str | None:
 
 def verify_readback(
     public_url: str,
-    expected_html: str,
+    expected_html: str | None,
     *,
+    expected_sha256: str | None = None,
     opener=None,
     timeout: float = 20,
 ) -> None:
@@ -1210,6 +1215,12 @@ def verify_readback(
     ) as error:
         raise VerificationFailure("read-back unavailable; check Tailplan connectivity and retry") from error
 
+    if expected_sha256 is not None:
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256) or hashlib.sha256(actual_bytes).hexdigest() != expected_sha256:
+            raise VerificationFailure("read-back content digest mismatch")
+        return
+    if expected_html is None:
+        raise VerificationFailure("Missing expected HTML or checksum")
     expected_bytes = expected_html.encode("utf-8")
     try:
         actual_html = actual_bytes.decode("utf-8")
@@ -1261,7 +1272,7 @@ def _emit_success(result: dict, *, json_output: bool, stdout, stderr) -> int:
                     "publicUrl": result["publicUrl"],
                     "versionNumber": result["versionNumber"],
                     "warnings": warnings,
-                    **{key: result[key] for key in ("rawUrl", "shareUrl", "versionId", "fileSha256", "requestId") if key in result},
+                    **{key: result[key] for key in ("rawUrl", "shareUrl", "versionId", "fileSha256", "requestId", "theme") if key in result},
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -1295,9 +1306,27 @@ def _publish_locked(
     allow_insecure_http: bool = False,
     description: str | None = None,
     metadata: dict | None = None,
+    theme: str | None = None,
+    document_type: str | None = None,
+    layout: str | None = None,
 ) -> int:
     resolved_source = source.expanduser().resolve()
     state_home = home or Path.home()
+    is_html = resolved_source.suffix.lower() in {".html", ".htm"}
+    if is_html and any(value is not None for value in (theme, document_type, layout)):
+        return _emit_failure("theme", "Theme options require Markdown or text input.",
+                             json_output=json_output, stdout=stdout, stderr=stderr)
+    content_request = None
+    if not is_html and uploader is None:
+        try:
+            content_request = {"content": resolved_source.read_text(encoding="utf-8"),
+                               "filename": resolved_source.name,
+                               "format": "text" if resolved_source.suffix.lower() == ".txt" else "markdown",
+                               "theme": theme or "auto", "documentType": document_type or "document",
+                               "layout": layout or "reading"}
+        except (OSError, UnicodeError):
+            return _emit_failure("file", "Cannot read UTF-8 input.", json_output=json_output,
+                                 stdout=stdout, stderr=stderr)
     try:
         html_path = build_html(resolved_source, home=state_home)
     except UnicodeError:
@@ -1370,6 +1399,7 @@ def _publish_locked(
                 base_url,
                 selected_draft_id,
                 html_doc=expected,
+                **({"content_request": content_request} if content_request is not None else {}),
                 allow_insecure_http=allow_insecure_http,
                 description=description,
                 metadata=metadata if metadata is not None else collect_provenance(resolved_source.parent),
@@ -1456,7 +1486,14 @@ def _publish_locked(
             stderr=stderr,
         )
     try:
-        verify_function(result["publicUrl"], expected)
+        if content_request is not None and verifier is None:
+            digest = result.get("fileSha256")
+            if not isinstance(digest, str):
+                raise VerificationFailure("Server omitted rendered content checksum")
+            verify_readback(result["publicUrl"] + f"/v/{result['versionNumber']}/content", None,
+                            expected_sha256=digest)
+        else:
+            verify_function(result["publicUrl"], expected)
     except VerificationFailure as error:
         return _emit_failure(
             "verification",
@@ -1484,6 +1521,9 @@ def publish(
     allow_insecure_http: bool = False,
     description: str | None = None,
     metadata: dict | None = None,
+    theme: str | None = None,
+    document_type: str | None = None,
+    layout: str | None = None,
 ) -> int:
     resolved_source = source.expanduser().resolve()
     state_home = home or Path.home()
@@ -1504,6 +1544,7 @@ def publish(
                 allow_insecure_http=allow_insecure_http,
                 description=description,
                 metadata=metadata,
+                theme=theme, document_type=document_type, layout=layout,
             )
     except OSError:
         return _emit_failure(
@@ -1527,7 +1568,7 @@ class TailplanArgumentParser(argparse.ArgumentParser):
 
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
-    if raw_argv and raw_argv[0] in {"auth", "whoami", "list", "history", "keys", "disable", "enable", "delete"}:
+    if raw_argv and raw_argv[0] in {"auth", "whoami", "list", "history", "keys", "disable", "enable", "delete", "themes"}:
         return management_main(raw_argv)
     if raw_argv and raw_argv[0] == "upload":
         raw_argv.pop(0)
@@ -1540,6 +1581,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("file", help="Path to .md, .txt, .html, or .htm file")
     parser.add_argument("--base-url", "--api-url", dest="base_url")
     parser.add_argument("--description", help="Set a stable draft description")
+    parser.add_argument("--theme", help="Theme ID or auto; list with tailplan themes")
+    parser.add_argument("--document-type", help="Deterministic selection hint, such as plan or technical")
+    parser.add_argument("--layout", help="Document layout: reading")
     parser.add_argument("--metadata-file", help="Read source provenance from a JSON file")
     parser.add_argument("--json", action="store_true", help="Emit one machine-readable JSON object")
     parser.add_argument(
@@ -1632,6 +1676,7 @@ def main(argv: list[str] | None = None) -> int:
         allow_insecure_http=args.allow_insecure_http,
         description=args.description,
         metadata=metadata,
+        theme=args.theme, document_type=args.document_type, layout=args.layout,
     )
 
 
@@ -1680,7 +1725,7 @@ def management_main(argv: list[str]) -> int:
         command.add_argument("--allow-insecure-http", action="store_true")
         return command
 
-    for name in ("whoami", "list"):
+    for name in ("whoami", "list", "themes"):
         options(commands.add_parser(name))
     for name in ("history", "disable", "enable", "delete"):
         command = options(commands.add_parser(name))
@@ -1703,7 +1748,7 @@ def management_main(argv: list[str]) -> int:
         token_path = Path(os.getenv("TAILPLAN_TOKEN_FILE", str(state / "token")))
 
         def request(path, method="GET", payload=None, token=None):
-            credential = token if token is not None else (os.getenv("TAILPLAN_API_KEY") or token_path.read_text().strip())
+            credential = "" if path == "/api/themes" else (token if token is not None else (os.getenv("TAILPLAN_API_KEY") or token_path.read_text().strip()))
             body = json.dumps(payload).encode() if payload is not None else None
             req = urllib.request.Request(base + path, data=body, method=method, headers={
                 "Authorization": "Bearer " + credential, "Content-Type": "application/json",
@@ -1745,6 +1790,8 @@ def management_main(argv: list[str]) -> int:
                     finally:
                         Path(temporary).unlink(missing_ok=True)
                 result = {"ok": True, "message": f"Logged in as {identity['accountName']}.", **identity}
+        elif args.command == "themes":
+            result = request("/api/themes")
         elif args.command == "whoami":
             result = request("/api/me")
         elif args.command == "list":

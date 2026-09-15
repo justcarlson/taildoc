@@ -49,6 +49,9 @@ def share_file(
     description: str | None = None,
     json_output: bool = False,
     metadata_path: Path | None = None,
+    theme: str | None = None,
+    document_type: str | None = None,
+    layout: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     source = source.expanduser().resolve()
     if not source.is_file():
@@ -72,6 +75,11 @@ def share_file(
         if metadata_path:
             run(["scp", "-O", "--", str(metadata_path), f"{target}:{remote_dir}/provenance.json"], check=True)
         command = ["ssh", target, "tailplan-share", remote_path]
+        for option, value in (("--theme", theme), ("--document-type", document_type), ("--layout", layout)):
+            if value is not None:
+                if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", value):
+                    raise ValueError("Invalid theme, document type, or layout")
+                command.extend([option, value])
         if new:
             command.append("--new")
         elif draft:
@@ -104,7 +112,7 @@ def main() -> int:
             return 2
         target = argv[index + 1]
         argv = argv[:index] + argv[index + 2:]
-    if argv and argv[0] in {"list", "whoami", "history", "disable", "enable", "delete", "keys"}:
+    if argv and argv[0] in {"list", "whoami", "history", "disable", "enable", "delete", "keys", "themes"}:
         try:
             validate_target(target)
             return subprocess.run(["ssh", target, "tailplan-share", *map(shlex.quote, argv)], check=False).returncode
@@ -125,6 +133,9 @@ def main() -> int:
     version = parser.add_mutually_exclusive_group()
     version.add_argument("--new", action="store_true", help="Create a fresh Tailplan draft")
     version.add_argument("--draft", help="Update a specific Tailplan draft id")
+    parser.add_argument("--theme")
+    parser.add_argument("--document-type")
+    parser.add_argument("--layout")
     parser.add_argument("--description")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -146,7 +157,8 @@ def main() -> int:
             metadata_path.write_text(json.dumps(library["collect_provenance"](source.parent)), encoding="utf-8")
             try:
                 result = share_file(source, target=args.target, new=args.new, draft=selected,
-                                    description=args.description, json_output=True, metadata_path=metadata_path)
+                                    description=args.description, json_output=True, metadata_path=metadata_path,
+                                    theme=args.theme, document_type=args.document_type, layout=args.layout)
             except subprocess.CalledProcessError as exc:
                 try:
                     stale = json.loads(exc.stdout).get("category") == "missing draft"
@@ -155,7 +167,8 @@ def main() -> int:
                 if args.draft or not selected or not stale:
                     raise
                 result = share_file(source, target=args.target, new=True, draft=None,
-                                    description=args.description, json_output=True, metadata_path=metadata_path)
+                                    description=args.description, json_output=True, metadata_path=metadata_path,
+                                    theme=args.theme, document_type=args.document_type, layout=args.layout)
             value = json.loads(result.stdout)
             if not isinstance(value, dict) or value.get("ok") is not True:
                 raise RuntimeError("Publisher returned an invalid response.")

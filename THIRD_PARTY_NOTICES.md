@@ -80,3 +80,12 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Document palettes
+
+Tailplan adapts palette colors for readable documents. Typography and layout are Tailplan code.
+The files under `tailplan_themes/licenses/` retain upstream license terms and attribution.
+Each palette JSON pins its source revision and source URL.
+Read [the variant table](docs/themes.md#built-in-variants) for supported palettes and licenses.
+Tokyo Night uses Apache-2.0. Other included upstream palettes use MIT or MIT/X11.
+Gruvbox declares MIT/X11 in its upstream README and credits morhetz in its palette source.

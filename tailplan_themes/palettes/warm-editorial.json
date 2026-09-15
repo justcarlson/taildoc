@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "warm-editorial",
+  "version": 1,
+  "name": "Warm editorial",
+  "variant": "Original",
+  "mode": "light",
+  "source": {
+    "url": "https://github.com/justcarlson/taildoc",
+    "revision": "original",
+    "license": "MIT",
+    "licenseFile": "licenses/warm-editorial.txt"
+  },
+  "tokens": {
+    "background": "#faf6ee",
+    "text": "#26352e",
+    "heading": "#26352e",
+    "accent": "#536447",
+    "surface": "#e9ecdf",
+    "border": "#d8d7c9",
+    "muted": "#536447",
+    "code-background": "#e9ecdf",
+    "code-text": "#26352e"
+  }
+}

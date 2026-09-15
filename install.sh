@@ -569,6 +569,11 @@ fi
 # The installer validates each required source file before it changes installed files.
 for source in \
   tailplan_server.py \
+  tailplan_themes/__init__.py \
+  tailplan_themes/markdown.py \
+  tailplan_themes/schema.json \
+  tailplan_themes/selection.json \
+  tailplan_themes/reading.css \
   bin/run-tailplan \
   bin/tailplan-share \
   bin/tailplan \
@@ -579,6 +584,9 @@ for source in \
 done
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tailplan-install.XXXXXX")"
 mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/skills/tailplan" "$STAGE_DIR/systemd"
+cp -a "$SCRIPT_DIR/tailplan_themes" "$STAGE_DIR/tailplan_themes"
+find "$STAGE_DIR/tailplan_themes" -type d -name __pycache__ -prune -exec rm -rf {} +
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_themes; tailplan_themes.catalog()'
 install -m 755 "$SCRIPT_DIR/tailplan_server.py" "$STAGE_DIR/tailplan_server.py"
 install -m 755 "$SCRIPT_DIR/bin/run-tailplan" "$STAGE_DIR/bin/run-tailplan"
 install -m 755 "$SCRIPT_DIR/bin/tailplan-share" "$STAGE_DIR/bin/tailplan-share"
@@ -802,6 +810,7 @@ backup_item() {
     cp -a -- "$path" "$BACKUP_DIR/files/$name"
   fi
 }
+backup_item app-themes "$APP_DIR/tailplan_themes"
 backup_item app-server "$APP_DIR/tailplan_server.py"
 backup_item app-runner "$APP_DIR/bin/run-tailplan"
 backup_item cli-share "$BIN_DIR/tailplan-share"
@@ -855,6 +864,10 @@ rollback() {
   set +e
   local rollback_failed=0
   echo "Install failed; rolling back." >&2
+  rm -rf -- "$APP_DIR/tailplan_themes"
+  if [[ -f "$BACKUP_DIR/state/app-themes.existed" ]]; then
+    cp -a -- "$BACKUP_DIR/files/app-themes" "$APP_DIR/tailplan_themes" || rollback_failed=1
+  fi
   restore_item app-server "$APP_DIR/tailplan_server.py" || rollback_failed=1
   restore_item app-runner "$APP_DIR/bin/run-tailplan" || rollback_failed=1
   restore_item cli-share "$BIN_DIR/tailplan-share" || rollback_failed=1
@@ -1018,6 +1031,10 @@ chmod 700 "$DATA_DIR" "$DATA_DIR/drafts" "$DATA_DIR/generated"
 if [[ "$INSTALL_SCOPE" == system ]]; then
   chmod 755 "$APP_DIR" "$APP_DIR/bin"
 fi
+rm -rf -- "$APP_DIR/tailplan_themes"
+cp -a "$STAGE_DIR/tailplan_themes" "$APP_DIR/tailplan_themes"
+find "$APP_DIR/tailplan_themes" -type d -exec chmod 755 {} +
+find "$APP_DIR/tailplan_themes" -type f -exec chmod 644 {} +
 install -m 755 "$STAGE_DIR/tailplan_server.py" "$APP_DIR/tailplan_server.py"
 install -m 755 "$STAGE_DIR/bin/run-tailplan" "$APP_DIR/bin/run-tailplan"
 install -m 755 "$STAGE_DIR/bin/tailplan-share" "$BIN_DIR/tailplan-share"
@@ -1185,6 +1202,7 @@ chmod 644 "$unit_tmp"
 mv -f -- "$unit_tmp" "$UNIT_FILE"
 
 if [[ "$INSTALL_SCOPE" == system ]]; then
+  chown -R root:root "$APP_DIR/tailplan_themes"
   chown root:root \
     "$APP_DIR" \
     "$APP_DIR/bin" \
@@ -1205,6 +1223,7 @@ verify_installed_file() {
   cmp -s -- "$source" "$destination" || die "Installed file checksum mismatch: $destination"
   [[ "$(stat -c '%a' "$destination")" == "$expected_mode" ]] || die "Installed file mode mismatch: $destination"
 }
+diff -r --exclude=__pycache__ "$STAGE_DIR/tailplan_themes" "$APP_DIR/tailplan_themes" >/dev/null || die "Installed theme assets mismatch."
 verify_installed_file "$STAGE_DIR/tailplan_server.py" "$APP_DIR/tailplan_server.py" 755
 verify_installed_file "$STAGE_DIR/bin/run-tailplan" "$APP_DIR/bin/run-tailplan" 755
 verify_installed_file "$STAGE_DIR/bin/tailplan-share" "$BIN_DIR/tailplan-share" 755

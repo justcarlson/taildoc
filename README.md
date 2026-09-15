@@ -7,6 +7,8 @@ Tailplan returns a URL that tailnet devices can open.
 Read [SUPPORT.md](SUPPORT.md) for compatibility and support information.
 Read [CHANGELOG.md](CHANGELOG.md) for release changes.
 
+Read [document themes](docs/themes.md) for built-in palettes, CLI/API selection, and extension instructions.
+
 ## Features
 
 - Tailplan serves each draft at `/d/<draft-id>`.

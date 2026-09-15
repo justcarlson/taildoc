@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "nord",
+  "version": 1,
+  "name": "Nord",
+  "variant": "Polar Night",
+  "mode": "dark",
+  "source": {
+    "url": "https://github.com/nordtheme/nord/blob/1cef71605416a222e57225b544540ce0fcec18d4/src/nord.scss",
+    "revision": "1cef71605416a222e57225b544540ce0fcec18d4",
+    "license": "MIT",
+    "licenseFile": "licenses/nord.txt"
+  },
+  "tokens": {
+    "background": "#2e3440",
+    "text": "#eceff4",
+    "heading": "#eceff4",
+    "accent": "#88c0d0",
+    "surface": "#3b4252",
+    "border": "#4c566a",
+    "muted": "#d8dee9",
+    "code-background": "#3b4252",
+    "code-text": "#eceff4"
+  }
+}

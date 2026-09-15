@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "dracula",
+  "version": 1,
+  "name": "Dracula",
+  "variant": "Classic",
+  "mode": "dark",
+  "source": {
+    "url": "https://github.com/dracula/dracula-theme/blob/5962daae54e4608d281cb6f4eee2349e605d9e3c/README.md",
+    "revision": "5962daae54e4608d281cb6f4eee2349e605d9e3c",
+    "license": "MIT",
+    "licenseFile": "licenses/dracula.txt"
+  },
+  "tokens": {
+    "background": "#282a36",
+    "text": "#f8f8f2",
+    "heading": "#f8f8f2",
+    "accent": "#8be9fd",
+    "surface": "#44475a",
+    "border": "#6272a4",
+    "muted": "#f8f8f2",
+    "code-background": "#44475a",
+    "code-text": "#f8f8f2"
+  }
+}

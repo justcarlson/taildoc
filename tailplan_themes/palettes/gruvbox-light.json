@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "gruvbox-light",
+  "version": 1,
+  "name": "Gruvbox",
+  "variant": "Light medium",
+  "mode": "light",
+  "source": {
+    "url": "https://github.com/morhetz/gruvbox/blob/5d15b2765f59754d7ac263c88a0f6e3e58124951/colors/gruvbox.vim",
+    "revision": "5d15b2765f59754d7ac263c88a0f6e3e58124951",
+    "license": "MIT",
+    "licenseFile": "licenses/gruvbox-light.txt"
+  },
+  "tokens": {
+    "background": "#fbf1c7",
+    "text": "#3c3836",
+    "heading": "#3c3836",
+    "accent": "#076678",
+    "surface": "#ebdbb2",
+    "border": "#bdae93",
+    "muted": "#504945",
+    "code-background": "#ebdbb2",
+    "code-text": "#3c3836"
+  }
+}
