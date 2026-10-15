@@ -18,7 +18,7 @@ def test_release_assets_require_an_ssh_signed_annotated_tag() -> None:
 
     assert "permissions:" not in prefix
     assert "contents: read" in verify
-    assert "uses: actions/checkout@v4" in verify
+    assert "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1" in verify
     assert "ref: main" in verify
     assert '"refs/heads/main:${main_ref}"' in verify
     assert '"${main_ref}:.github/release-allowed-signers"' in verify
