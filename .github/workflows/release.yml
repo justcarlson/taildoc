@@ -16,7 +16,7 @@ jobs:
       version: ${{ steps.tag.outputs.version }}
     steps:
       - name: Check out protected main
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 1
@@ -73,10 +73,10 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.verify-tag.outputs.commit-sha }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
       - run: docker build --tag tailplan:release .
@@ -91,7 +91,7 @@ jobs:
           git archive --format=tar.gz --prefix="tailplan-${version}/" --output="tailplan-${version}.tar.gz" "$RELEASE_COMMIT"
           sha256sum "tailplan-${version}.tar.gz" > "tailplan-${version}.tar.gz.sha256"
       - name: Attest release assets
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             tailplan-${{ needs.verify-tag.outputs.version }}.tar.gz
