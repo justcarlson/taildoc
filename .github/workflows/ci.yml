@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -47,8 +47,6 @@ jobs:
           if-no-files-found: error
 
   system-installer:
-    # The root installer drives systemd, useradd, and getent on the host.
-    # Keep 24.04 until the installer is checked on Ubuntu 26.04.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -76,7 +74,6 @@ jobs:
           if-no-files-found: error
 
   browser:
-    # `playwright install --with-deps` installs apt packages for this OS.
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -112,7 +109,7 @@ jobs:
           if-no-files-found: error
 
   distributions:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -139,7 +136,7 @@ jobs:
           done
 
   container:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -150,7 +147,7 @@ jobs:
   quality-gate:
     if: always()
     needs: [tests, system-installer, browser, distributions, container]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - name: Require every job to pass

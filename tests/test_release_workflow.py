@@ -1,4 +1,7 @@
 from pathlib import Path
+import re
+
+import yaml
 
 
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "release.yml"
@@ -18,7 +21,7 @@ def test_release_assets_require_an_ssh_signed_annotated_tag() -> None:
 
     assert "permissions:" not in prefix
     assert "contents: read" in verify
-    assert "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1" in verify
+    assert re.search(r"uses: actions/checkout@[0-9a-f]{40}(?:\s|$)", verify)
     assert "ref: main" in verify
     assert '"refs/heads/main:${main_ref}"' in verify
     assert '"${main_ref}:.github/release-allowed-signers"' in verify
@@ -67,12 +70,12 @@ def test_release_attests_versioned_assets_before_upload() -> None:
         "id-token: write",
         "attestations: write",
     }
-    assert "uses: actions/attest-build-provenance@v4" in release
+    assert re.search(r"uses: actions/attest-build-provenance@[0-9a-f]{40}(?:\s|$)", release)
     assert "tailplan-${{ needs.verify-tag.outputs.version }}.tar.gz" in release
     assert "tailplan-${{ needs.verify-tag.outputs.version }}.tar.gz.sha256" in release
 
     archive = release.index("git archive --format=tar.gz")
-    attest = release.index("uses: actions/attest-build-provenance@v4")
+    attest = release.index("uses: actions/attest-build-provenance@")
     upload = release.index('gh release create "$GITHUB_REF_NAME"')
     assert archive < attest < upload
 
@@ -82,4 +85,12 @@ def test_tag_verification_precedes_root_capable_builds() -> None:
 
     signature = text.index('verify-tag "$tag_ref"')
     assert signature < text.index("docker build")
-    assert signature < text.index("uses: actions/attest-build-provenance@v4")
+    assert signature < text.index("uses: actions/attest-build-provenance@")
+
+
+def test_release_actions_use_commit_pins() -> None:
+    jobs = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)["jobs"]
+    for job in jobs.values():
+        for step in job.get("steps", []):
+            if "uses" in step:
+                assert re.fullmatch(r"[\w-]+/[\w-]+@[0-9a-f]{40}", step["uses"])
