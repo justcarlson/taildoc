@@ -47,6 +47,8 @@ jobs:
           if-no-files-found: error
 
   system-installer:
+    # The root installer drives systemd, useradd, and getent on the host.
+    # Keep 24.04 until the installer is checked on Ubuntu 26.04.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -74,6 +76,7 @@ jobs:
           if-no-files-found: error
 
   browser:
+    # `playwright install --with-deps` installs apt packages for this OS.
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
