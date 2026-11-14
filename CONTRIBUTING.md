@@ -26,11 +26,12 @@ TAILPLAN_BROWSER_TESTS=1 uv run python -m pytest -q tests/test_theme_browser.py 
   --browser chromium --browser webkit --tracing retain-on-failure \
   --screenshot only-on-failure --output test-results/browser \
   --junitxml=test-results/browser.xml
-uv run python tests/check_junit.py test-results/browser.xml --minimum 84
+uv run python tests/check_junit.py test-results/browser.xml --minimum 180
 ```
 
 WebKit exercises the Safari engine, not an actual iPhone.
 Both engines check phone, desktop, accessible table roles, and print CSS.
+Every layout and server page must pass the phone contract in `docs/themes.md`.
 Chromium also verifies PDF generation.
 Failed tests retain screenshots and traces in CI artifacts for seven days.
 Open a trace with `uv run playwright show-trace <trace.zip>`.

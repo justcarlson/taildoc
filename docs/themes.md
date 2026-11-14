@@ -157,8 +157,27 @@ TAILPLAN_BROWSER_TESTS=1 python -m pytest -q tests/test_theme_browser.py
 Set `TAILPLAN_CHROMIUM` to use an existing Chromium executable.
 Browser tests check every palette and typography preset at 375px and 1280px.
 Prose table tests also cover 320px, 390px, and the 640px breakpoint on both sides.
+Phone tests render every layout in the catalog and every server page at 320px and 390px.
 CI runs these browser tests in a separate required-to-pass job.
 The checks cover readable cell widths, accessible table roles, links, code scrolling, and print output.
+
+## Phone layout contract
+
+Every layout and every server page must fit a 320px phone screen:
+
+- The page never scrolls sideways.
+- No element extends past the screen edge.
+- Only code blocks and text fields scroll sideways inside their own box.
+- Tables stack into labeled rows.
+
+A new layout must add `tests/fixtures/phone/<layout>.md` with long words, long
+links, a wide table, and long code. `test_every_layout_has_a_phone_fixture`
+fails until the fixture exists. The browser lane then renders the fixture with
+every palette and typography preset at 320px and 390px. A new server page must
+be added to `_server_pages()` in `tests/test_theme_browser.py`.
+
+Custom HTML uploads keep their own styles. The server warns when an upload has
+no viewport meta tag, because phones then show a shrunken desktop page.
 
 ## Responsive tables
 

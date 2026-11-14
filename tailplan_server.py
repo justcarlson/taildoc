@@ -32,6 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+VIEWPORT_RE = re.compile(r"<meta\b[^>]*\bname\s*=\s*['\"]?viewport\b", re.IGNORECASE)
 TITLE_RE = re.compile(
     r"<\s*title\b[^>]*>(.*?)<\s*/\s*title\s*>", re.IGNORECASE | re.DOTALL
 )
@@ -1127,6 +1128,9 @@ def validate_html(doc: object) -> tuple[bool, list[str], list[str]]:
     errors.extend(validator.errors)
     if not TITLE_RE.search(doc):
         warnings.append("No <title> found; Tailplan will use a generic title.")
+    if not VIEWPORT_RE.search(doc):
+        warnings.append("No viewport meta tag found; phones will show a shrunken desktop page. "
+                        'Add <meta name="viewport" content="width=device-width, initial-scale=1">.')
     return not errors, sorted(set(errors)), sorted(set(warnings))
 
 
@@ -2487,7 +2491,7 @@ input{font:inherit;padding:10px;border:1px solid #b6c3d5;border-radius:6px;width
 .actions{display:flex;gap:12px;flex-wrap:wrap}.actions form{margin:0}code{background:#eaf0f8;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:white;padding:16px;border:1px solid #dce3ec;border-radius:8px}
 .table-wrap{width:100%;overflow-x:auto}table{width:100%;border-collapse:collapse;background:white}th,td{text-align:left;padding:12px;border-bottom:1px solid #dce3ec;vertical-align:top}th{font-size:13px;color:#59687d}td{min-width:110px;max-width:430px;overflow-wrap:anywhere}
 .narrow{max-width:620px}details{margin:10px 0}summary{cursor:pointer}dl{display:grid;grid-template-columns:minmax(90px,1fr) 3fr;gap:6px}dt{color:#59687d}dd{margin:0;overflow-wrap:anywhere}
-@media(max-width:600px){header,main{width:calc(100% - 24px)}header{padding:12px 0}nav{gap:12px}.row{padding:14px}main{margin-top:24px}table{min-width:650px}}
+@media(max-width:600px){header,main{width:calc(100% - 24px)}header{padding:12px 0}nav{gap:12px}.row{padding:14px}main{margin-top:24px}.table-wrap table,.table-wrap tbody,.table-wrap tr,.table-wrap td{display:block;width:100%}.table-wrap thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}.table-wrap tr{border:1px solid #dce3ec;border-radius:8px;margin-bottom:12px;background:white}.table-wrap td{max-width:none;min-width:0;border-bottom:0}.table-wrap td+td{border-top:1px solid #dce3ec}.table-wrap td[data-label]::before{content:attr(data-label);display:block;font-size:13px;font-weight:600;color:#59687d}}
 """.strip()
 
 
@@ -2577,9 +2581,9 @@ def render_detail(base_url: str, session: dict, detail: dict) -> str:
         number = version["versionNumber"]
         url = draft["publicUrl"] + f"/v/{number}"
         dirty = ' <span class="badge">dirty</span>' if version.get("gitDirty") else ""
-        body += f'<tr><td>{external_link(url, "v" + str(number))}<br>{external_link(url + "/raw", "Raw HTML")}</td>'
-        body += f'<td>{esc(version.get("gitCommitSubject"))}{dirty}</td><td>{esc(version.get("gitBranch"))}<br><code>{esc((version.get("gitCommitSha") or "")[:12])}</code></td>'
-        body += f'<td>{esc(version["createdAt"][:16].replace("T", " "))} UTC</td><td>{version["fileSize"]} bytes'
+        body += f'<tr><td data-label="Version">{external_link(url, "v" + str(number))}<br>{external_link(url + "/raw", "Raw HTML")}</td>'
+        body += f'<td data-label="Commit">{esc(version.get("gitCommitSubject"))}{dirty}</td><td data-label="Ref">{esc(version.get("gitBranch"))}<br><code>{esc((version.get("gitCommitSha") or "")[:12])}</code></td>'
+        body += f'<td data-label="Published">{esc(version["createdAt"][:16].replace("T", " "))} UTC</td><td data-label="Source">{version["fileSize"]} bytes'
         if version.get("ciRunUrl"):
             body += "<br>" + external_link(version["ciRunUrl"], "CI run")
         body += '<details><summary>Audit</summary><dl>'
@@ -2599,8 +2603,8 @@ def render_keys(base_url: str, session: dict, keys: list[dict]) -> str:
     body += '<input id="name" name="name" maxlength="255" placeholder="Laptop agent" required><p><button>Generate API key</button></p></form>'
     body += '<h2>Active keys</h2><div class="table-wrap"><table><thead><tr><th>Name</th><th>Created</th><th>Last used</th><th>Action</th></tr></thead><tbody>'
     for key in keys:
-        body += f'<tr><td>{esc(key["name"])}</td><td>{esc(key["createdAt"][:16])}</td><td>{esc((key["lastUsedAt"] or "Never")[:16])}</td>'
-        body += f'<td><form method="post" action="{base}/{key["id"]}/revoke">{csrf_field(session["csrf"])}<button class="secondary">Revoke</button></form></td></tr>'
+        body += f'<tr><td data-label="Name">{esc(key["name"])}</td><td data-label="Created">{esc(key["createdAt"][:16])}</td><td data-label="Last used">{esc((key["lastUsedAt"] or "Never")[:16])}</td>'
+        body += f'<td data-label="Action"><form method="post" action="{base}/{key["id"]}/revoke">{csrf_field(session["csrf"])}<button class="secondary">Revoke</button></form></td></tr>'
     body += '</tbody></table></div>'
     return web_page("CLI setup", body, base_url, session)
 

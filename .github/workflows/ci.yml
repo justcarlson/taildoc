@@ -102,7 +102,7 @@ jobs:
           --screenshot only-on-failure --output test-results/browser
           --junitxml=test-results/browser.xml
       - name: Reject skipped or incomplete browser coverage
-        run: uv run --no-sync python tests/check_junit.py test-results/browser.xml --minimum 42
+        run: uv run --no-sync python tests/check_junit.py test-results/browser.xml --minimum 90
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

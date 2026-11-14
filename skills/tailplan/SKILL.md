@@ -92,6 +92,12 @@ Arbitrary static HTML keeps its original styles. Do not pass theme options with 
 Use HTML when the document requires a custom layout beyond the reading layout.
 Do not claim unsupported theme flags or a popularity ranking.
 For custom HTML, retain the warm cream and olive palette unless the user requests another style.
+Custom HTML must work on a phone.
+Include `<meta name="viewport" content="width=device-width, initial-scale=1">`.
+Keep the page inside a 320px screen with no sideways scroll.
+Stack wide tables and grids into one column below 640px.
+Check the published page at 390px before you share it.
+Tailplan warns when an HTML upload has no viewport meta tag.
 Use readable full-width prose on phones with modest padding. Generated Markdown
 tables automatically stack into labeled rows on screens up to 640px; larger
 screens retain readable-width columns with local scrolling. Do not rewrite
