@@ -42,7 +42,7 @@ def test_reading_layout_table_code_and_print(page, tmp_path, ident, width, typog
     assert metrics['font'] == '17px'
     assert float(metrics['line'].removesuffix('px')) == pytest.approx(26.35, abs=0.001)
     assert 'system-ui' in metrics['family']
-    assert ('Georgia' in metrics['heading']) == (typography == 'serif-sans')
+    assert ('Iowan Old Style' in metrics['heading']) == (typography == 'serif-sans')
     if typography == 'all-sans':
         assert metrics['heading'] == metrics['family']
     assert 'monospace' in page.locator('code').first.evaluate('(e) => getComputedStyle(e).fontFamily')
@@ -149,7 +149,7 @@ def test_all_heading_levels_inline_code_and_literal_text(page, typography):
         page.emulate_media(media=medium)
         families = page.locator('h1,h2,h3,h4,h5,h6').evaluate_all('(es) => es.map(e => getComputedStyle(e).fontFamily)')
         assert len(families) == 6 and len(set(families)) == 1
-        assert ('Georgia' in families[0]) == (typography == 'serif-sans')
+        assert ('Iowan Old Style' in families[0]) == (typography == 'serif-sans')
         assert all('monospace' in f for f in page.locator('code').evaluate_all('(es) => es.map(e => getComputedStyle(e).fontFamily)'))
         assert page.evaluate('document.documentElement.scrollWidth') == 375
     source = '# Literal **text**\n' + 'longword' * 120
