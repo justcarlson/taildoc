@@ -8,6 +8,7 @@ Read [SUPPORT.md](SUPPORT.md) for compatibility and support information.
 Read [CHANGELOG.md](CHANGELOG.md) for release changes.
 
 Read [document themes](docs/themes.md) for built-in palettes, CLI/API selection, and extension instructions.
+Read [briefs](docs/briefs.md) for reports on a video, podcast, article, or other source.
 
 ## Features
 

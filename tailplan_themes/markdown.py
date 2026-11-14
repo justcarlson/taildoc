@@ -318,8 +318,56 @@ def _starts_table(lines: list[str], index: int) -> tuple[list[str], list[str]] |
     return headers, aligns
 
 
-def markdown_to_body(markdown: str, *, _quote_depth: int = 0) -> str:
-    """Render a safe block-level subset of GitHub/CommonMark Markdown."""
+CALLOUT_TITLES = {"summary": "Summary", "note": "Notes", "notes": "Notes",
+                  "tip": "Tip", "warning": "Warning"}
+VERDICTS = {
+    "ok": ("supported", "checks out", "true", "confirmed", "correct", "yes"),
+    "partial": ("partly", "partly true", "partial", "mixed", "misleading", "likely",
+                "probably", "disputed"),
+    "unverified": ("unverified", "unclear", "unknown", "not checked", "unconfirmed", "open"),
+    "false": ("false", "off", "wrong", "incorrect", "no", "debunked"),
+}
+VERDICT_CLASSES = {word: kind for kind, words in VERDICTS.items() for word in words}
+
+
+def _plain_text(markup: str) -> str:
+    class Text(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.parts = []
+
+        def handle_data(self, data):
+            self.parts.append(data)
+
+    parser = Text()
+    parser.feed(markup)
+    return "".join(parser.parts).strip()
+
+
+def verdict_class(value: str) -> str:
+    key = re.sub(r"[\s.!]+$", "", _plain_text(inline(value)).lower()).strip()
+    return VERDICT_CLASSES.get(key, "other")
+
+
+def render_claims(headers: list[str], rows: list[list[str]], column: int) -> str:
+    """Render a table with a Verdict column as a list of checked claims."""
+    items = []
+    for row in rows:
+        row = (row + [""] * len(headers))[:len(headers)]
+        verdict = row[column]
+        others = [value for index, value in enumerate(row) if index != column and value]
+        claim = f'<div class="claim">{inline(others[0])}</div>' if others else ""
+        detail = "".join(f'<div class="detail">{inline(value)}</div>' for value in others[1:])
+        items.append(f'<li><span class="badge verdict-{verdict_class(verdict)}">'
+                     f'{inline(verdict)}</span><div>{claim}{detail}</div></li>')
+    return '<ul class="claims">\n' + "\n".join(items) + "\n</ul>"
+
+
+def markdown_to_body(markdown: str, *, brief: bool = False, _quote_depth: int = 0) -> str:
+    """Render a safe block-level subset of GitHub/CommonMark Markdown.
+
+    The brief layout adds callouts and verdict tables.
+    """
     raw_lines = markdown.splitlines(keepends=True)
     lines = [_line_text(raw_line) for raw_line in raw_lines]
     out: list[str] = []
@@ -361,7 +409,11 @@ def markdown_to_body(markdown: str, *, _quote_depth: int = 0) -> str:
             while index < len(lines) and lines[index].strip() and "|" in lines[index]:
                 rows.append(split_table_row(lines[index]))
                 index += 1
-            out.append(render_table(headers, aligns, rows))
+            names = [_plain_text(inline(value)).lower() for value in headers]
+            if brief and "verdict" in names:
+                out.append(render_claims(headers, rows, names.index("verdict")))
+            else:
+                out.append(render_table(headers, aligns, rows))
             continue
 
         heading = _heading(line)
@@ -395,7 +447,17 @@ def markdown_to_body(markdown: str, *, _quote_depth: int = 0) -> str:
             while index < len(lines) and _is_blockquote(lines[index]):
                 quoted.append(re.sub(r"^ {0,3}>[ \t]?", "", lines[index]))
                 index += 1
-            quote_body = markdown_to_body("\n".join(quoted), _quote_depth=_quote_depth + 1)
+            callout = re.fullmatch(r"\[!([A-Za-z]+)\][ \t]*(.*)", quoted[0].strip()) if brief else None
+            if callout is not None and callout.group(1).lower() in CALLOUT_TITLES:
+                kind = callout.group(1).lower()
+                heading = callout.group(2).strip() or CALLOUT_TITLES[kind]
+                quote_body = markdown_to_body("\n".join(quoted[1:]), brief=True,
+                                              _quote_depth=_quote_depth + 1)
+                out.append(f'<aside class="callout callout-{kind}">'
+                           f'<p class="callout-title">{inline(heading)}</p>\n{quote_body}\n</aside>')
+                continue
+            quote_body = markdown_to_body("\n".join(quoted), brief=brief,
+                                          _quote_depth=_quote_depth + 1)
             out.append(f"<blockquote>\n{quote_body}\n</blockquote>")
             continue
 

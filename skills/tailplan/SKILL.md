@@ -60,7 +60,7 @@ Omitted theme options use automatic selection with warm editorial as the fallbac
 Types `plan`, `report`, and `essay` use warm editorial. `notes` uses Flexoki Light.
 Type `technical` uses Tokyo Night. `reference` uses Solarized Light.
 An explicit theme ID overrides automatic selection.
-The only supported layout is `reading`, selected with `--layout reading`.
+Layouts are `reading` (the default) and `brief`. Select one with `--layout ID`.
 Both direct and SSH clients support these commands.
 
 ### User typography preference
@@ -99,6 +99,48 @@ content to work around a renderer defect. Test prose-heavy tables, not only shor
 status cells. Old frozen versions and custom HTML do not inherit new layout CSS.
 Avoid gradients, heavy dashboard controls, or dense card grids by default.
 Adapt the layout to the material. Preserve existing drafts unless the user requests an update.
+
+## Briefs
+
+Use the `brief` layout for a report on one source.
+The source can be a video, podcast, talk, article, paper, book, meeting, or thread.
+Read `docs/briefs.md` in the repository for the full format.
+
+1. Get the source text. For video or audio, download captions only:
+
+   ```sh
+   yt-dlp --skip-download --write-auto-subs --sub-langs 'en.*' --sub-format vtt -o src URL
+   python3 - src.en.vtt > transcript.txt <<'PY'
+   import html, re, sys
+   stamp, seen = None, []
+   for raw in open(sys.argv[1], encoding="utf-8"):
+       cue = re.match(r"(\d+):(\d\d):(\d\d)\.\d+\s+-->", raw)
+       if cue:
+           stamp = "[%d:%s:%s]" % (int(cue[1]), cue[2], cue[3])
+           continue
+       line = html.unescape(re.sub(r"<[^>]+>", "", raw)).strip()
+       if stamp and line and line not in seen[-3:]:
+           seen.append(line)
+           print(stamp, line)
+   PY
+   ```
+
+   This removes repeated auto-caption lines and keeps `[H:MM:SS]` times.
+2. Outline the source into sections. Use the real start time of each section.
+3. Check important claims against outside sources. Run this research in a subagent when one is available.
+4. Write the brief in Markdown with front matter, `## Section {at=M:SS topic=id}` headings, and callouts.
+   Put claim checks in a table with a `Verdict` column.
+5. Scan the Markdown for secrets, private hostnames, and personal data. Remove them.
+6. Publish and return the URL:
+
+   ```sh
+   tailplan-share brief.md --new --layout brief
+   ```
+
+7. Open the URL at 390px wide in light and dark palettes. Check that nothing scrolls sideways.
+
+Mark caption times as approximate in the `note` field.
+Do not invent times, quotes, or verdicts. Use `Unverified` when a check is not complete.
 
 ## Update a draft
 

@@ -1,0 +1,81 @@
+/* Brief layout. It loads after reading.css and uses the same palette and font tokens. */
+body.brief {
+  --k1: #5d6a2c; --k2: #a8701a; --k3: #a34d5f; --k4: #3f6b8f;
+  --k5: #b6412d; --k6: #2f7d74; --k7: #6d5a9c; --k8: #78736a;
+  --ok-fg: #3d5719; --ok-bg: #e4ecd0; --partial-fg: #714a06; --partial-bg: #f5e6c6;
+  --unverified-fg: #4f4c44; --unverified-bg: #e9e5da; --false-fg: #8a2617; --false-bg: #f6dbd3;
+  --other-fg: #3a3a3a; --other-bg: #ebebeb;
+}
+body.brief[data-mode="dark"] {
+  --k1: #b3bf74; --k2: #d6a046; --k3: #d27b8d; --k4: #78a3c9;
+  --k5: #e07360; --k6: #63b8ad; --k7: #ab99da; --k8: #a19c90;
+  --ok-fg: #c3d68f; --ok-bg: #2c3320; --partial-fg: #e8c27a; --partial-bg: #3a3020;
+  --unverified-fg: #c9c4b5; --unverified-bg: #302e28; --false-fg: #f2a595; --false-bg: #3f2520;
+  --other-fg: #d6d6d6; --other-bg: #333333;
+}
+body.brief main { max-width: 720px; margin: 40px auto 80px; padding: 0 16px; }
+.brief h1 { margin: 0; }
+.brief .kicker { font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0 0 0.6rem; }
+.brief .dek { font-family: var(--font-heading); font-size: 1.15rem; color: var(--muted); margin: 0.6rem 0 1.1rem; }
+.brief .facts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.brief .chip { font-size: 0.8rem; padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); }
+.brief .source { font-size: 0.85rem; font-weight: 600; padding: 6px 14px; border-radius: 999px; background: var(--accent); color: var(--background); text-decoration: none; white-space: nowrap; }
+.brief .fine { font-size: 0.8rem; color: var(--muted); margin: 0.9rem 0 0; }
+
+.brief .callout { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; margin: 2rem 0; }
+.brief .callout-title { font-family: var(--font-heading); font-weight: 600; font-size: 1.3rem; color: var(--heading); margin: 0 0 0.5rem; }
+.brief .seg .callout { border-radius: 10px; padding: 14px 16px; margin: 1rem 0; }
+.brief .seg .callout-title { font: 600 0.75rem var(--font-body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.brief .callout > :last-child { margin-bottom: 0; }
+.brief .callout p > strong:first-child { display: inline-block; font-size: 0.75rem; padding: 1px 8px; border-radius: 999px; margin-right: 6px; background: var(--background); color: var(--accent); border: 1px solid var(--border); }
+.brief .callout-warning { border-left: 4px solid var(--k5); }
+.brief blockquote { background: none; border-left: 3px solid var(--k, var(--accent)); padding: 2px 0 2px 16px; font-family: var(--font-heading); font-size: 1.1rem; font-style: italic; }
+
+.brief .ros { margin: 2.5rem 0 1rem; }
+.brief .ros h2 { margin: 0 0 0.3rem; }
+.brief .ros .sub { margin: 0 0 0.9rem; color: var(--muted); font-size: 0.85rem; }
+.brief .bar { display: flex; height: 18px; border-radius: 6px; overflow: hidden; gap: 2px; }
+.brief .bar a { display: block; height: 100%; min-width: 2px; background: var(--k, var(--accent)); }
+.brief .bar a:hover, .brief .bar a:focus-visible { filter: brightness(1.15); }
+.brief .axis { position: relative; height: 18px; font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
+.brief .axis span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.brief .axis span:first-child { transform: none; }
+.brief .axis span:last-child { transform: translateX(-100%); }
+.brief .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 0.8rem; color: var(--muted); margin: 0.8rem 0 1rem; }
+.brief .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; background: var(--k); }
+.brief .toc { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border); }
+.brief .toc li { margin: 0; border-bottom: 1px solid var(--border); }
+.brief .toc a { display: grid; grid-template-columns: 52px 1fr; gap: 10px; padding: 9px 0; color: var(--text); text-decoration: none; }
+.brief .toc a:hover .t { color: var(--accent); }
+.brief .toc .ts { font: 0.8rem/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+.brief .toc .t { border-left: 3px solid var(--k, var(--border)); padding-left: 10px; }
+
+.brief section.seg { margin-top: 3rem; scroll-margin-top: 16px; }
+.brief .seg-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; border-top: 3px solid var(--k, var(--accent)); padding-top: 12px; margin-bottom: 0.6rem; }
+.brief .seg-head h2 { margin: 0; flex: 1 1 240px; font-size: 1.45rem; }
+.brief .seg-head .n { font: 600 0.8rem var(--font-body); color: var(--muted); }
+.brief .time { font: 0.8rem ui-monospace, SFMono-Regular, Menlo, monospace; padding: 2px 8px; border-radius: 6px; background: var(--surface); border: 1px solid var(--border); color: var(--text); text-decoration: none; white-space: nowrap; }
+.brief a.time:hover { border-color: var(--accent); }
+
+.brief .claims { list-style: none; padding: 0; margin: 1rem 0; }
+.brief .claims li { display: grid; grid-template-columns: 116px 1fr; gap: 12px; margin: 0; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.brief .claims li:first-child { border-top: 1px solid var(--border); }
+.brief .claims .claim { font-weight: 600; }
+.brief .claims .detail { color: var(--muted); font-size: 0.92rem; }
+.brief .badge { font-size: 0.75rem; font-weight: 600; padding: 3px 8px; border-radius: 6px; text-align: center; align-self: start; }
+.brief .verdict-ok { color: var(--ok-fg); background: var(--ok-bg); }
+.brief .verdict-partial { color: var(--partial-fg); background: var(--partial-bg); }
+.brief .verdict-unverified { color: var(--unverified-fg); background: var(--unverified-bg); }
+.brief .verdict-false { color: var(--false-fg); background: var(--false-bg); }
+.brief .verdict-other { color: var(--other-fg); background: var(--other-bg); }
+
+@media screen and (max-width: 640px) {
+  body.brief main { margin-top: 28px; }
+  .brief .claims li { grid-template-columns: 1fr; gap: 6px; }
+  .brief .badge { justify-self: start; }
+  .brief .callout { padding: 16px; }
+}
+@media print {
+  .brief .bar a, .brief .badge, .brief .legend span::before { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .brief section.seg, .brief .claims li { break-inside: avoid; }
+}

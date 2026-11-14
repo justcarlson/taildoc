@@ -1588,7 +1588,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--theme", help="Theme ID or auto; list with tailplan themes")
     parser.add_argument("--document-type", help="Deterministic selection hint, such as plan or technical")
     parser.add_argument("--typography", help="Font preset ID; list with tailplan typography")
-    parser.add_argument("--layout", help="Document layout: reading")
+    parser.add_argument("--layout", help="Document layout: reading or brief")
     parser.add_argument("--metadata-file", help="Read source provenance from a JSON file")
     parser.add_argument("--json", action="store_true", help="Emit one machine-readable JSON object")
     parser.add_argument(

@@ -150,3 +150,27 @@ def test_all_heading_levels_inline_code_and_literal_text(page, typography):
     assert page.locator('.plain-text').inner_text() == source
     assert 'sans-serif' in page.locator('.plain-text').evaluate('(e) => getComputedStyle(e).fontFamily')
     assert page.evaluate('document.documentElement.scrollWidth') == 375
+
+
+@pytest.mark.parametrize('ident', list(themes.registry()))
+@pytest.mark.parametrize('width', [360, 390])
+def test_brief_layout_fits_a_phone(page, ident, width):
+    page.set_viewport_size({'width': width, 'height': 900})
+    source = (Path(__file__).parent / 'fixtures' / 'brief-example.md').read_text(encoding='utf-8')
+    doc, _ = themes.render(source, theme=ident, layout='brief')
+    page.set_content(doc)
+    metrics = page.evaluate('''() => {
+      const ticks = [...document.querySelectorAll('.axis span')].map(s => s.getBoundingClientRect());
+      const claim = document.querySelector('.claims li');
+      return {scroll: document.documentElement.scrollWidth,
+        padding: getComputedStyle(document.querySelector('main')).paddingLeft,
+        bar: [...document.querySelectorAll('.bar a')].every(a => a.getBoundingClientRect().width > 0),
+        ticksInside: ticks.every(r => r.left >= 0 && r.right <= innerWidth),
+        tickGaps: ticks.slice(1).map((r, i) => r.left - ticks[i].right),
+        claimColumns: getComputedStyle(claim).gridTemplateColumns.split(' ').length};
+    }''')
+    assert metrics['scroll'] == width
+    assert metrics['padding'] == '16px'
+    assert metrics['bar'] and metrics['ticksInside']
+    assert min(metrics['tickGaps']) >= 8
+    assert metrics['claimColumns'] == 1

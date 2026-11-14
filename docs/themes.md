@@ -84,7 +84,7 @@ The upstream links below identify the original projects.
 | solarized-light | Light | [Solarized](https://github.com/altercation/solarized) | MIT |
 
 These are document adaptations of upstream colors.
-All palettes share the reading layout.
+All palettes share the reading and brief layouts.
 Typography defaults to Georgia headings and system sans-serif body text.
 Only code uses a monospace font.
 The reading column is at most 690px, with 24px side padding and 17px body text at 1.55 line height.
@@ -132,7 +132,9 @@ Increase the palette version when its values change. Keep the ID stable.
 `reading.css` owns layout, code typography, mobile rules, and print rules.
 Typography presets supply heading and body font stacks.
 Palette files contain no content or layout CSS.
-The current layout ID is `reading`, version 3. Other layout IDs return an error.
+The layout IDs are `reading`, version 3, and `brief`, version 1. Other layout IDs return an error.
+`brief.css` loads after `reading.css` and adds the brief header, contents, sections, callouts, and claim badges.
+Read [briefs](briefs.md) for the brief format.
 The content parser supports escaped Markdown headings, paragraphs, links, lists, quotes, pipe tables, and fenced code.
 
 ## Validate
