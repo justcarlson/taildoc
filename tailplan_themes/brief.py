@@ -48,6 +48,13 @@ def clock(seconds: int, long_form: bool) -> str:
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
+def stamp(seconds: int, long_form: bool) -> str:
+    """Section time. Seconds stay visible unless the time is a whole minute."""
+    if long_form and seconds % 60:
+        return f"{seconds // 3600}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+    return clock(seconds, long_form)
+
+
 def duration_text(seconds: int) -> str:
     hours, minutes = seconds // 3600, round(seconds % 3600 / 60)
     if minutes == 60:
@@ -260,14 +267,14 @@ def brief_to_body(content: str) -> tuple[str, str | None]:
             head.append(f'<span class="n">{count:02d}</span>')
         head.append(f'<h2>{inline(section["heading"])}</h2>')
         if section["seconds"] is not None:
-            span = clock(section["seconds"], long_form)
+            span = stamp(section["seconds"], long_form)
             if section["end"] is not None:
-                span += "–" + clock(section["end"], long_form)
+                span += "–" + stamp(section["end"], long_form)
             if source is not None:
                 href = html.escape(deep_link(source, section["seconds"]), quote=True)
                 head.append(f'<a class="time" href="{href}" target="_blank" '
                             f'rel="noopener noreferrer" title="Open the source at '
-                            f'{clock(section["seconds"], long_form)}">{span}</a>')
+                            f'{stamp(section["seconds"], long_form)}">{span}</a>')
             else:
                 head.append(f'<span class="time">{span}</span>')
         elif section["locator"] is not None:
@@ -284,8 +291,10 @@ def run_of_show(sections, timed, topics, length, long_form) -> str:
     if length is not None and len(timed) >= 2:
         out.append('<p class="sub">Bar widths show how long each part runs. '
                    'Select a part to go to it.</p><div class="bar">')
+        if timed[0]["seconds"] > 0:
+            out.append(f'<span style="flex: {timed[0]["seconds"]}"></span>')
         for section in timed:
-            label = f'{plain(section["heading"])}, {clock(section["seconds"], long_form)}'
+            label = f'{plain(section["heading"])}, {stamp(section["seconds"], long_form)}'
             out.append(f'<a href="#{section["id"]}" title="{label}" aria-label="{label}"'
                        f' style="{section["color"]}flex: {section["end"] - section["seconds"]}"></a>')
         out.append("</div>")
@@ -300,11 +309,11 @@ def run_of_show(sections, timed, topics, length, long_form) -> str:
     out.append('<ol class="toc">')
     for section in sections:
         if section["seconds"] is not None:
-            stamp = clock(section["seconds"], long_form)
+            label_time = stamp(section["seconds"], long_form)
         else:
-            stamp = plain(section["locator"] or "")
+            label_time = plain(section["locator"] or "")
         style = f' style="{section["color"].strip()}"' if section["color"] else ""
-        out.append(f'<li><a href="#{section["id"]}"{style}><span class="ts">{stamp}'
+        out.append(f'<li><a href="#{section["id"]}"{style}><span class="ts">{label_time}'
                    f'</span><span class="t">{plain(section["heading"])}</span></a></li>')
     out.append("</ol></nav>")
     return "".join(out)

@@ -35,6 +35,7 @@ body.brief main { max-width: 720px; margin: 40px auto 80px; padding: 0 16px; }
 .brief .ros h2 { margin: 0 0 0.3rem; }
 .brief .ros .sub { margin: 0 0 0.9rem; color: var(--muted); font-size: 0.85rem; }
 .brief .bar { display: flex; height: 18px; border-radius: 6px; overflow: hidden; gap: 2px; }
+.brief .bar span { background: var(--border); }
 .brief .bar a { display: block; height: 100%; min-width: 2px; background: var(--k, var(--accent)); }
 .brief .bar a:hover, .brief .bar a:focus-visible { filter: brightness(1.15); }
 .brief .axis { position: relative; height: 18px; font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
@@ -45,7 +46,7 @@ body.brief main { max-width: 720px; margin: 40px auto 80px; padding: 0 16px; }
 .brief .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; background: var(--k); }
 .brief .toc { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border); }
 .brief .toc li { margin: 0; border-bottom: 1px solid var(--border); }
-.brief .toc a { display: grid; grid-template-columns: 52px 1fr; gap: 10px; padding: 9px 0; color: var(--text); text-decoration: none; }
+.brief .toc a { display: grid; grid-template-columns: 64px 1fr; gap: 8px; padding: 9px 0; color: var(--text); text-decoration: none; }
 .brief .toc a:hover .t { color: var(--accent); }
 .brief .toc .ts { font: 0.8rem/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
 .brief .toc .t { border-left: 3px solid var(--k, var(--border)); padding-left: 10px; }

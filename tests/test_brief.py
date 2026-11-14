@@ -143,3 +143,18 @@ def test_topic_and_verdict_colors_meet_contrast(ident):
         assert themes.contrast(values[f'{verdict}-fg'], values[f'{verdict}-bg']) >= 4.5, verdict
     for slot in range(1, brief.TOPIC_SLOTS + 1):
         assert themes.contrast(values[f'k{slot}'], palette['tokens']['background']) >= 3, (ident, slot)
+
+
+def test_long_sources_keep_seconds_in_section_times():
+    doc, _ = render(video('## One {at=0:15}\n\n## Two {at=0:45}\n\n## Three {at=10:00}\n'))
+    assert '<span class="ts">0:00:15</span>' in doc and '<span class="ts">0:10</span>' in doc
+    assert '>0:00:15–0:00:45</a>' in doc
+
+
+def test_bar_reserves_the_time_before_the_first_section():
+    doc, _ = render(video('## One {at=10:00}\n\n## Two {at=30:00}\n'))
+    bar = doc.split('<div class="bar">', 1)[1].split('</div>', 1)[0]
+    assert bar.startswith('<span style="flex: 600"></span>')
+    assert 'flex: 1200"' in bar and 'flex: 1800"' in bar
+    starts_at_zero, _ = render(video('## One {at=0:00}\n\n## Two {at=30:00}\n'))
+    assert '<div class="bar"><a ' in starts_at_zero
