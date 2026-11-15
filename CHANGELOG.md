@@ -9,6 +9,9 @@ The project uses semantic version numbers.
 - Add independent serif-heading and all-sans typography presets for every palette.
 - Support typography listing and selection through the API, direct CLI, and SSH client.
 - Freeze font metadata and CSS in each published version.
+- Add the `brief` layout for reports on one source, such as a video, podcast, article, or meeting.
+  It adds a header, a timed run-of-show bar, section links into the source, callouts, and claim badges.
+- Add a brief workflow, with caption clean-up steps, to the Tailplan skill.
 
 ## 0.3.0 - 2026-09-13
 

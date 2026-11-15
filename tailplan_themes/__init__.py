@@ -8,9 +8,12 @@ import os
 import re
 from pathlib import Path
 
+from .brief import BriefError, brief_to_body, plain
 from .markdown import markdown_to_body, title_from_content
 
 ROOT = Path(__file__).resolve().parent
+LAYOUTS = {"reading": {"version": 3, "css": ("reading.css",)},
+           "brief": {"version": 1, "css": ("reading.css", "brief.css")}}
 
 
 class ThemeError(ValueError):
@@ -176,9 +179,12 @@ def resolve_typography(typography=None):
 
 def catalog():
     themes = registry()
-    _asset(ROOT / "reading.css")
+    for spec in LAYOUTS.values():
+        for name in spec["css"]:
+            _asset(ROOT / name)
     return {**typography_catalog(), "themes": list(themes.values()),
-            "selection": policy(themes), "layouts": [{"id": "reading", "version": 3}]}
+            "selection": policy(themes),
+            "layouts": [{"id": ident, "version": spec["version"]} for ident, spec in LAYOUTS.items()]}
 
 
 def render(content, *, format="markdown", filename="document.md", theme="auto",
@@ -187,12 +193,14 @@ def render(content, *, format="markdown", filename="document.md", theme="auto",
         raise ThemeError("Content must be a nonempty string")
     if not isinstance(format, str) or format not in {"markdown", "text"}:
         raise ThemeError("Format must be markdown or text")
-    if layout != "reading":
-        raise ThemeError("Unknown layout. Supported layout: reading")
+    if not isinstance(layout, str) or layout not in LAYOUTS:
+        raise ThemeError("Unknown layout. Supported layouts: " + ", ".join(LAYOUTS))
+    if layout == "brief" and format != "markdown":
+        raise ThemeError("The brief layout requires Markdown content")
     if not isinstance(filename, str):
         raise ThemeError("Filename must be a string")
     palette = resolve(theme, document_type)
-    css = _asset(ROOT / "reading.css")
+    css = "\n".join(_asset(ROOT / name) for name in LAYOUTS[layout]["css"])
     fonts = resolve_typography(typography)
     font_json = json.dumps(fonts, sort_keys=True, separators=(",", ":"))
     canonical = json.dumps(palette, sort_keys=True, separators=(",", ":"))
@@ -200,20 +208,29 @@ def render(content, *, format="markdown", filename="document.md", theme="auto",
               "sha256": hashlib.sha256(canonical.encode()).hexdigest(),
               "tokens": dict(palette["tokens"]), "source": dict(palette["source"]),
               "typography": {**fonts, "sha256": hashlib.sha256(font_json.encode()).hexdigest()},
-              "layout": layout, "layoutVersion": 3,
+              "layout": layout, "layoutVersion": LAYOUTS[layout]["version"],
               "layoutSha256": hashlib.sha256(css.encode()).hexdigest(),
               "rendererVersion": 3, "documentType": document_type, "selection": theme}
     variables = "; ".join(f"--{key}: {value}" for key, value in {**palette["tokens"], **fonts["tokens"]}.items())
-    body = markdown_to_body(content) if format == "markdown" else '<div class="plain-text">' + html.escape(content) + '</div>'
+    title = title_from_content(Path(filename), content)
+    if layout == "brief":
+        try:
+            body, brief_title = brief_to_body(content)
+        except BriefError as error:
+            raise ThemeError(str(error)) from error
+        title = (html.unescape(plain(brief_title)) if brief_title else title)[:100]
+        body_class, file_label = f' class="brief" data-mode="{palette["mode"]}"', ""
+    else:
+        body = markdown_to_body(content) if format == "markdown" else '<div class="plain-text">' + html.escape(content) + '</div>'
+        body_class, file_label = "", f'<div class="meta">{html.escape(filename)}</div>'
     body = body.replace('<div class="table-wrap">', '<div class="table-wrap" tabindex="0" role="region" aria-label="Table">')
     body = body.replace("<pre>", '<pre tabindex="0" role="region" aria-label="Code block">')
-    title = title_from_content(Path(filename), content)
     metadata = html.escape(json.dumps(frozen, sort_keys=True, separators=(",", ":")), quote=True)
     doc = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
            '<meta name="viewport" content="width=device-width, initial-scale=1">'
            f'<meta name="tailplan-theme" content="{metadata}">'
            f'<title>{html.escape(title)}</title><style>'
            f':root {{ color-scheme: {palette["mode"]}; {variables}; }}\n{css}'
-           '</style></head><body><main>'
-           f'<div class="meta">{html.escape(filename)}</div>{body}</main></body></html>\n')
+           f'</style></head><body{body_class}><main>'
+           f'{file_label}{body}</main></body></html>\n')
     return doc, frozen
