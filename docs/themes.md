@@ -85,7 +85,7 @@ The upstream links below identify the original projects.
 
 These are document adaptations of upstream colors.
 All palettes share the reading and brief layouts.
-Typography defaults to Georgia headings and system sans-serif body text.
+Typography defaults to semibold Iowan Old Style headings and system sans-serif body text.
 Only code uses a monospace font.
 The reading column is at most 690px, with 24px side padding and 17px body text at 1.55 line height.
 
@@ -222,7 +222,7 @@ Every palette supports both built-in presets:
 
 | Stable ID | Headings | Body |
 | --- | --- | --- |
-| serif-sans | Georgia with serif fallbacks | System sans-serif |
+| serif-sans | Iowan Old Style, Palatino, Georgia | System sans-serif |
 | all-sans | System sans-serif | System sans-serif |
 
 The default is `serif-sans`. This preserves the warm editorial appearance.

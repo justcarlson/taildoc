@@ -85,6 +85,27 @@ Add presets through `tailplan_themes/typography/*.json` and its schema, as descr
 Each version stores resolved font tokens and a preset checksum.
 Never regenerate historical documents to change typography.
 
+### Hand-written HTML defaults
+
+When you write the page's CSS yourself, start from these tokens. They match the
+`serif-sans` preset and the warm editorial palette.
+
+```css
+--serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+--sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+--mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+body { font: 16px/1.6 var(--sans); }
+h1, h2, h3 { font-family: var(--serif); font-weight: 600; line-height: 1.2; }
+h1 { font-size: clamp(30px, 7vw, 44px); }
+h2 { font-size: 22px; }  /* no underline rule under h2 */
+```
+
+- Never put Georgia first in the stack, and do not use bold (700) serif headings.
+- Put an optional dek (a one-sentence summary) under the h1, in `var(--serif)`, 19px, in the muted color.
+- Put an optional kicker (13px uppercase muted text, `letter-spacing: .06em`) above the h1.
+- Use small rounded chips for metadata and a surface card for the summary.
+  Do not use bordered link boxes or blocks with a heavy left rule.
+
 The server stores resolved HTML and theme metadata in each published version.
 Palette updates do not change stored documents.
 Plain `.txt` files preserve literal markup and line breaks in the reading layout.

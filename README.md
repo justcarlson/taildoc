@@ -801,7 +801,7 @@ Read [LICENSE](LICENSE) for the legal terms.
 ## Choose document typography
 
 Typography is independent of the color palette.
-The default `serif-sans` preset uses Georgia headings and system sans-serif body text.
+The default `serif-sans` preset uses semibold Iowan Old Style headings, with Palatino and Georgia fallbacks, and system sans-serif body text.
 The `all-sans` preset uses system sans-serif headings and body text.
 Code stays monospace with both presets.
 
