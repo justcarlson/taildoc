@@ -97,10 +97,13 @@ Include `<meta name="viewport" content="width=device-width, initial-scale=1">`.
 Keep the page inside a 320px screen with no sideways scroll.
 Stack wide tables and grids into one column below 640px.
 Check the published page at 390px before you share it.
+Also check 768px and 1280px. Keep prose near 690px wide on large screens.
+Let wide tables and grids use more width on tablets and desktops.
 Tailplan warns when an HTML upload has no viewport meta tag.
 Use readable full-width prose on phones with modest padding. Generated Markdown
-tables automatically stack into labeled rows on screens up to 640px; larger
-screens retain readable-width columns with local scrolling. Do not rewrite
+tables automatically stack into labeled rows on screens up to 640px. Larger
+screens show columns at least 10rem wide, and tables widen past the text column
+up to 1104px. A table wider than that scrolls in its own box. Do not rewrite
 content to work around a renderer defect. Test prose-heavy tables, not only short
 status cells. Old frozen versions and custom HTML do not inherit new layout CSS.
 Avoid gradients, heavy dashboard controls, or dense card grids by default.

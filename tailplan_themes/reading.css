@@ -1,6 +1,6 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--background); color: var(--text); font: 17px/1.55 var(--font-body); }
-main { max-width: 738px; margin: 48px auto 72px; padding: 0 24px; }
+main { max-width: 1152px; margin: 48px auto 72px; padding: 0 24px; }
 h1, h2, h3, h4, h5, h6 { color: var(--heading); font-family: var(--font-heading); line-height: 1.2; overflow-wrap: anywhere; }
 h1 { font-size: clamp(2rem, 7vw, 2.8rem); margin: 0 0 1.2rem; }
 h2 { font-size: 1.65rem; margin: 2.2rem 0 0.8rem; }
@@ -24,9 +24,14 @@ th { background: var(--surface); }
 .table-cell-label { display: none; }
 hr { border: 0; border-top: 1px solid var(--border); margin: 2rem 0; }
 img, svg { max-width: 100%; height: auto; }
+/* Prose keeps a 690px measure at every width. From tablet up, tables may widen to
+   1104px and stay centered on the text column, so wide tables fit on a desktop. */
+main > * { max-width: 690px; margin-left: auto; margin-right: auto; }
+main > .table-wrap { width: max-content; min-width: min(100%, 690px); max-width: min(100%, 1104px); margin-left: auto; margin-right: auto; }
 @media screen and (max-width: 640px) {
   main { margin-top: 28px; margin-bottom: 48px; }
   /* One semantic table, reflowed by CSS. Keep headers in the accessibility tree. */
+  main > .table-wrap { width: 100%; min-width: 0; max-width: 690px; }
   table, tbody, tr, th, td { display: block; width: 100%; min-width: 0; }
   thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   thead:only-child, thead:focus-within { position: static; width: auto; height: auto; overflow: visible; clip-path: none; }
@@ -36,9 +41,13 @@ img, svg { max-width: 100%; height: auto; }
   .table-cell-label { display: block; font-weight: 600; color: var(--heading); margin-bottom: 0.25rem; }
   .table-cell-value { display: block; }
 }
+@media screen and (min-width: 641px) and (max-width: 1199px) {
+  th, td { min-width: 10rem; }
+}
 @media print {
   :root { color-scheme: light; --background: #ffffff; --text: #000000; --heading: #000000; --accent: #000000; --surface: #ffffff; --border: #777777; --muted: #333333; --code-background: #ffffff; --code-text: #000000; }
   main { max-width: none; margin: 0; padding: 0; }
+  main > *, main > .table-wrap { width: auto; min-width: 0; max-width: none; }
   pre, .table-wrap { overflow: visible; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   table, th, td { min-width: 0; }

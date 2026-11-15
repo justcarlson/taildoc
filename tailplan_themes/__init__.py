@@ -12,7 +12,7 @@ from .brief import BriefError, brief_to_body, plain
 from .markdown import markdown_to_body, title_from_content
 
 ROOT = Path(__file__).resolve().parent
-LAYOUTS = {"reading": {"version": 3, "css": ("reading.css",)},
+LAYOUTS = {"reading": {"version": 4, "css": ("reading.css",)},
            "brief": {"version": 1, "css": ("reading.css", "brief.css")}}
 
 
@@ -210,7 +210,7 @@ def render(content, *, format="markdown", filename="document.md", theme="auto",
               "typography": {**fonts, "sha256": hashlib.sha256(font_json.encode()).hexdigest()},
               "layout": layout, "layoutVersion": LAYOUTS[layout]["version"],
               "layoutSha256": hashlib.sha256(css.encode()).hexdigest(),
-              "rendererVersion": 3, "documentType": document_type, "selection": theme}
+              "rendererVersion": 4, "documentType": document_type, "selection": theme}
     variables = "; ".join(f"--{key}: {value}" for key, value in {**palette["tokens"], **fonts["tokens"]}.items())
     title = title_from_content(Path(filename), content)
     if layout == "brief":

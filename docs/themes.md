@@ -132,7 +132,7 @@ Increase the palette version when its values change. Keep the ID stable.
 `reading.css` owns layout, code typography, mobile rules, and print rules.
 Typography presets supply heading and body font stacks.
 Palette files contain no content or layout CSS.
-The layout IDs are `reading`, version 3, and `brief`, version 1. Other layout IDs return an error.
+The layout IDs are `reading`, version 4, and `brief`, version 1. Other layout IDs return an error.
 `brief.css` loads after `reading.css` and adds the brief header, contents, sections, callouts, and claim badges.
 Read [briefs](briefs.md) for the brief format.
 The content parser supports escaped Markdown headings, paragraphs, links, lists, quotes, pipe tables, and fenced code.
@@ -155,9 +155,10 @@ TAILPLAN_BROWSER_TESTS=1 python -m pytest -q tests/test_theme_browser.py
 ```
 
 Set `TAILPLAN_CHROMIUM` to use an existing Chromium executable.
-Browser tests check every palette and typography preset at 375px and 1280px.
-Prose table tests also cover 320px, 390px, and the 640px breakpoint on both sides.
+Browser tests check every palette and typography preset at 375px, 768px, 1024px, 1280px, and 1920px.
+Prose table tests also cover 320px, 390px, and both sides of the 640px and 1200px breakpoints.
 Phone tests render every layout in the catalog and every server page at 320px and 390px.
+Tablet and desktop tests render them at 768px, 1024px, 1280px, and 1920px.
 CI runs these browser tests in a separate required-to-pass job.
 The checks cover readable cell widths, accessible table roles, links, code scrolling, and print output.
 
@@ -175,6 +176,25 @@ links, a wide table, and long code. `test_every_layout_has_a_phone_fixture`
 fails until the fixture exists. The browser lane then renders the fixture with
 every palette and typography preset at 320px and 390px. A new server page must
 be added to `_server_pages()` in `tests/test_theme_browser.py`.
+
+## Tablet and desktop layout contract
+
+The reading layout has three ranges:
+
+| Range | Widths | Tables |
+| --- | --- | --- |
+| Phone | up to 640px | Rows stack into labeled values. |
+| Tablet | 641px to 1199px | Columns are at least 10rem wide. |
+| Desktop | 1200px and wider | Columns are at least 12rem wide. |
+
+Prose keeps a 690px text column at every width. From 641px, a table can become
+wider than the text column, up to 1104px, and stays centered on it. Four prose
+columns fit from 768px. Five columns fit from 1024px. A table that is wider than
+the screen scrolls inside its own focusable box. The page never scrolls sideways.
+
+Every layout and every server page must pass the phone checks at 768px, 1024px,
+1280px, and 1920px. At 768px, a table box can scroll sideways. From 1024px, the
+5-column fixture must fit. Layout prose must stay 690px or narrower.
 
 Custom HTML uploads keep their own styles. The server warns when an upload has
 no viewport meta tag, because phones then show a shrunken desktop page.
