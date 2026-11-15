@@ -30,6 +30,18 @@ uv run python tests/check_junit.py test-results/browser.xml --minimum 180
 ```
 
 WebKit exercises the Safari engine, not an actual iPhone.
+
+Playwright builds its browsers for Ubuntu.
+On other Linux hosts, such as Arch, WebKit cannot start.
+Run that lane in the official Playwright image instead:
+
+```sh
+scripts/browser-container.sh webkit
+```
+
+The script uses the Playwright version from `uv.lock` and Docker.
+Set `CONTAINER_ENGINE=podman` to use Podman.
+Results go to `test-results/browser-webkit/`.
 Both engines check phone, desktop, accessible table roles, and print CSS.
 Every layout and server page must pass the phone contract in `docs/themes.md`.
 Chromium also verifies PDF generation.
