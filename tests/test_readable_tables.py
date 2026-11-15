@@ -50,6 +50,6 @@ def test_multiple_tables_have_no_identifier_collisions_or_extra_cells():
     assert doc.count('role="cell"') == 4
     assert 'ignored' not in doc
     assert Labels(doc).labels == ['Name', 'Value'] * 2
-    assert metadata['layoutVersion'] == metadata['rendererVersion'] == 3
-    assert themes.catalog()['layouts'] == [{'id': 'reading', 'version': 3}, {'id': 'brief', 'version': 1}]
+    assert metadata['layoutVersion'] == metadata['rendererVersion'] == 4
+    assert themes.catalog()['layouts'] == [{'id': 'reading', 'version': 4}, {'id': 'brief', 'version': 1}]
     assert server.validate_html(doc)[0]

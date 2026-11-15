@@ -11,7 +11,7 @@ pytestmark = pytest.mark.skipif(not os.getenv('TAILPLAN_BROWSER_TESTS'), reason=
 
 
 @pytest.mark.parametrize('ident', list(themes.registry()))
-@pytest.mark.parametrize('width', [375, 1280])
+@pytest.mark.parametrize('width', [375, 768, 1024, 1280, 1920])
 @pytest.mark.parametrize('typography', ['serif-sans', 'all-sans'])
 def test_reading_layout_table_code_and_print(page, tmp_path, ident, width, typography):
     page.set_viewport_size({'width':width, 'height':900})
@@ -28,7 +28,7 @@ def test_reading_layout_table_code_and_print(page, tmp_path, ident, width, typog
       const table = document.querySelector('.table-wrap');
       const code = document.querySelector('pre');
       return {width: innerWidth, scroll: document.documentElement.scrollWidth,
-        column: main.clientWidth - 48, padding: getComputedStyle(main).paddingLeft,
+        column: document.querySelector('p').getBoundingClientRect().width, padding: getComputedStyle(main).paddingLeft,
         font: getComputedStyle(document.body).fontSize,
         family: getComputedStyle(document.body).fontFamily,
         heading: getComputedStyle(document.querySelector('h1')).fontFamily,
@@ -76,7 +76,7 @@ def test_reading_layout_table_code_and_print(page, tmp_path, ident, width, typog
     assert not requests
 
 
-@pytest.mark.parametrize('width', [320, 375, 390, 640, 641, 768, 1280])
+@pytest.mark.parametrize('width', [320, 375, 390, 640, 641, 768, 1024, 1199, 1200, 1280, 1920])
 def test_prose_tables_remain_readable(page, width):
     source = (Path(__file__).parent / 'fixtures/readable-tables.md').read_text()
     page.set_viewport_size({'width': width, 'height': 900})
@@ -101,9 +101,15 @@ def test_prose_tables_remain_readable(page, width):
             'Host', 'Good use', 'Main risk', 'Recommendation']
         assert all(cell['labelDisplay'] != 'none' for cell in metrics['cells'])
     else:
-        assert all(cell['width'] >= 192 for cell in metrics['cells'])
+        # Tablet columns are at least 10rem, desktop columns at least 12rem.
+        assert all(cell['width'] >= (192 if width >= 1200 else 160) for cell in metrics['cells'])
         assert all(cell['labelDisplay'] == 'none' for cell in metrics['cells'])
-        assert metrics['wrapScroll'] > metrics['wrapWidth']
+        # Tables widen past the 690px text column, up to 1104px, centered on it.
+        assert metrics['wrapWidth'] == min(width - 48, 1104)
+        assert all(abs(center - width / 2) <= 1 for center in page.locator('.table-wrap').evaluate_all(
+            '(ws) => ws.map(w => (w.getBoundingClientRect().left + w.getBoundingClientRect().right) / 2)'))
+        # Four prose columns fit from tablet portrait up; narrower screens scroll locally.
+        assert (metrics['wrapScroll'] > metrics['wrapWidth']) == (width < 768)
     assert all(cell['font'] == '17px' for cell in metrics['cells'])
     assert page.get_by_role('table').count() == 3
     assert page.get_by_role('columnheader', name='Good use', exact=True).count() == 1
@@ -257,3 +263,42 @@ def test_server_tables_stack_with_labels_on_a_phone(page, name):
     assert label.strip('"') in {'Version', 'Name'}
     page.set_viewport_size({'width': 1280, 'height': 800})
     assert page.locator('table').evaluate('(e) => getComputedStyle(e).display') == 'table'
+
+
+# Tablet and desktop: the same checks, except that a table wider than the screen
+# may scroll inside its own focusable box. The 5-column fixture fits from 1024px up.
+TABLET_WIDTHS = [768, 1024]
+DESKTOP_WIDTHS = [1280, 1920]
+
+
+def assert_fits_screen(page, doc, width, measure=None):
+    page.set_viewport_size({'width': width, 'height': 900})
+    page.set_content(doc)
+    result = page.evaluate(PHONE_CHECK)
+    assert 'width=device-width' in result['viewport']
+    assert result['scroll'] == width, result
+    assert not result['escaped'], result
+    allowed = {'DIV.table-wrap'} if width < 1024 else set()
+    assert not set(result['sideways']) - allowed, result
+    text = page.evaluate("""() => [...document.querySelectorAll('main > p, main > ul, main > ol, main > blockquote')]
+      .map(e => e.getBoundingClientRect().width)""")
+    # Document prose keeps a readable measure on wide screens.
+    assert measure is None or all(w <= measure for w in text), text
+
+
+@pytest.mark.parametrize('layout', [item['id'] for item in themes.catalog()['layouts']])
+@pytest.mark.parametrize('ident', list(themes.registry()))
+@pytest.mark.parametrize('width', TABLET_WIDTHS + DESKTOP_WIDTHS)
+def test_every_layout_fits_tablet_and_desktop(page, layout, ident, width):
+    source = (PHONE_FIXTURES / f'{layout}.md').read_text()
+    doc, _ = themes.render(source, theme=ident, layout=layout)
+    assert_fits_screen(page, doc, width, measure=690)
+
+
+@pytest.mark.parametrize('name', list(_server_pages()))
+@pytest.mark.parametrize('width', TABLET_WIDTHS + DESKTOP_WIDTHS)
+def test_server_pages_fit_tablet_and_desktop(page, name, width):
+    assert_fits_screen(page, _server_pages()[name], width)
+    # Server tables stack only on phones.
+    if page.locator('table').count():
+        assert page.locator('table').first.evaluate('(e) => getComputedStyle(e).display') == 'table'

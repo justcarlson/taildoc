@@ -15,6 +15,8 @@ The project uses semantic version numbers.
 - Stack the version history and API key tables into labeled rows on phones.
 - Warn when an uploaded HTML document has no viewport meta tag.
 - Require every layout and server page to pass a 320px and 390px phone check in CI.
+- Let reading-layout tables widen to 1104px on tablets and desktops, so wide tables fit without sideways scroll.
+- Require every layout and server page to pass tablet and desktop checks at 768px, 1024px, 1280px, and 1920px.
 
 ## 0.3.0 - 2026-09-13
 
