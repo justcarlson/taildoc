@@ -11,13 +11,17 @@ engine=${CONTAINER_ENGINE:-docker}
 version=$(awk '/^name = "playwright"$/ { getline; gsub(/"/, "", $3); print $3; exit }' "$root/uv.lock")
 [ -n "$version" ] || { echo "playwright version not found in uv.lock" >&2; exit 1; }
 
+# Rootless Podman maps --user to a subordinate id; keep-id maps it to the host user.
+userns=
+case $(basename "$engine") in podman*) userns=--userns=keep-id ;; esac
+
 out="$root/test-results/browser-$browser"
 rm -rf "$out"
 mkdir -p "$out"
 
 # The source mount is read-only, so the container builds from a private copy.
-# shellcheck disable=SC2016 # The inner script expands its own variables.
-exec $engine run --rm --ipc=host --user "$(id -u):$(id -g)" \
+# shellcheck disable=SC2016,SC2086 # The inner script expands its own variables; $userns may be empty.
+exec $engine run --rm --ipc=host $userns --user "$(id -u):$(id -g)" \
   -e HOME=/tmp -e UV_CACHE_DIR=/tmp/uv -e TAILPLAN_BROWSER_TESTS=1 \
   -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
   -v "$root:/src:ro" -v "$out:/out" \
