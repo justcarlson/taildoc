@@ -12,6 +12,9 @@ The project uses semantic version numbers.
 - Add the `brief` layout for reports on one source, such as a video, podcast, article, or meeting.
   It adds a header, a timed run-of-show bar, section links into the source, callouts, and claim badges.
 - Add a brief workflow, with caption clean-up steps, to the Tailplan skill.
+- Stack the version history and API key tables into labeled rows on phones.
+- Warn when an uploaded HTML document has no viewport meta tag.
+- Require every layout and server page to pass a 320px and 390px phone check in CI.
 
 ## 0.3.0 - 2026-09-13
 

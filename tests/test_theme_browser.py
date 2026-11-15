@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import tailplan_server as server
 import tailplan_themes as themes
 
 pytestmark = pytest.mark.skipif(not os.getenv('TAILPLAN_BROWSER_TESTS'), reason='Set TAILPLAN_BROWSER_TESTS=1 for browser checks')
@@ -174,3 +175,85 @@ def test_brief_layout_fits_a_phone(page, ident, width):
     assert metrics['bar'] and metrics['ticksInside']
     assert min(metrics['tickGaps']) >= 8
     assert metrics['claimColumns'] == 1
+
+
+# Every layout in the catalog and every server page must fit a phone.
+# A new layout needs tests/fixtures/phone/<layout>.md (enforced in test_themes.py).
+PHONE_WIDTHS = [320, 390]
+PHONE_FIXTURES = Path(__file__).parent / 'fixtures' / 'phone'
+PHONE_CHECK = """() => {
+  const width = innerWidth, escaped = [], sideways = [];
+  const scrolls = (e) => ['auto', 'scroll', 'hidden', 'clip'].includes(getComputedStyle(e).overflowX);
+  for (const el of document.body.querySelectorAll('*')) {
+    const box = el.getBoundingClientRect();
+    if (!box.width || !box.height) continue;
+    let parent = el.parentElement, contained = false;
+    for (; parent && parent !== document.body; parent = parent.parentElement) if (scrolls(parent)) { contained = true; break; }
+    if (!contained && (box.right > width + 1 || box.left < -1)) escaped.push(`${el.tagName} ${Math.round(box.left)}..${Math.round(box.right)}`);
+    if (!['PRE', 'INPUT', 'TEXTAREA'].includes(el.tagName) && el.clientWidth > 1 && scrolls(el) && el.scrollWidth > el.clientWidth + 1) sideways.push(el.tagName + '.' + el.className);
+  }
+  return {scroll: document.documentElement.scrollWidth, escaped: escaped.slice(0, 5), sideways,
+    viewport: document.querySelector('meta[name=viewport]')?.content || ''};
+}"""
+
+
+def assert_fits_phone(page, doc, width):
+    page.set_viewport_size({'width': width, 'height': 800})
+    page.set_content(doc)
+    result = page.evaluate(PHONE_CHECK)
+    assert 'width=device-width' in result['viewport']
+    assert result['scroll'] == width, result
+    assert not result['escaped'], result
+    # Only code blocks and text fields may scroll sideways on a phone. Tables stack; text wraps.
+    assert not result['sideways'], result
+
+
+@pytest.mark.parametrize('layout', [item['id'] for item in themes.catalog()['layouts']])
+@pytest.mark.parametrize('ident', list(themes.registry()))
+@pytest.mark.parametrize('typography', ['serif-sans', 'all-sans'])
+@pytest.mark.parametrize('width', PHONE_WIDTHS)
+def test_every_layout_fits_a_phone(page, layout, ident, typography, width):
+    source = (PHONE_FIXTURES / f'{layout}.md').read_text()
+    doc, _ = themes.render(source, theme=ident, layout=layout, typography=typography)
+    assert_fits_phone(page, doc, width)
+
+
+def _server_pages():
+    base = 'https://tailnet.example/tailplan'
+    link = base + '/' + 'a' * 120
+    session = {'csrf': 'c' * 40, 'accountName': 'someone-with-a-long-login-name@example.com'}
+    draft = {'draftId': 'd1', 'title': 'Draft ' + 'title ' * 12, 'description': 'Description ' * 20,
+             'shareUrl': base + '/d/d1/share', 'rawUrl': base + '/d/d1/raw', 'publicUrl': base + '/d/d1',
+             'disabled': False, 'disabledReason': '', 'latestVersionNumber': 2, 'versionCount': 2,
+             'updatedAt': '2026-11-14T10:00:00Z', 'repoHost': 'github.com', 'repoOrg': 'org', 'repoName': 'repo'}
+    version = {'versionNumber': 1, 'gitCommitSubject': 'fix: a long commit subject ' * 3, 'gitDirty': True,
+               'gitBranch': 'feature/a-very-long-branch-name-without-breaks', 'gitCommitSha': 'a' * 40,
+               'createdAt': '2026-11-14T10:00:00Z', 'fileSize': 12345, 'ciRunUrl': link,
+               'fileSha256': 'b' * 64, 'requestId': 'r' * 32}
+    key = {'id': 'k1', 'name': 'Laptop agent ' * 3, 'createdAt': '2026-11-14T10:00:00Z', 'lastUsedAt': None}
+    return {
+        'home': server.home(base),
+        'not-found': server.not_found(),
+        'login': server.render_login(base, 'c' * 40, '/dashboard', True),
+        'dashboard': server.render_dashboard(base, session, [draft, dict(draft, repoOrg=None, repoName=None, disabled=True)]),
+        'detail': server.render_detail(base, session, {'draft': draft, 'versions': [version, dict(version, versionNumber=2)]}),
+        'keys': server.render_keys(base, session, [key]),
+        'new-key': server.render_key(base, session, {'apiKey': {'name': 'Laptop'}, 'token': 'tp_' + 'z' * 60}),
+    }
+
+
+@pytest.mark.parametrize('name', list(_server_pages()))
+@pytest.mark.parametrize('width', PHONE_WIDTHS)
+def test_server_pages_fit_a_phone(page, name, width):
+    assert_fits_phone(page, _server_pages()[name], width)
+
+
+@pytest.mark.parametrize('name', ['detail', 'keys'])
+def test_server_tables_stack_with_labels_on_a_phone(page, name):
+    page.set_viewport_size({'width': 390, 'height': 800})
+    page.set_content(_server_pages()[name])
+    assert page.locator('table').evaluate('(e) => getComputedStyle(e).display') == 'block'
+    label = page.locator('tbody td').first.evaluate("(e) => getComputedStyle(e, '::before').content")
+    assert label.strip('"') in {'Version', 'Name'}
+    page.set_viewport_size({'width': 1280, 'height': 800})
+    assert page.locator('table').evaluate('(e) => getComputedStyle(e).display') == 'table'

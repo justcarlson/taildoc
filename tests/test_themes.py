@@ -217,3 +217,26 @@ def test_schema_rejects_css_injection():
     palette['tokens']['accent'] = '#000000; background: url(https://example.com)'
     with pytest.raises(themes.ThemeError):
         themes.validate_theme(palette)
+
+
+PHONE_FIXTURES = Path(__file__).parent / 'fixtures' / 'phone'
+
+
+@pytest.mark.parametrize('layout', [item['id'] for item in themes.catalog()['layouts']])
+def test_every_layout_has_a_phone_fixture(layout):
+    """A new layout must ship a hostile phone fixture so the browser lane checks it."""
+    fixture = PHONE_FIXTURES / f'{layout}.md'
+    assert fixture.is_file(), f'Add {fixture.relative_to(Path(__file__).parent.parent)} for the phone check'
+    doc, _ = themes.render(fixture.read_text(), layout=layout)
+    assert '<meta name="viewport" content="width=device-width, initial-scale=1">' in doc
+    _ok, _errors, warnings = server.validate_html(doc)
+    assert not [item for item in warnings if 'viewport' in item]
+
+
+def test_custom_html_without_viewport_gets_a_warning():
+    ok, errors, warnings = server.validate_html('<!doctype html><title>x</title><p>hi</p>')
+    assert ok and not errors
+    assert any('viewport' in item for item in warnings)
+    ok, _errors, warnings = server.validate_html(
+        '<!doctype html><meta name=viewport content="width=device-width"><title>x</title><p>hi</p>')
+    assert ok and not warnings
