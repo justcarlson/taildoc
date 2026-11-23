@@ -60,7 +60,8 @@ Both upload commands accept `--slug`, `--description`, `--json`, and `--api-url`
 The CLI collects Git repository, branch, commit, dirty state, and supported CI metadata from the source directory.
 An update retains the description and slug when those options are omitted.
 `--metadata-file FILE` supplies a JSON object instead of automatic metadata collection.
-Per-draft bindings are stored under `~/.tailplan/drafts/` with read-only fallback to legacy `drafts.json`.
+Per-draft bindings are stored as `<sha256>.json` files under `~/.tailplan/drafts/` with read-only fallback to legacy `drafts.json`.
+When a local server shares `~/.tailplan`, `drafts/` holds both `<draftId>/` server folders and `<sha256>.json` client bindings.
 
 The SSH client supports upload, check, download, favorite, unfavorite, list, history, whoami, keys, disable, enable, and delete.
 The SSH client keeps source mappings on the workstation and sends local Git metadata with each upload.
@@ -75,9 +76,9 @@ Draft responses include `X-Tailplan-Draft-Id`, `X-Tailplan-Draft-Version`, and `
 Equivalent `X-Postplan-Draft-Id` and `X-Postplan-Draft-Version` headers support existing Postplan clients.
 
 Authenticated HTML drafts may run inline JavaScript, including `type="module"` scripts and standard `on*` handlers, inside a sandboxed CSP.
-The sandbox uses an opaque origin without `allow-same-origin` and blocks network requests, storage, cookies, dialogs, workers, forms, and embeds.
-Script-free drafts and Markdown pages keep `script-src 'none'`.
-External HTTPS images, media, fonts, and allowlisted `<link>` stylesheets or icons are permitted.
+The sandbox uses an opaque origin without `allow-same-origin` and sets `connect-src 'none'`, `worker-src 'none'`, `form-action 'none'`, `frame-src 'none'`, and `object-src 'none'`.
+External HTTPS images, media, fonts, allowlisted `<link>` stylesheets or icons, and escaped popups remain permitted.
+Script-free drafts, Markdown pages, anonymous uploads, and pre-0.0.6 versions keep `script-src 'none'`.
 External scripts, unsupported script types, forms, embeds, meta refresh, and unsafe URL attributes are rejected.
 
 ### Server settings
@@ -541,7 +542,10 @@ The guard must allow only these command forms:
 ```text
 mktemp -d /tmp/tailplan-upload.XXXXXXXX
 scp -t /tmp/tailplan-upload.<eight-allowed-characters>/<allowed-filename>
-tailplan-share /tmp/tailplan-upload.<eight-allowed-characters>/<allowed-filename> [--new|--draft <draft-id>]
+tailplan-share [--files-json] /tmp/tailplan-upload.<eight-allowed-characters>/<allowed-filename> [validated publish options]
+tailplan-share check [staged file or --files-json] [--slug <slug>] [--json]
+tailplan-share download <ref> --print-source
+tailplan-share <list|whoami|themes|typography|history|disable|enable|delete|favorite|unfavorite|keys> [validated args]
 rm -rf -- /tmp/tailplan-upload.<eight-allowed-characters>
 ```
 

@@ -233,6 +233,7 @@ The SSH client uses the existing SSH identity.
 Use `tailplan disable REF`, `tailplan enable REF`, or `tailplan delete REF` for requested lifecycle changes.
 Verify the resulting state with the draft list and viewer URL.
 Authenticated HTML drafts may run inline JavaScript, including `type="module"` and `on*` handlers, inside an opaque sandbox.
-The sandbox blocks network calls, browser storage, cookies, dialogs, workers, forms, and embeds.
+The sandbox blocks `fetch`, XHR, WebSocket, EventSource, browser storage, cookies, dialogs, workers, forms, and embeds.
+External HTTPS images, media, fonts, allowlisted stylesheets, and new-tab popups remain allowed.
 Keep state in memory or `location.hash`, and inline data in `<script type="application/json">` blocks.
 Script-free drafts and Markdown pages remain under `script-src 'none'`.

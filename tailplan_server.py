@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import stat
+import string
 import struct
 import sys
 import tempfile
@@ -45,6 +46,7 @@ MAX_REQUEST_BYTES = MAX_HTML_BYTES * 6 + 64 * 1024
 MAX_VERSION_NUMBER = 999_999_999
 DEFAULT_MAX_HANDLERS = 32
 DEFAULT_READ_TIMEOUT = 10.0
+DRAFT_ID_ALPHABET = string.ascii_lowercase + string.digits
 DRAFT_ID_RE = re.compile(r"[a-z0-9]{6,32}")
 GENERATED_DRAFT_ID_RE = re.compile(r"[a-z0-9]{12}")
 SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,38}[a-z0-9]")
@@ -52,9 +54,6 @@ DRAFT_REF_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,39}")
 PAGE_SEGMENT_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
 SHA256_RE = re.compile(r"[a-f0-9]{64}")
 IDEMPOTENCY_KEY_RE = re.compile(r"[A-Za-z0-9._~-]{1,128}")
-VIEWER_ROUTE_RE = re.compile(
-    r"/d/([a-z0-9][a-z0-9-]{1,39})(?:/v/([1-9][0-9]{0,8}))?(?:/(?:content|raw))?/?"
-)
 SAFE_QUERY_RE = re.compile(r"[A-Za-z0-9._~!$&'()*+,;=:@/?%\[\]-]*")
 MAX_IDEMPOTENCY_RECEIPTS = 4096
 
@@ -184,7 +183,11 @@ URL_ATTRIBUTES = {
     "src",
     "xlink:href",
 }
-SECURITY_SENSITIVE_ATTRIBUTES = URL_ATTRIBUTES | {"http-equiv", "rel", "srcdoc", "style", "type"}
+SMIL_ANIMATION_TAGS = {"animate", "animatemotion", "animatetransform", "set"}
+FOREIGN_ROOT_TAGS = {"svg", "math"}
+SECURITY_SENSITIVE_ATTRIBUTES = URL_ATTRIBUTES | {
+    "http-equiv", "imagesrcset", "rel", "srcdoc", "srcset", "style", "type",
+}
 BLOCKED_URL_SCHEMES = {"file", "javascript", "vbscript"}
 CSS_URL_RE = re.compile(
     r"url\s*\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE | re.DOTALL
@@ -852,7 +855,7 @@ def sha256_text(text: str) -> str:
 
 
 def new_id() -> str:
-    return secrets.token_urlsafe(9).replace("-", "").replace("_", "")[:12].lower()
+    return "".join(secrets.choice(DRAFT_ID_ALPHABET) for _ in range(12))
 
 
 def title_from_html(doc: str, filename: str | None = None) -> str:
@@ -1156,14 +1159,77 @@ def _decode_css_escapes(value: str) -> str:
     return "".join(decoded)
 
 
-def _css_has_unsafe_url(value: str) -> bool:
-    normalized = _decode_css_escapes(value)
-    stripped = re.sub(r"/\*.*?\*/", "", normalized, flags=re.DOTALL)
-    urls = [match.group(2) for match in CSS_URL_RE.finditer(stripped)]
-    urls.extend(match.group(2) for match in CSS_IMPORT_RE.finditer(stripped))
-    return bool(re.search(r"expression\s*\(|behavior\s*:", stripped, re.IGNORECASE)) or any(
+def _strip_css_comments(value: str) -> str:
+    """Strip CSS comments outside quoted strings."""
+    out: list[str] = []
+    index = 0
+    length = len(value)
+    quote: str | None = None
+    while index < length:
+        ch = value[index]
+        if quote is not None:
+            out.append(ch)
+            if ch == "\\" and index + 1 < length:
+                out.append(value[index + 1])
+                index += 2
+                continue
+            if ch == quote:
+                quote = None
+            index += 1
+            continue
+        if ch in {'"', "'"}:
+            quote = ch
+            out.append(ch)
+            index += 1
+            continue
+        if ch == "/" and index + 1 < length and value[index + 1] == "*":
+            end = value.find("*/", index + 2)
+            index = length if end == -1 else end + 2
+            continue
+        out.append(ch)
+        index += 1
+    return "".join(out)
+
+
+def _css_text_is_unsafe(text: str) -> bool:
+    urls = [match.group(2) for match in CSS_URL_RE.finditer(text)]
+    urls.extend(match.group(2) for match in CSS_IMPORT_RE.finditer(text))
+    return bool(re.search(r"expression\s*\(|behavior\s*:", text, re.IGNORECASE)) or any(
         _has_unsafe_scheme(url) for url in urls
     )
+
+
+def _css_has_unsafe_url(value: str) -> bool:
+    unstripped = _decode_css_escapes(value)
+    stripped = _decode_css_escapes(_strip_css_comments(value))
+    return _css_text_is_unsafe(stripped) or _css_text_is_unsafe(unstripped)
+
+
+def _parse_srcset_urls(value: str) -> list[str]:
+    """Extract candidate URLs from an HTML srcset attribute."""
+    urls: list[str] = []
+    index = 0
+    length = len(value)
+    while index < length:
+        while index < length and value[index] in " \t\n\r\f,":
+            index += 1
+        if index >= length:
+            break
+        start = index
+        while index < length and not value[index].isspace():
+            if value[index] == ",":
+                candidate = value[start:index]
+                if not candidate.lower().startswith("data:"):
+                    break
+            index += 1
+        url = value[start:index].rstrip(",")
+        if url:
+            urls.append(url)
+        while index < length and value[index] != ",":
+            index += 1
+        if index < length and value[index] == ",":
+            index += 1
+    return urls
 
 
 def slug_problem(slug: object) -> str | None:
@@ -1309,6 +1375,16 @@ class _IssueList:
     ) -> None:
         self.add("warning", code, message, fix=fix, pos=pos)
 
+    def merge(self, item: dict) -> None:
+        pos = (item["line"], item["column"] - 1) if "line" in item else None
+        key = (item["level"], item["code"], item["message"])
+        existing = self._by_key.get(key)
+        if existing is not None:
+            existing["count"] += item.get("count", 1)
+            return
+        self.add(item["level"], item["code"], item["message"], fix=item.get("fix"), pos=pos)
+        self._by_key[key]["count"] = item.get("count", 1)
+
     def items(self) -> list[dict]:
         return list(self._by_key.values())
 
@@ -1340,9 +1416,12 @@ P_CLOSING_BLOCKS = {
 class _HtmlValidator(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
+        if hasattr(self, "_set_support_cdata"):
+            self._set_support_cdata(False)
         self.issues = _IssueList()
-        self._style_depth = 0
+        self._style_stack: list[tuple[list[str], tuple[int, int]]] = []
         self._tag_stack: list[str] = []
+        self._foreign_depth = 0
         self.too_deep = False
         self.has_inline_script = False
         self.external_image_hosts: set[str] = set()
@@ -1360,6 +1439,46 @@ class _HtmlValidator(HTMLParser):
             if issue["level"] == "error"
         ]
 
+    def unknown_decl(self, data: str) -> None:
+        self.issues.error(
+            "unsafe-declaration",
+            "Blocked unsupported markup declaration.",
+            fix="Remove CDATA or non-standard markup declarations.",
+            pos=self.getpos(),
+        )
+
+    def _flush_style(self) -> None:
+        if not self._style_stack:
+            return
+        parts, pos = self._style_stack.pop()
+        if _css_has_unsafe_url("".join(parts)):
+            self.issues.error("unsafe-css", "Blocked unsafe CSS URL found.", pos=pos)
+
+    def _flush_script(self) -> None:
+        if self._active_script is None:
+            return
+        executable, parts, pos = self._active_script
+        if executable:
+            self.script_sources.append(("".join(parts), pos))
+        self._active_script = None
+
+    def _flush_title(self) -> None:
+        if not self._in_title:
+            return
+        self._in_title = False
+        if self.title is None:
+            text = " ".join("".join(self._title_parts).split())[:140]
+            if text:
+                self.title = text
+        self._title_parts = []
+
+    def close(self) -> None:
+        super().close()
+        while self._style_stack:
+            self._flush_style()
+        self._flush_script()
+        self._flush_title()
+
     def _push_tag(self, tag_lower: str) -> None:
         if tag_lower in P_CLOSING_BLOCKS and self._tag_stack and self._tag_stack[-1] == "p":
             self._tag_stack.pop()
@@ -1371,66 +1490,90 @@ class _HtmlValidator(HTMLParser):
         if len(self._tag_stack) > MAX_DEPTH:
             self.too_deep = True
 
+    def set_cdata_mode(self, elem: str, *args: object, **kwargs: object) -> None:
+        if self._foreign_depth > 0:
+            return
+        super().set_cdata_mode(elem, *args, **kwargs)
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_lower = tag.lower()
+        in_foreign = self._foreign_depth > 0
+        if tag_lower in FOREIGN_ROOT_TAGS:
+            self._foreign_depth += 1
         if tag_lower not in VOID_ELEMENTS:
             self._push_tag(tag_lower)
-        self._inspect_tag(tag_lower, attrs)
+        self._inspect_tag(tag_lower, attrs, self_closing=False, in_foreign=in_foreign)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_lower = tag.lower()
-        if tag_lower in {"style", "script", "title"}:
+        in_foreign = self._foreign_depth > 0
+        if in_foreign:
+            if len(self._tag_stack) + 1 > MAX_DEPTH:
+                self.too_deep = True
+            self._inspect_tag(tag_lower, attrs, self_closing=True, in_foreign=True)
+            return
+        if tag_lower in FOREIGN_ROOT_TAGS:
+            if len(self._tag_stack) + 1 > MAX_DEPTH:
+                self.too_deep = True
+            self._inspect_tag(tag_lower, attrs, self_closing=True, in_foreign=True)
+            return
+        if tag_lower not in VOID_ELEMENTS:
             self._push_tag(tag_lower)
-        elif len(self._tag_stack) + 1 > MAX_DEPTH:
-            self.too_deep = True
-        self._inspect_tag(tag_lower, attrs)
+        cdata_tags = set(getattr(self, "CDATA_CONTENT_ELEMENTS", ("script", "style")))
+        rcdata_tags = set(getattr(self, "RCDATA_CONTENT_ELEMENTS", ("textarea", "title")))
+        if (tag_lower in cdata_tags or tag_lower in rcdata_tags or tag_lower == "plaintext") and hasattr(
+            self, "set_cdata_mode"
+        ):
+            self.set_cdata_mode(tag_lower)
+        self._inspect_tag(tag_lower, attrs, self_closing=False, in_foreign=False)
 
     def handle_endtag(self, tag: str) -> None:
         tag_lower = tag.lower()
+        if tag_lower in FOREIGN_ROOT_TAGS and self._foreign_depth > 0:
+            self._foreign_depth -= 1
         if tag_lower not in VOID_ELEMENTS and tag_lower in self._tag_stack:
             for idx in range(len(self._tag_stack) - 1, -1, -1):
                 if self._tag_stack[idx] == tag_lower:
                     del self._tag_stack[idx:]
                     break
-        if tag_lower == "style" and self._style_depth:
-            self._style_depth -= 1
-        if tag_lower == "script" and self._active_script is not None:
-            executable, parts, pos = self._active_script
-            if executable:
-                self.script_sources.append(("".join(parts), pos))
-            self._active_script = None
-        if tag_lower == "title" and self._in_title:
-            self._in_title = False
-            if self.title is None:
-                text = " ".join("".join(self._title_parts).split())[:140]
-                if text:
-                    self.title = text
-            self._title_parts = []
+        if tag_lower == "style":
+            self._flush_style()
+        if tag_lower == "script":
+            self._flush_script()
+        if tag_lower == "title":
+            self._flush_title()
 
     def handle_data(self, data: str) -> None:
-        if self._style_depth and _css_has_unsafe_url(data):
-            self.issues.error(
-                "unsafe-css",
-                "Blocked unsafe CSS URL found.",
-                pos=self.getpos(),
-            )
+        if self._style_stack:
+            self._style_stack[-1][0].append(data)
         if self._active_script is not None:
             self._active_script[1].append(data)
         if self._in_title:
             self._title_parts.append(data)
 
+    def _record_external_host(self, value: str) -> None:
+        try:
+            parsed = urlparse("https:" + value if value.startswith("//") else value)
+            if parsed.scheme in {"http", "https"} and parsed.hostname:
+                self.external_image_hosts.add(parsed.hostname.lower())
+        except ValueError:
+            pass
+
     def _inspect_tag(
         self,
         tag: str,
         attrs: list[tuple[str, str | None]],
+        *,
+        self_closing: bool,
+        in_foreign: bool,
     ) -> None:
         pos = self.getpos()
         attr_values: dict[str, list[str]] = {}
         for name, value in attrs:
             attr_values.setdefault(name.lower(), []).append(value or "")
-        if tag == "style":
-            self._style_depth += 1
-        if tag == "title":
+        if tag == "style" and not self_closing:
+            self._style_stack.append(([], pos))
+        if tag == "title" and not self_closing and not in_foreign:
             self._in_title = True
             self._title_parts = []
         if tag in BLOCKED_TAGS_WITH_FIX:
@@ -1462,7 +1605,8 @@ class _HtmlValidator(HTMLParser):
                         fix='Use a classic or type="module" inline script, or type="application/json" for data.',
                         pos=pos,
                     )
-            self._active_script = (executable, [], pos)
+            if not self_closing:
+                self._active_script = (executable, [], pos)
         if tag == "link":
             rel_values = attr_values.get("rel", [])
             rels = [token for value in rel_values for token in value.lower().split()]
@@ -1482,32 +1626,49 @@ class _HtmlValidator(HTMLParser):
                     fix="Inline the CSS in a style block, or use an https URL.",
                     pos=pos,
                 )
+        for srcset_attr in ("srcset", "imagesrcset"):
+            for srcset in attr_values.get(srcset_attr, []):
+                for candidate in _parse_srcset_urls(srcset):
+                    if _has_unsafe_scheme(candidate):
+                        self.issues.error(
+                            "unsafe-url",
+                            f'Blocked unsafe URL in "{srcset_attr}" attribute.',
+                            fix="Use an https link, or an event listener in a script block.",
+                            pos=pos,
+                        )
+                    elif tag in EMBED_SRC_TAGS:
+                        self._record_external_host(candidate)
+                        if _is_local_reference(candidate):
+                            self.issues.warning(
+                                "relative-asset",
+                                f'"{candidate}" will not load. Tailplan only hosts HTML pages.',
+                                fix="Host the file over https, or inline it as a data: URL.",
+                                pos=pos,
+                            )
         if tag in EMBED_SRC_TAGS:
-            references: list[str] = []
             for attr_name in ("src", "poster"):
-                references.extend(attr_values.get(attr_name, []))
-            for srcset in attr_values.get("srcset", []):
-                for candidate in re.split(r",\s+", srcset):
-                    token = candidate.strip().split()
-                    if token:
-                        references.append(token[0])
-            for ref in references:
-                cleaned = ref.strip()
-                if cleaned and _is_local_reference(cleaned) and not _has_unsafe_scheme(cleaned):
-                    self.issues.warning(
-                        "relative-asset",
-                        f'"{cleaned}" will not load. Tailplan only hosts HTML pages.',
-                        fix="Host the file over https, or inline it as a data: URL.",
-                        pos=pos,
-                    )
-        if tag == "img":
-            for value in attr_values.get("src", []):
-                try:
-                    parsed = urlparse("https:" + value if value.startswith("//") else value)
-                    if parsed.scheme in {"http", "https"} and parsed.hostname:
-                        self.external_image_hosts.add(parsed.hostname.lower())
-                except ValueError:
-                    pass
+                for ref in attr_values.get(attr_name, []):
+                    cleaned = ref.strip()
+                    if cleaned:
+                        self._record_external_host(cleaned)
+                        if _is_local_reference(cleaned) and not _has_unsafe_scheme(cleaned):
+                            self.issues.warning(
+                                "relative-asset",
+                                f'"{cleaned}" will not load. Tailplan only hosts HTML pages.',
+                                fix="Host the file over https, or inline it as a data: URL.",
+                                pos=pos,
+                            )
+        if tag in SMIL_ANIMATION_TAGS:
+            for attr_name in ("to", "from", "by", "values"):
+                for raw in attr_values.get(attr_name, []):
+                    candidates = raw.split(";") if attr_name == "values" else [raw]
+                    if any(_has_unsafe_scheme(item) for item in candidates):
+                        self.issues.error(
+                            "unsafe-url",
+                            f'Blocked unsafe URL in "{attr_name}" attribute.',
+                            fix="Use an https link, or an event listener in a script block.",
+                            pos=pos,
+                        )
         for name, values in attr_values.items():
             if name in EVENT_HANDLER_ATTRS:
                 self.has_inline_script = True
@@ -1603,15 +1764,7 @@ def validate_html_detailed(
     validator.feed(doc)
     validator.close()
     for item in validator.issues.items():
-        issues.add(
-            item["level"],
-            item["code"],
-            item["message"],
-            fix=item.get("fix"),
-            pos=(item["line"], item["column"] - 1) if "line" in item else None,
-        )
-        if item["count"] > 1:
-            issues._by_key[(item["level"], item["code"], item["message"])]["count"] = item["count"]
+        issues.merge(item)
     if validator.too_deep:
         issues.error("too-deep", f"HTML is nested more than {MAX_DEPTH} levels deep.")
     for code, pattern, message, fix in SANDBOX_APIS:
@@ -1679,9 +1832,21 @@ def validate_upload(
             "message": f"Upload has {len(pages)} pages; the limit is {max_pages}.",
             "count": 1,
         })
+        return {
+            "ok": False,
+            "errors": [format_issue(i) for i in issues],
+            "warnings": [],
+            "issues": issues,
+            "pages": [],
+            "totalBytes": 0,
+            "hasScripts": False,
+            "title": None,
+            "contentHash": None,
+        }
     seen: set[str] = set()
     seen_lower: set[str] = set()
     dir_prefixes_lower: set[str] = set()
+    running_bytes = 0
     for entry in pages:
         if not isinstance(entry, dict):
             issues.append({"level": "error", "code": "page-path", "message": "Page entry must be an object.", "count": 1})
@@ -1706,8 +1871,20 @@ def validate_upload(
         segments = lowered.split("/")
         for idx in range(1, len(segments)):
             dir_prefixes_lower.add("/".join(segments[:idx]))
-        checked = validate_html_detailed(entry.get("html"), max_bytes=None)
-        results.append({"path": page_path, "html": entry.get("html"), **checked})
+        raw_html = entry.get("html")
+        if isinstance(raw_html, str):
+            try:
+                page_size = len(raw_html.encode("utf-8"))
+            except UnicodeEncodeError:
+                page_size = 0
+            running_bytes += page_size
+            if running_bytes > max_bytes:
+                results.append({"path": page_path, "html": raw_html, "ok": False, "errors": [], "warnings": [],
+                                "issues": [], "title": None, "hasScripts": False, "bytes": page_size,
+                                "externalImageHosts": []})
+                continue
+        checked = validate_html_detailed(raw_html, max_bytes=None)
+        results.append({"path": page_path, "html": raw_html, **checked})
         for issue in checked["issues"]:
             issues.append({"path": page_path, **issue} if multi_page else issue)
     for page in results:
@@ -1807,16 +1984,17 @@ def _validate_workspace_schema(data: dict) -> None:
                 or not isinstance(key.get("keyHash"), str)
                 or SHA256_RE.fullmatch(key["keyHash"]) is None):
             raise StorageError("Account storage has an invalid API key.")
+    all_draft_ids = set(data["drafts"])
     seen_slugs: set[str] = set()
     for draft in data["drafts"].values():
         if not isinstance(draft.get("accountId", "local"), str):
             raise StorageError("Draft account is invalid.")
         slug = draft.get("slug")
         if slug is not None:
-            if slug_problem(slug) is not None:
+            if not isinstance(slug, str) or SLUG_RE.fullmatch(slug) is None:
                 raise StorageError("Draft custom URL is invalid.")
             if not draft.get("deletedAt"):
-                if slug in seen_slugs:
+                if slug in seen_slugs or slug in all_draft_ids:
                     raise StorageError("Duplicate active custom URL.")
                 seen_slugs.add(slug)
         favorited_at = draft.get("favoritedAt")
@@ -1869,7 +2047,7 @@ def _valid_public_url(value: object, draft_id: str, slug: str | None = None) -> 
         return False
     parsed = urlparse(value)
     tails = [f"/d/{draft_id}"]
-    if isinstance(slug, str) and slug_problem(slug) is None:
+    if isinstance(slug, str) and SLUG_RE.fullmatch(slug) is not None:
         tails.append(f"/d/{slug}")
     return (
         parsed.scheme in {"http", "https"}
@@ -2169,12 +2347,25 @@ class Store:
         audit: dict | None = None,
         files: list[dict] | None = None,
         slug: str | None = None,
+        validation: dict | None = None,
     ) -> dict:
+        if validation is None:
+            raw_pages = (
+                [{"path": p["path"], "html": p["html"]} for p in files]
+                if files is not None
+                else [{"path": "index.html", "html": html_doc or ""}]
+            )
+            page_checks = {
+                p["path"]: validate_html_detailed(p["html"], max_bytes=None)
+                for p in raw_pages
+            }
+        else:
+            page_checks = {p["path"]: p for p in validation["pages"]}
         with STORE_LOCK:
             return self._upsert_locked(
                 html_doc, filename, draft_id, base_url, request_key,
                 account_id, description, metadata or {}, audit or {},
-                files=files, slug=slug,
+                files=files, slug=slug, page_checks=page_checks,
             )
 
     def _upsert_locked(
@@ -2191,6 +2382,7 @@ class Store:
         *,
         files: list[dict] | None = None,
         slug: str | None = None,
+        page_checks: dict[str, dict] | None = None,
     ) -> dict:
         data = self.load_meta()
         data.setdefault("drafts", {})
@@ -2201,6 +2393,8 @@ class Store:
             problem = slug_problem(slug)
             if problem is not None:
                 raise ValueError(problem)
+            if slug in data["drafts"]:
+                raise ConflictError(f'The custom URL "{slug}" conflicts with an existing draft ID.')
         pages = (
             [{"path": p["path"], "html": p["html"]} for p in files]
             if files is not None
@@ -2245,7 +2439,7 @@ class Store:
         )
         if request_key and request_key in data["idempotency"]:
             receipt = data["idempotency"][request_key]
-            self._owned_draft(data, receipt["result"]["draftId"], account_id)
+            current_draft = self._owned_draft(data, receipt["result"]["draftId"], account_id)
             legacy_match = False
             if (
                 account_id == "local"
@@ -2281,14 +2475,27 @@ class Store:
                 )
             if receipt.get("fingerprint") != fingerprint and not legacy_match:
                 raise IdempotencyConflict("Request key was reused with a different payload.")
-            return {**receipt["result"], "created": False, "replayed": True, "unchanged": False}
+            replayed = dict(receipt["result"])
+            current_slug = current_draft.get("slug")
+            replayed["slug"] = current_slug
+            replayed["publicUrl"] = f"{base_url.rstrip('/')}/d/{current_slug or current_draft['draftId']}"
+            replayed["rawUrl"] = replayed["publicUrl"] + "/raw"
+            return {
+                **replayed,
+                "created": False,
+                "replayed": True,
+                "unchanged": bool(receipt["result"].get("unchanged", False)),
+            }
         creating = not resolved_draft_id
         if resolved_draft_id and resolved_draft_id not in data["drafts"]:
             raise KeyError("Draft not found.")
         target_draft_id = resolved_draft_id
         if not target_draft_id:
             target_draft_id = new_id()
-            while target_draft_id in data["drafts"]:
+            while (
+                target_draft_id in data["drafts"]
+                or self._find_by_slug(data, target_draft_id) is not None
+            ):
                 target_draft_id = new_id()
         draft = data["drafts"].get(target_draft_id, {})
         latest_version = int(draft.get("latestVersionNumber") or 0)
@@ -2338,8 +2545,13 @@ class Store:
             page_records = []
             external_hosts: set[str] = set()
             index_has_script = False
+            authenticated = account_id != "anonymous"
             for page in pages:
-                checked = validate_html_detailed(page["html"], max_bytes=None)
+                checked = (
+                    page_checks[page["path"]]
+                    if page_checks and page["path"] in page_checks
+                    else validate_html_detailed(page["html"], max_bytes=None)
+                )
                 external_hosts.update(checked["externalImageHosts"])
                 if page["path"] == "index.html":
                     index_has_script = checked["hasScripts"]
@@ -2350,6 +2562,7 @@ class Store:
                         "fileSize": checked["bytes"],
                         "title": checked["title"],
                         "hasInlineScript": checked["hasScripts"],
+                        "allowInlineScript": bool(checked["hasScripts"] and authenticated),
                     }
                 )
             version_entry = {
@@ -2363,6 +2576,7 @@ class Store:
                 "contentHash": content_hash,
                 "filename": filename,
                 "hasInlineScript": index_has_script,
+                "allowInlineScript": bool(index_has_script and authenticated),
                 "externalImageHosts": sorted(external_hosts),
                 "pageCount": len(pages),
                 "eventType": "draft.created" if creating else "draft.updated",
@@ -2407,6 +2621,7 @@ class Store:
             "fileSha256": sha256_text(index_html),
             "contentHash": content_hash,
             "totalBytes": total_bytes,
+            "unchanged": unchanged,
             "requestId": audit.get("requestId"),
             **({"pages": [{"path": p["path"], "url": f"{public_url}/{p['path']}"} for p in pages]} if multi_page else {}),
             **({"theme": metadata["theme"]} if "theme" in metadata else {}),
@@ -2416,7 +2631,7 @@ class Store:
             while len(data["idempotency"]) > MAX_IDEMPOTENCY_RECEIPTS:
                 del data["idempotency"][next(iter(data["idempotency"]))]
         self.save_meta(data)
-        return {**result, "created": creating, "replayed": False, "unchanged": unchanged}
+        return {**result, "created": creating, "replayed": False}
 
     def get(self, draft_id: str, version: int | None = None) -> tuple[dict | None, str | None]:
         draft, _ver, doc, _scripts, _redirect = self.get_page(draft_id, version, "")
@@ -2449,8 +2664,8 @@ class Store:
                         doc = self._read_page_object(path, record["fileSha256"])
                     else:
                         doc = self._read_legacy_version(path)
-                has_scripts = bool(record and record.get("hasInlineScript"))
-                return draft, target_version, doc, bool(has_scripts and authenticated), None
+                allow_scripts = bool(record and record.get("allowInlineScript"))
+                return draft, target_version, doc, bool(allow_scripts and authenticated), None
             if not multi_page or record is None:
                 return None, None, None, False, None
             pages_by_path = {item["path"]: item for item in record["pages"]}
@@ -2472,8 +2687,8 @@ class Store:
             if not path.exists():
                 raise StorageError("Recorded draft page is unavailable.")
             doc = self._read_page_object(path, matched["fileSha256"])
-            has_scripts = bool(matched.get("hasInlineScript"))
-            return draft, target_version, doc, bool(has_scripts and authenticated), None
+            allow_scripts = bool(matched.get("allowInlineScript"))
+            return draft, target_version, doc, bool(allow_scripts and authenticated), None
 
     def get_source(self, ref: str, *, account_id: str | None = None) -> dict | None:
         """Return every page of a draft's latest version for download."""
@@ -2484,27 +2699,26 @@ class Store:
                 return None
             latest = draft["latestVersionNumber"]
             record = draft.get("versions", {}).get(str(latest))
-            pages = [{"path": "index.html", "html": self._read_current_object(draft)}]
+            file_specs = [("index.html", Path(draft["currentObject"]), draft["fileSha256"])]
             if record and record.get("pages"):
                 for item in sorted(record["pages"], key=lambda entry: entry["path"]):
                     if item["path"] == "index.html":
                         continue
                     path = self.drafts / draft_id / f"v{latest}" / item["path"]
-                    pages.append(
-                        {
-                            "path": item["path"],
-                            "html": self._read_page_object(path, item["fileSha256"]),
-                        }
-                    )
-            return {
+                    file_specs.append((item["path"], path, item["fileSha256"]))
+            summary = {
                 "ok": True,
                 "draftId": draft_id,
                 "slug": draft.get("slug"),
                 "title": draft["title"],
                 "versionNumber": latest,
                 "owned": bool(account_id and draft.get("accountId", "local") == account_id),
-                "pages": pages,
             }
+        pages = [
+            {"path": rel_path, "html": self._read_page_object(obj_path, expected_sha)}
+            for rel_path, obj_path, expected_sha in file_specs
+        ]
+        return {**summary, "pages": pages}
 
     def slug_status(self, slug: str, account_id: str) -> dict:
         problem = slug_problem(slug)
@@ -2512,6 +2726,12 @@ class Store:
             return {"slug": slug, "status": "unavailable", "message": problem}
         with STORE_LOCK:
             data = self.load_meta()
+            if slug in data.get("drafts", {}):
+                return {
+                    "slug": slug,
+                    "status": "unavailable",
+                    "message": f'The custom URL "{slug}" conflicts with an existing draft ID.',
+                }
             existing = self._find_by_slug(data, slug)
             if existing is None:
                 return {"slug": slug, "status": "available"}
@@ -2891,7 +3111,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_draft_redirect(self, target_path: str, query: str) -> None:
         prefix = urlparse(self.base_url).path.rstrip("/")
-        location = f"{prefix}{target_path}" if prefix and not target_path.startswith(prefix + "/") else target_path
+        location = f"{prefix}{target_path}" if prefix else target_path
         if query and SAFE_QUERY_RE.fullmatch(query):
             location = f"{location}?{query}"
         self.send_response(HTTPStatus.FOUND)
@@ -3073,6 +3293,8 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def serve_source(self, ref: str) -> None:
+        if not self.rate_allowed("source-ip:" + self.source_ip(), self.server.upload_ip_limit):
+            return
         try:
             identity = self.api_identity()
         except (StorageError, OSError):
@@ -3247,7 +3469,9 @@ class Handler(BaseHTTPRequestHandler):
         if identity is None:
             self.unauthorized()
             return
-        if not self.rate_allowed("upload-ip:" + self.source_ip(), self.server.upload_ip_limit):
+        if not self.rate_allowed("check-ip:" + self.source_ip(), self.server.upload_ip_limit):
+            return
+        if not self.rate_allowed("check-key:" + identity["apiKeyId"], self.server.upload_key_limit):
             return
         try:
             payload = self._read_large_json_body(allow_empty=True)
@@ -3348,7 +3572,11 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_large_json_body()
             if payload is None:
                 return
-            pages, frozen_theme = self._extract_upload_pages(payload)
+            try:
+                pages, frozen_theme = self._extract_upload_pages(payload)
+            except ValueError as error:
+                self.send_json(422, {"ok": False, "error": str(error)})
+                return
             validation = validate_upload(pages)
             if not validation["ok"]:
                 self.send_json(
@@ -3411,6 +3639,7 @@ class Handler(BaseHTTPRequestHandler):
                        "requestId": secrets.token_hex(16)},
                 files=pages if len(pages) > 1 else None,
                 slug=slug,
+                validation=validation,
             )
             created = result.pop("created")
             status = 201 if created else 200
@@ -3764,7 +3993,7 @@ def external_link(url: object, label: str) -> str:
     return f'<a href="{esc(url)}" target="_blank" rel="noopener noreferrer">{esc(label)}</a>'
 
 
-def _render_dashboard_row(base_url: str, session: dict, draft: dict) -> str:
+def _render_dashboard_row(base_url: str, session: dict, draft: dict, *, show_repo: bool = False) -> str:
     badge = ' <span class="badge">disabled</span>' if draft["disabled"] else ""
     slug_badge = f' <span class="badge">{esc(draft["slug"])}</span>' if draft.get("slug") else ""
     row = f'<article class="row"><h3>{external_link(draft["shareUrl"], draft["title"])}{slug_badge}{badge}</h3>'
@@ -3776,10 +4005,14 @@ def _render_dashboard_row(base_url: str, session: dict, draft: dict) -> str:
     star_label = "Remove from favorites" if is_fav else "Add to favorites"
     star_class = "star on" if is_fav else "star"
     star_glyph = "★" if is_fav else "☆"
+    repo_span = ""
+    if show_repo and draft.get("repoOrg") and draft.get("repoName"):
+        repo_span = f'<span>{esc(draft["repoOrg"] + "/" + draft["repoName"])}</span>'
     row += (
         f'<div class="meta">'
         f'<form method="post" action="{details}/{action}">{csrf_field(session["csrf"])}'
         f'<button class="{star_class}" type="submit" aria-label="{star_label}" title="{star_label}">{star_glyph}</button></form>'
+        f'{repo_span}'
         f'<a href="{details}">Details and history</a><span>v{draft["latestVersionNumber"]}</span>'
         f'<span>{draft["versionCount"]} versions</span><time>{esc(draft["updatedAt"][:16].replace("T", " "))} UTC</time></div></article>'
     )
@@ -3799,7 +4032,7 @@ def render_dashboard(base_url: str, session: dict, drafts: list[dict]) -> str:
     if favorites:
         body += '<section><h2>Favorites</h2>'
         for draft in favorites:
-            body += _render_dashboard_row(base_url, session, draft)
+            body += _render_dashboard_row(base_url, session, draft, show_repo=True)
         body += '</section>'
     for key, members in sorted(groups.items(), key=lambda entry: not bool(entry[0][2])):
         host, org, name = key

@@ -435,19 +435,128 @@ class Postplan006ServerTests(unittest.TestCase):
         self.assertTrue(off_data["markupOk"])
 
     def test_security_bypasses_anonymous_slugs_collisions_rebase_and_traversal(self) -> None:
-        # SL1-3: self-closing style, CSS comments, and SVG script href are rejected.
-        for bad in (
+        # SL1-3 / SL2-1 / SL2-2 / C1-1 / C1-3 / F1-3: HTML5 tokenizer, CSS comment, srcset, and SMIL bypasses.
+        bypasses = (
             "<title>Bad</title><style/>body{background:url(javascript:alert(1))}</style>",
+            "<title>Bad</title><style/>body{background:url(/*<x>*/javascript:alert(1))}</style>",
+            "<title>Bad</title><style/>body{background:url(/*<!---->*/javascript:alert(1))}</style>",
+            "<title>Bad</title><svg><style>body{background:url(<!---->javascript:alert(1))}</style></svg>",
             '<title>Bad</title><style>body{background:url(/*x*/"javascript:alert(1)")}</style>',
             '<title>Bad</title><style>@import/*x*/"javascript:alert(1)";</style>',
+            '<title>Bad</title><style>a: "\\2f*"; background: url("javascript:alert(1)"); b: "*\\2f";</style>',
+            '<title>Bad</title><style>body{background:url("javascript:alert(1)///*"); content:"*/";}</style>',
+            '<title>Bad</title><style>a{content:"/*";background:url(javascript:alert(1));content:"*/"}</style>',
             '<title>Bad</title><p style="width:exp/*x*/ression(alert(1))">x</p>',
             '<title>Bad</title><svg><script href="https://evil.test/x.js"></script></svg>',
             '<title>Bad</title><svg><script xlink:href="https://evil.test/x.js"></script></svg>',
-        ):
+            '<![CDATA[><meta http-equiv="refresh" content="0;url=https://evil.test">]]>',
+            '<svg><title><meta http-equiv="refresh" content="0;url=https://evil.test"></title></svg>',
+            '<svg><style><meta http-equiv="refresh" content="0;url=https://evil.test"></style></svg>',
+            '<title>Bad</title><img srcset="javascript:alert(1) 1x">',
+            '<title>Bad</title><img srcset="https://ok.test/a.png 1x,javascript:alert(1) 2x">',
+            '<title>Bad</title><svg><set attributeName="href" to="javascript:alert(1)"/></svg>',
+            '<title>Bad</title>' + ('<div/>' * 520),
+        )
+        for bad in bypasses:
             status, _, res = self.api("/api/uploads", "POST", {"html": bad})
-            self.assertEqual(422, status, (bad, res))
+            self.assertEqual(422, status, (bad[:80], res))
             off = share.validate_upload_offline([{"path": "index.html", "html": bad}])
-            self.assertFalse(off["ok"], bad)
+            self.assertFalse(off["ok"], bad[:80])
+
+        # Self-closing <style/> inside <svg> must not leak style mode into body text.
+        svg_self_close = (
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            '<title>SVG</title><svg><style/></svg><p>url(javascript:alert(1))</p>'
+        )
+        status, _, ok_svg = self.api("/api/uploads", "POST", {"html": svg_self_close})
+        self.assertEqual(201, status, ok_svg)
+
+        # Unclosed <script> still reports sandbox warnings.
+        unclosed_script = (
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            '<title>Unclosed</title><script>localStorage.setItem("a","b")'
+        )
+        res_unclosed = server.validate_upload([{"path": "index.html", "html": unclosed_script}])
+        self.assertTrue(any(i["code"] == "sandbox-storage" for i in res_unclosed["issues"]))
+        off_unclosed = share.validate_upload_offline([{"path": "index.html", "html": unclosed_script}])
+        self.assertTrue(any(i["code"] == "sandbox-storage" for i in off_unclosed["issues"]))
+
+        # C1-2 / F1-1: new_id() is always 12 chars and slugs cannot collide with existing draft IDs.
+        for _ in range(40):
+            generated = server.new_id()
+            self.assertEqual(12, len(generated))
+        # Seed a legacy 8-char draft ID and verify slug claims against it fail.
+        data = self.store.load_meta()
+        status, _, seeded = self.api("/api/uploads", "POST", {"html": "<title>Seed</title>"})
+        self.assertEqual(201, status)
+        data = self.store.load_meta()
+        draft_obj = data["drafts"].pop(seeded["draftId"])
+        short_id = "shortid1"
+        old_dir = self.store.drafts / seeded["draftId"]
+        new_dir = self.store.drafts / short_id
+        old_dir.rename(new_dir)
+        draft_obj["draftId"] = short_id
+        draft_obj["currentObject"] = str(new_dir / "v1.html")
+        draft_obj["publicUrl"] = f"{self.base}/d/{short_id}"
+        data["drafts"][short_id] = draft_obj
+        self.store.save_meta(data)
+        self.assertEqual(
+            "unavailable",
+            self.api("/api/check", "POST", {"slug": short_id})[2]["slug"]["status"],
+        )
+        self.assertEqual(
+            409,
+            self.api("/api/uploads", "POST", {"html": "<title>Collide</title>", "slug": short_id})[0],
+        )
+
+        # N1-7: legacy version with hasInlineScript=True but no allowInlineScript stays script-src 'none'.
+        status, _, leg = self.api("/api/uploads", "POST", {"html": "<title>Leg</title><script>1+1</script>"})
+        self.assertEqual(201, status)
+        data = self.store.load_meta()
+        data["drafts"][leg["draftId"]]["versions"]["1"].pop("allowInlineScript", None)
+        self.store.save_meta(data)
+        _, leg_headers, _ = self.request(f"/d/{leg['draftId']}", token=None)
+        self.assertIn("script-src 'none'", leg_headers["Content-Security-Policy"])
+        self.assertNotIn("sandbox", leg_headers["Content-Security-Policy"])
+
+        # N1-4 / F1-10: Idempotency replay preserves unchanged=True.
+        status, _, d_same = self.api("/api/uploads", "POST", {"html": "<title>Same</title>"})
+        self.assertEqual(201, status)
+        status, _, d_dup1 = self.api(
+            "/api/uploads",
+            "POST",
+            {"html": "<title>Same</title>", "draftId": d_same["draftId"]},
+            headers={"Idempotency-Key": "dedup-replay-1"},
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(d_dup1["unchanged"])
+        status, _, d_dup2 = self.api(
+            "/api/uploads",
+            "POST",
+            {"html": "<title>Same</title>", "draftId": d_same["draftId"]},
+            headers={"Idempotency-Key": "dedup-replay-1"},
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(d_dup2["replayed"])
+        self.assertTrue(d_dup2["unchanged"])
+
+        # Server vs offline validator corpus parity (N1-10 / F1-5 / C1-10).
+        corpus = [
+            '<meta name="viewport" content="width=device-width, initial-scale=1"><title>Ok</title><p>Hi</p>',
+            '<title>Srcdoc</title><div srcdoc="<p>x</p>"></div>',
+            '<title>Js</title><a href="javascript:alert(1)">x</a>',
+            '<title>Img</title><img srcset="https://ok.test/a.png 1x,local.png 2x">',
+            '<title>Mod</title><script type="module">fetch("/x")</script>',
+        ]
+        for sample in corpus:
+            srv = server.validate_upload([{"path": "index.html", "html": sample}])
+            off = share.validate_upload_offline([{"path": "index.html", "html": sample}])
+            self.assertEqual(srv["ok"], off["ok"], sample)
+            self.assertEqual(
+                [(i["code"], i.get("fix")) for i in srv["issues"]],
+                [(i["code"], i.get("fix")) for i in off["issues"]],
+                sample,
+            )
 
         # SL1-7: flat HTML5 document with >512 unclosed <li> items passes depth check.
         flat_list = "<title>Flat</title><ul>" + ("<li>item" * 600) + "</ul>"
@@ -642,7 +751,18 @@ class PerDraftBindingAndGuardTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
-            self.assertEqual(2, completed.returncode)
+            self.assertEqual(1, completed.returncode)
+            bad_report = json.loads(completed.stdout)
+            self.assertFalse(bad_report["ok"])
+            self.assertEqual("unavailable", bad_report["slug"]["status"])
+
+            # N1-5: parse_draft_ref rejects URLs from another host when base_url is provided.
+            with self.assertRaises(share.ConfigurationFailure):
+                share.parse_draft_ref("https://other.example/d/my-plan", "https://tailplan.test")
+            self.assertEqual(
+                "my-plan",
+                share.parse_draft_ref("https://tailplan.test/d/my-plan/share", "https://tailplan.test"),
+            )
 
             completed = subprocess.run(
                 [sys.executable, str(ROOT / "bin" / "tailplan-share-remote"), "check", str(html_file), "--slug", "good-slug", "--json"],
@@ -689,13 +809,17 @@ class PerDraftBindingAndGuardTests(unittest.TestCase):
             self.assertEqual(0, exited.exception.code, args)
             execute.assert_called_once_with("/publisher", ["/publisher", *args])
 
-        # Staged --files-json, --slug, and symlinked parent directory checks.
-        staged = Path("/tmp/tailplan-upload.Zz12Yy34")
-        staged.mkdir(mode=0o700, exist_ok=True)
-        pages_json = staged / "pages.json"
-        pages_json.write_text('{"files":[{"path":"index.html","html":"<title>X</title>"}]}', encoding="utf-8")
-        try:
+        # Staged --files-json, --slug, and symlinked parent directory checks using isolated tmp dirs (F1-15).
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            staged = root / "tailplan-upload.Zz12Yy34"
+            staged.mkdir(mode=0o700)
+            pages_json = staged / "pages.json"
+            pages_json.write_text('{"files":[{"path":"index.html","html":"<title>X</title>"}]}', encoding="utf-8")
+            esc_root = re.escape(str(root))
+            patched_file_re = re.compile(rf"({esc_root}/tailplan-upload\.[A-Za-z0-9]{{8}})/([A-Za-z0-9_][A-Za-z0-9_.-]{{0,254}})")
             with (
+                patch.object(guard, "FILE_RE", patched_file_re),
                 patch.object(guard, "configured_share_command", return_value="/publisher"),
                 patch.object(guard.os, "execv", side_effect=SystemExit(0)) as execute,
                 self.assertRaises(SystemExit) as exited,
@@ -704,22 +828,20 @@ class PerDraftBindingAndGuardTests(unittest.TestCase):
             self.assertEqual(0, exited.exception.code)
             execute.assert_called_once()
 
-            with self.assertRaises(SystemExit) as exited:
+            with (
+                patch.object(guard, "FILE_RE", patched_file_re),
+                self.assertRaises(SystemExit) as exited,
+            ):
                 guard.execute(["tailplan-share", "--files-json", str(pages_json), "--slug", "my-site", "--new"])
             self.assertEqual(126, exited.exception.code)
-        finally:
-            pages_json.unlink(missing_ok=True)
-            staged.rmdir()
 
-        # SL1-2: symlinked /tmp/tailplan-upload.XXXXXXXX directory is denied.
-        with tempfile.TemporaryDirectory() as real_dir:
-            real_file = Path(real_dir) / "secret.html"
-            real_file.write_text("<title>S</title>", encoding="utf-8")
-            link_dir = Path("/tmp/tailplan-upload.Sym12345")
-            if link_dir.exists() or link_dir.is_symlink():
-                link_dir.unlink()
+            # SL1-2: symlinked staging directory is denied.
+            real_dir = root / "real"
+            real_dir.mkdir()
+            (real_dir / "secret.html").write_text("<title>S</title>", encoding="utf-8")
+            link_dir = root / "tailplan-upload.Sym12345"
             link_dir.symlink_to(real_dir)
-            try:
+            with patch.object(guard, "FILE_RE", patched_file_re):
                 for cmd in (
                     ["tailplan-share", f"{link_dir}/secret.html"],
                     ["tailplan-share", "check", f"{link_dir}/secret.html"],
@@ -727,8 +849,38 @@ class PerDraftBindingAndGuardTests(unittest.TestCase):
                     with self.assertRaises(SystemExit) as exited:
                         guard.execute(cmd)
                     self.assertEqual(126, exited.exception.code, cmd)
-            finally:
-                link_dir.unlink(missing_ok=True)
+
+    def test_share_public_resolves_slug_urls_and_multipage(self) -> None:
+        public_mod = _load_script("tailplan_share_public_006", ROOT / "bin" / "tailplan-share-public")
+        self.assertEqual(
+            "secret-plan-v2",
+            public_mod.draft_ref_from_value("https://host.test/tailplan/d/secret-plan-v2/share"),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            meta_file = root / "metadata.json"
+            v1_html = root / "drafts" / "abc123456789" / "v1.html"
+            v1_html.parent.mkdir(parents=True)
+            v1_html.write_text("<title>S</title>", encoding="utf-8")
+            meta_file.write_text(
+                json.dumps(
+                    {
+                        "drafts": {
+                            "abc123456789": {
+                                "draftId": "abc123456789",
+                                "slug": "secret-plan-v2",
+                                "title": "Secret Plan",
+                                "currentObject": str(v1_html),
+                                "latestVersionNumber": 1,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(public_mod, "TAILPLAN_META", meta_file):
+                loaded = public_mod.load_draft("secret-plan-v2")
+            self.assertEqual("abc123456789", loaded["draftId"])
 
         for bad in (
             ["download", "my-plan"],
