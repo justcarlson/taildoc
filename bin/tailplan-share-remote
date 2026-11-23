@@ -17,6 +17,7 @@ from pathlib import Path
 DEFAULT_TARGET = "tailplan-server"
 TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 DRAFT_RE = re.compile(r"^[a-z0-9]{6,32}$")
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$")
 REMOTE_DIR_RE = re.compile(r"^/tmp/tailplan-upload\.[A-Za-z0-9]{8}$")
 Run = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -53,13 +54,19 @@ def share_file(
     document_type: str | None = None,
     layout: str | None = None,
     typography: str | None = None,
+    slug: str | None = None,
+    files_json_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     source = source.expanduser().resolve()
-    if not source.is_file():
+    if files_json_path is None and not source.is_file():
         raise FileNotFoundError(source)
     validate_target(target)
     if draft and not DRAFT_RE.fullmatch(draft):
         raise ValueError("Draft id must contain 6-32 lowercase letters or numbers.")
+    if slug is not None and not SLUG_RE.fullmatch(slug):
+        raise ValueError("Custom URL must contain 3-40 lowercase letters, numbers, or inner hyphens.")
+    if new and slug is not None:
+        raise ValueError("--new cannot be combined with --slug.")
 
     created = run(
         ["ssh", target, "mktemp", "-d", "/tmp/tailplan-upload.XXXXXXXX"],
@@ -69,13 +76,21 @@ def share_file(
     )
     remote_dir = created.stdout.strip()
     validate_remote_dir(remote_dir)
-    remote_path = f"{remote_dir}/{safe_filename(source)}"
+    if files_json_path is not None:
+        remote_path = f"{remote_dir}/pages.json"
+        transfer_source = files_json_path
+    else:
+        remote_path = f"{remote_dir}/{safe_filename(source)}"
+        transfer_source = source
 
     try:
-        run(["scp", "-O", "--", str(source), f"{target}:{remote_path}"], check=True)
+        run(["scp", "-O", "--", str(transfer_source), f"{target}:{remote_path}"], check=True)
         if metadata_path:
             run(["scp", "-O", "--", str(metadata_path), f"{target}:{remote_dir}/provenance.json"], check=True)
-        command = ["ssh", target, "tailplan-share", remote_path]
+        if files_json_path is not None:
+            command = ["ssh", target, "tailplan-share", "--files-json", remote_path]
+        else:
+            command = ["ssh", target, "tailplan-share", remote_path]
         for option, value in (("--theme", theme), ("--document-type", document_type), ("--layout", layout), ("--typography", typography)):
             if value is not None:
                 if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", value):
@@ -85,6 +100,8 @@ def share_file(
             command.append("--new")
         elif draft:
             command.extend(["--draft", draft])
+        if slug is not None:
+            command.extend(["--slug", slug])
         if json_output:
             command.append("--json")
         if description is not None:
@@ -103,6 +120,236 @@ def share_file(
         )
 
 
+def _load_library() -> dict:
+    library_path = Path(__file__).resolve().with_name("tailplan-publisher")
+    if not library_path.exists():
+        library_path = Path(__file__).resolve().with_name("tailplan-share")
+    if library_path == Path(__file__).resolve():
+        raise RuntimeError("Client helpers are missing. Run install-client.sh again.")
+    return runpy.run_path(str(library_path))
+
+
+def _remote_check(argv: list[str], target: str) -> int:
+    parser = argparse.ArgumentParser(prog="tailplan check")
+    parser.add_argument("file", nargs="?")
+    parser.add_argument("--slug")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    validate_target(target)
+    library = _load_library()
+    cli_version = library["CLI_VERSION"]
+    slug_value = args.slug.strip().lower() if args.slug is not None else None
+    if slug_value is not None:
+        problem = library["slug_problem"](slug_value)
+        if problem is not None:
+            report = {
+                "cliVersion": cli_version,
+                "apiUrl": f"ssh://{target}",
+                "ok": False,
+                "slug": {"slug": slug_value, "status": "unavailable", "message": problem},
+            }
+            if args.json:
+                print(json.dumps(report, ensure_ascii=False))
+            else:
+                library["_print_check_report"](report)
+            return 1
+    if not args.file:
+        cmd = ["ssh", target, "tailplan-share", "check"]
+        if slug_value is not None:
+            cmd.extend(["--slug", slug_value])
+        if args.json:
+            cmd.append("--json")
+        completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if completed.returncode == 255:
+            report = {
+                "cliVersion": cli_version,
+                "apiUrl": f"ssh://{target}",
+                "ok": False,
+                "offline": True,
+                "networkError": f"Could not reach SSH target {target}.",
+            }
+            if slug_value is not None:
+                report["slug"] = {
+                    "slug": slug_value,
+                    "status": "unchecked",
+                    "message": "Availability was not checked offline.",
+                }
+            if args.json:
+                print(json.dumps(report, ensure_ascii=False))
+            else:
+                library["_print_check_report"](report)
+            return 1
+        if completed.stdout:
+            sys.stdout.write(completed.stdout)
+        if completed.stderr:
+            sys.stderr.write(completed.stderr)
+        return completed.returncode
+    source = Path(args.file).expanduser().resolve()
+    if not source.exists():
+        return library["_emit_failure"](
+            "file", f"Path does not exist: {source}",
+            json_output=args.json, stdout=sys.stdout, stderr=sys.stderr, exit_code=2,
+        )
+    if source.is_file() and source.suffix.lower() not in {".html", ".htm", ".md", ".txt"}:
+        return library["_emit_failure"](
+            "file", "Unsupported file type; use .md, .txt, .html, .htm, or a folder.",
+            json_output=args.json, stdout=sys.stdout, stderr=sys.stderr, exit_code=2,
+        )
+    try:
+        offline_pages: list[dict]
+        folder_pages: list[dict] | None = None
+        if source.is_dir():
+            folder_pages = library["read_html_folder"](source)
+            if not folder_pages:
+                return library["_emit_failure"](
+                    "file", f"No .html files found in {source}",
+                    json_output=args.json, stdout=sys.stdout, stderr=sys.stderr, exit_code=2,
+                )
+            offline_pages = folder_pages
+        elif source.suffix.lower() in {".html", ".htm"}:
+            offline_pages = [{"path": "index.html", "html": source.read_bytes().decode("utf-8")}]
+        else:
+            text = source.read_text(encoding="utf-8")
+            rendered = library["html_document"](
+                library["title_from_content"](source, text),
+                library["markdown_to_body"](text),
+                source.name,
+            )
+            offline_pages = [{"path": "index.html", "html": rendered}]
+    except (OSError, UnicodeError):
+        return library["_emit_failure"](
+            "file", "Input file is not valid UTF-8 or could not be read.",
+            json_output=args.json, stdout=sys.stdout, stderr=sys.stderr, exit_code=2,
+        )
+    with tempfile.TemporaryDirectory(prefix="tailplan-check-") as temporary:
+        files_json = None
+        if folder_pages is not None:
+            files_json = Path(temporary) / "pages.json"
+            files_json.write_text(
+                json.dumps({"filename": source.name, "files": folder_pages}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        created = subprocess.run(
+            ["ssh", target, "mktemp", "-d", "/tmp/tailplan-upload.XXXXXXXX"],
+            capture_output=True, text=True, check=False,
+        )
+        if created.returncode != 0:
+            local = library["validate_upload_offline"](offline_pages)
+            report = {
+                "cliVersion": cli_version,
+                "apiUrl": f"ssh://{target}",
+                "path": str(source),
+                "ok": False,
+                "offline": True,
+                "networkError": f"Could not reach SSH target {target}.",
+                "markupOk": local["ok"],
+                "totalBytes": local["totalBytes"],
+                "pages": local["pages"],
+                "issues": local["issues"],
+                "errors": local["errors"],
+                "warnings": local["warnings"],
+            }
+            if slug_value is not None:
+                report["slug"] = {
+                    "slug": slug_value,
+                    "status": "unchecked",
+                    "message": "Availability was not checked offline.",
+                }
+            if args.json:
+                print(json.dumps(report, ensure_ascii=False))
+            else:
+                library["_print_check_report"](report)
+            return 1
+        remote_dir = created.stdout.strip()
+        validate_remote_dir(remote_dir)
+        remote_path = f"{remote_dir}/pages.json" if files_json else f"{remote_dir}/{safe_filename(source)}"
+        try:
+            subprocess.run(["scp", "-O", "--", str(files_json or source), f"{target}:{remote_path}"], check=True)
+            cmd = ["ssh", target, "tailplan-share", "check"]
+            if files_json:
+                cmd.extend(["--files-json", remote_path])
+            else:
+                cmd.append(remote_path)
+            if slug_value is not None:
+                cmd.extend(["--slug", slug_value])
+            cmd.append("--json")
+            completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if completed.stdout.strip():
+                try:
+                    report = json.loads(completed.stdout)
+                except ValueError:
+                    report = None
+                if isinstance(report, dict) and "error" in report:
+                    return library["_emit_failure"](
+                        report.get("category", "management"),
+                        str(report["error"]),
+                        json_output=args.json,
+                        stdout=sys.stdout,
+                        stderr=sys.stderr,
+                        exit_code=completed.returncode or 1,
+                        code=report.get("code"),
+                    )
+                if isinstance(report, dict) and "ok" in report:
+                    report["path"] = str(source)
+                    if args.json:
+                        print(json.dumps(report, ensure_ascii=False))
+                    else:
+                        library["_print_check_report"](report)
+                    if completed.stderr:
+                        sys.stderr.write(completed.stderr)
+                    return completed.returncode
+            if completed.stdout:
+                sys.stdout.write(completed.stdout)
+            if completed.stderr:
+                sys.stderr.write(completed.stderr)
+            return completed.returncode
+        finally:
+            subprocess.run(["ssh", target, "rm", "-rf", "--", remote_dir], check=False, capture_output=True)
+
+
+def _remote_download(argv: list[str], target: str) -> int:
+    parser = argparse.ArgumentParser(prog="tailplan download")
+    parser.add_argument("draft")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    library = _load_library()
+    try:
+        validate_target(target)
+        ref = library["parse_draft_ref"](args.draft)
+        completed = subprocess.run(
+            ["ssh", target, "tailplan-share", "download", ref, "--print-source"],
+            capture_output=True, text=True, check=False,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "Remote download failed.").strip()
+            return library["_emit_failure"](
+                "management", detail,
+                json_output=args.json, stdout=sys.stdout, stderr=sys.stderr,
+                exit_code=completed.returncode or 1,
+            )
+        source = json.loads(completed.stdout)
+        extra_args = ["--target", target] if target != DEFAULT_TARGET else []
+        receipt = library["write_downloaded_source"](
+            source,
+            base_url=f"ssh://{target}",
+            state_dir=Path.home() / ".tailplan",
+            upload_extra_args=extra_args,
+        )
+        if args.json:
+            print(json.dumps(receipt, ensure_ascii=False))
+        else:
+            count = len(receipt["pages"])
+            label = f"{count} page" if count == 1 else f"{count} pages"
+            print(f"Downloaded {receipt['path']} ({label}, v{receipt['versionNumber']})")
+            print(f"Upload: {receipt['uploadCommand']}")
+        return 0
+    except (ValueError, RuntimeError, OSError) as exc:
+        return library["_emit_failure"](
+            "management", str(exc),
+            json_output=args.json, stdout=sys.stdout, stderr=sys.stderr, exit_code=2,
+        )
+
+
 def main() -> int:
     argv = sys.argv[1:]
     target = os.getenv("TAILPLAN_SSH_TARGET", DEFAULT_TARGET)
@@ -113,19 +360,47 @@ def main() -> int:
             return 2
         target = argv[index + 1]
         argv = argv[:index] + argv[index + 2:]
-    if argv and argv[0] in {"list", "whoami", "history", "disable", "enable", "delete", "keys", "themes", "typography"}:
+    if argv and argv[0] in {
+        "list", "whoami", "history", "disable", "enable", "delete",
+        "favorite", "unfavorite", "keys", "themes", "typography",
+    }:
         try:
             validate_target(target)
-            return subprocess.run(["ssh", target, "tailplan-share", *map(shlex.quote, argv)], check=False).returncode
-        except (ValueError, OSError) as exc:
+            forwarded = list(argv)
+            if forwarded[0] in {"history", "disable", "enable", "delete", "favorite", "unfavorite"}:
+                library = _load_library()
+                idx = 1
+                while idx < len(forwarded):
+                    if forwarded[idx] == "--reason":
+                        idx += 2
+                        continue
+                    if forwarded[idx].startswith("-"):
+                        idx += 1
+                        continue
+                    forwarded[idx] = library["parse_draft_ref"](forwarded[idx])
+                    break
+            return subprocess.run(["ssh", target, "tailplan-share", *map(shlex.quote, forwarded)], check=False).returncode
+        except (ValueError, RuntimeError, OSError) as exc:
+            print(f"tailplan: {exc}", file=sys.stderr)
+            return 2
+    if argv and argv[0] == "check":
+        try:
+            return _remote_check(argv[1:], target)
+        except (ValueError, RuntimeError, OSError, subprocess.CalledProcessError) as exc:
+            print(f"tailplan: {exc}", file=sys.stderr)
+            return 2
+    if argv and argv[0] == "download":
+        try:
+            return _remote_download(argv[1:], target)
+        except (ValueError, RuntimeError, OSError) as exc:
             print(f"tailplan: {exc}", file=sys.stderr)
             return 2
     if argv and argv[0] == "upload":
         argv = argv[1:]
     parser = argparse.ArgumentParser(
-        description="Publish a local Markdown, text, or HTML file through a remote Tailplan server."
+        description="Publish a local Markdown, text, HTML file, or HTML folder through a remote Tailplan server."
     )
-    parser.add_argument("file", help="Path to .md, .txt, or .html file")
+    parser.add_argument("file", help="Path to .md, .txt, .html file, or HTML folder")
     parser.add_argument(
         "--target",
         default=target,
@@ -134,6 +409,7 @@ def main() -> int:
     version = parser.add_mutually_exclusive_group()
     version.add_argument("--new", action="store_true", help="Create a fresh Tailplan draft")
     version.add_argument("--draft", help="Update a specific Tailplan draft id")
+    parser.add_argument("--slug", help="Set or update a custom URL slug")
     parser.add_argument("--theme")
     parser.add_argument("--document-type")
     parser.add_argument("--typography", help="Font preset ID; list with tailplan typography")
@@ -143,38 +419,76 @@ def main() -> int:
     args = parser.parse_args(argv)
 
     try:
-        library_path = Path(__file__).resolve().with_name("tailplan-publisher")
-        if not library_path.exists():
-            library_path = Path(__file__).resolve().with_name("tailplan-share")
-        if library_path == Path(__file__).resolve():
-            raise RuntimeError("Client helpers are missing. Run install-client.sh again.")
-        library = runpy.run_path(str(library_path))
+        library = _load_library()
         source = Path(args.file).expanduser().resolve()
         validate_target(args.target)
-        mapping_path = Path.home() / ".tailplan" / f"remote-{args.target}-drafts.json"
-        with library["source_publish_lock"](mapping_path, source), tempfile.TemporaryDirectory(prefix="tailplan-client-") as temporary:
-            mappings = library["load_mappings"](mapping_path)
-            selected = library["choose_draft_id"](mappings, source, explicit_draft_id=args.draft, force_new=args.new)
+        slug = args.slug.strip().lower() if args.slug is not None else None
+        if args.new and slug is not None:
+            raise ValueError("--new cannot be combined with --slug.")
+        if slug is not None:
+            problem = library["slug_problem"](slug)
+            if problem is not None:
+                raise ValueError(problem)
+        state_dir = Path.home() / ".tailplan"
+        legacy_mapping_path = state_dir / f"remote-{args.target}-drafts.json"
+        remote_api_key = f"ssh://{args.target}"
+        with library["source_publish_lock"](legacy_mapping_path, source), tempfile.TemporaryDirectory(prefix="tailplan-client-") as temporary:
+            binding = library["find_draft_binding"](
+                state_dir, remote_api_key, source, legacy_mapping_path=legacy_mapping_path
+            )
+            if args.new:
+                selected = None
+            elif args.draft:
+                selected = args.draft
+            else:
+                selected = binding["draftId"] if binding else None
+            provenance_cwd = source if source.is_dir() else source.parent
             metadata_path = Path(temporary) / "provenance.json"
-            metadata_path.write_text(json.dumps(library["collect_provenance"](source.parent)), encoding="utf-8")
+            metadata_path.write_text(json.dumps(library["collect_provenance"](provenance_cwd)), encoding="utf-8")
+            files_json_path = None
+            if source.is_dir():
+                pages = library["read_html_folder"](source)
+                if not pages:
+                    raise FileNotFoundError(f"No .html files found in {source}")
+                files_json_path = Path(temporary) / "pages.json"
+                files_json_path.write_text(
+                    json.dumps({"filename": source.name, "files": pages}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
             try:
-                result = share_file(source, target=args.target, new=args.new, draft=selected,
-                                    description=args.description, json_output=True, metadata_path=metadata_path,
-                                    theme=args.theme, document_type=args.document_type, layout=args.layout, typography=args.typography)
+                result = share_file(
+                    source, target=args.target, new=args.new, draft=selected,
+                    description=args.description, json_output=True, metadata_path=metadata_path,
+                    theme=args.theme, document_type=args.document_type, layout=args.layout,
+                    typography=args.typography, slug=slug, files_json_path=files_json_path,
+                )
             except subprocess.CalledProcessError as exc:
                 try:
-                    stale = json.loads(exc.stdout).get("category") == "missing draft"
+                    err_obj = json.loads(exc.stdout)
+                    stale = err_obj.get("category") == "missing draft"
+                    slug_mismatch = (
+                        slug is not None
+                        and err_obj.get("category") == "conflict"
+                        and (
+                            err_obj.get("code") == "slug_names_other_draft"
+                            or "already names draft" in str(err_obj.get("error", ""))
+                        )
+                    )
                 except (TypeError, ValueError):
                     stale = False
-                if args.draft or not selected or not stale:
+                    slug_mismatch = False
+                if args.draft or not selected or (not stale and not slug_mismatch):
                     raise
-                result = share_file(source, target=args.target, new=True, draft=None,
-                                    description=args.description, json_output=True, metadata_path=metadata_path,
-                                    theme=args.theme, document_type=args.document_type, layout=args.layout, typography=args.typography)
+                result = share_file(
+                    source, target=args.target, new=(not slug_mismatch and slug is None), draft=None,
+                    description=args.description, json_output=True, metadata_path=metadata_path,
+                    theme=args.theme, document_type=args.document_type, layout=args.layout,
+                    typography=args.typography, slug=slug, files_json_path=files_json_path,
+                )
             value = json.loads(result.stdout)
             if not isinstance(value, dict) or value.get("ok") is not True:
                 raise RuntimeError("Publisher returned an invalid response.")
-            library["update_mapping"](mapping_path, source, value)
+            library["save_draft_binding"](state_dir, remote_api_key, source, value)
             return library["_emit_success"](value, json_output=args.json, stdout=sys.stdout, stderr=sys.stderr)
     except (FileNotFoundError, ValueError, RuntimeError, KeyError) as exc:
         print(f"tailplan-share: {exc}", file=sys.stderr)

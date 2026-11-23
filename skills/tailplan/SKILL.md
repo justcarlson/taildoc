@@ -18,8 +18,9 @@ The name Tailplan does not mean a checklist or an agent plan mode.
 1. Read the complete source material.
 2. Separate completed work from incomplete work.
 3. Verify numbers and claims against live data or primary sources before writing.
-4. Create one standalone source file in static HTML, Markdown, or plain text format without active content.
+4. Create one standalone source file in HTML, Markdown, or plain text format, or a folder of `.html` pages.
    Prefer static HTML for plans, comparisons, and decision reports.
+   Authenticated HTML drafts may use inline JavaScript inside the opaque CSP sandbox.
    Use Markdown for quick notes or the `brief` layout.
 5. Use a temporary source file unless the user requests a durable repository document.
 6. Remove credentials, secret values, access URLs, and sensitive personal data before publication.
@@ -214,14 +215,25 @@ receiving apps can outlive a draft update or revocation.
 
 ## Manage published drafts
 
-Use `tailplan list --json` to find drafts and `tailplan history ID --json` to inspect their versions.
+Use `tailplan check [FILE_OR_DIR] [--slug NAME]` to validate markup, sandbox limits, and slug availability before upload.
+It falls back to local markup checks when the server is unreachable.
+Use `--slug NAME` for memorable, portable URLs across machines.
+Upload a folder of `.html` pages with `index.html` to publish a multi-page draft.
+Use `tailplan download REF` to fetch the current source without overwriting existing local files.
+Use `tailplan favorite REF` and `tailplan unfavorite REF` to pin drafts at the top of the dashboard and list.
+Re-uploading identical content keeps the current version and returns `unchanged`.
+
+Use `tailplan list --json` to find drafts and `tailplan history REF --json` to inspect their versions.
 Use `tailplan upload FILE --description TEXT` to attach a stable description.
-Open `/dashboard` under the configured base URL for repository groups and version history.
+Open `/dashboard` under the configured base URL for favorites, repository groups, and version history.
 Open `/cli/auth` to generate or revoke named API keys.
 The direct client accepts those keys through `tailplan auth login`.
 The SSH client uses the existing SSH identity.
 
-Use `tailplan disable ID`, `tailplan enable ID`, or `tailplan delete ID` for requested lifecycle changes.
+Use `tailplan disable REF`, `tailplan enable REF`, or `tailplan delete REF` for requested lifecycle changes.
 Verify the resulting state with the draft list and viewer URL.
-Inline script source can be published, but the viewer blocks its execution.
-Use static HTML and CSS for content that must work in the browser.
+Authenticated HTML drafts may run inline JavaScript, including `type="module"` and `on*` handlers, inside an opaque sandbox.
+The sandbox blocks `fetch`, XHR, WebSocket, EventSource, browser storage, cookies, dialogs, workers, forms, and embeds.
+External HTTPS images, media, fonts, allowlisted stylesheets, and new-tab popups remain allowed.
+Keep state in memory or `location.hash`, and inline data in `<script type="application/json">` blocks.
+Script-free drafts and Markdown pages remain under `script-src 'none'`.

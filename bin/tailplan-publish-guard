@@ -16,6 +16,9 @@ FILE_RE = re.compile(
     r"(/tmp/tailplan-upload\.[A-Za-z0-9]{8})/([A-Za-z0-9_][A-Za-z0-9_.-]{0,254})"
 )
 DRAFT_RE = re.compile(r"[a-z0-9]{6,32}")
+SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,38}[a-z0-9]")
+DRAFT_REF_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,39}")
+MAX_FILES_JSON_BYTES = 512 * 1024 * 6 + 64 * 1024
 
 
 def deny(detail: str) -> None:
@@ -57,6 +60,26 @@ def parse_original_command() -> list[str]:
         deny("SSH_ORIGINAL_COMMAND has invalid quoting")
 
 
+def _verify_staged_file(path_str: str, *, max_size: int | None = None, label: str = "file") -> None:
+    """Verify staged upload directory and file without following symlinks."""
+    path = Path(path_str)
+    parent = path.parent
+    try:
+        parent_stat = parent.stat(follow_symlinks=False)
+    except OSError:
+        deny(f"{label} directory is not available")
+    if not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != os.getuid():
+        deny(f"{label} directory has an invalid owner or type")
+    try:
+        info = path.stat(follow_symlinks=False)
+    except OSError:
+        deny(f"{label} is not available")
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        deny(f"{label} has an invalid owner or type")
+    if max_size is not None and info.st_size > max_size:
+        deny(f"{label} is too large")
+
+
 def execute(argv: list[str]) -> None:
     if argv == ["mktemp", "-d", "/tmp/tailplan-upload.XXXXXXXX"]:
         os.execv("/usr/bin/mktemp", argv)
@@ -72,30 +95,75 @@ def execute(argv: list[str]) -> None:
         os.execv("/usr/bin/scp", argv)
 
     if argv and argv[0] == "tailplan-share" and len(argv) > 1 and argv[1] in {
-        "list", "whoami", "history", "disable", "enable", "delete", "keys", "themes", "typography",
+        "list", "whoami", "history", "disable", "enable", "delete",
+        "favorite", "unfavorite", "keys", "themes", "typography", "download", "check",
     }:
         values = argv[1:]
+        if values[0] == "check":
+            rest = values[1:]
+            seen_check: set[str] = set()
+            source_path: str | None = None
+            while rest:
+                token, *rest = rest
+                if token == "--json":
+                    if token in seen_check:
+                        deny("duplicate check option")
+                    seen_check.add(token)
+                elif token == "--slug":
+                    if token in seen_check or not rest:
+                        deny("invalid check slug")
+                    seen_check.add(token)
+                    slug_val, *rest = rest
+                    if SLUG_RE.fullmatch(slug_val) is None:
+                        deny("invalid check slug")
+                elif token == "--files-json":
+                    if token in seen_check or source_path is not None or not rest:
+                        deny("invalid check files path")
+                    seen_check.add(token)
+                    source_path, *rest = rest
+                    if FILE_RE.fullmatch(source_path) is None:
+                        deny("invalid check files path")
+                elif source_path is None and FILE_RE.fullmatch(token):
+                    source_path = token
+                else:
+                    deny("check arguments are invalid")
+            if source_path is not None:
+                _verify_staged_file(source_path, max_size=MAX_FILES_JSON_BYTES, label="check source")
+            command = configured_share_command()
+            os.execv(command, [command, *argv[1:]])
+        if values[0] == "download":
+            if len(values) != 3 or DRAFT_REF_RE.fullmatch(values[1]) is None or values[2] != "--print-source":
+                deny("download arguments are invalid")
+            command = configured_share_command()
+            os.execv(command, [command, *argv[1:]])
         if "--json" in values:
             values = [value for value in values if value != "--json"]
         valid = values in (["list"], ["whoami"], ["keys", "list"], ["themes"], ["typography"])
-        if len(values) == 2 and values[0] in {"history", "disable", "enable", "delete"}:
-            valid = DRAFT_RE.fullmatch(values[1]) is not None
+        if len(values) == 2 and values[0] in {"history", "disable", "enable", "delete", "favorite", "unfavorite"}:
+            valid = DRAFT_REF_RE.fullmatch(values[1]) is not None
         if len(values) == 3 and values[:2] == ["keys", "revoke"]:
             valid = DRAFT_RE.fullmatch(values[2]) is not None
         if len(values) == 3 and values[:2] == ["keys", "create"]:
             valid = 0 < len(values[2]) <= 255 and not values[2].startswith("-")
         if len(values) == 4 and values[0] == "disable" and values[2] == "--reason":
-            valid = DRAFT_RE.fullmatch(values[1]) is not None and len(values[3]) <= 1000
+            valid = DRAFT_REF_RE.fullmatch(values[1]) is not None and len(values[3]) <= 1000
         if not valid:
             deny("management arguments are invalid")
         command = configured_share_command()
         os.execv(command, [command, *argv[1:]])
 
-    if 2 <= len(argv) <= 19 and argv[0] == "tailplan-share":
-        match = FILE_RE.fullmatch(argv[1])
-        if match is None:
-            deny("publish path is invalid")
-        options = argv[2:]
+    if 2 <= len(argv) <= 22 and argv[0] == "tailplan-share":
+        if argv[1] == "--files-json":
+            if len(argv) < 3 or FILE_RE.fullmatch(argv[2]) is None:
+                deny("publish path is invalid")
+            source_arg = argv[2]
+            options = argv[3:]
+        else:
+            match = FILE_RE.fullmatch(argv[1])
+            if match is None:
+                deny("publish path is invalid")
+            source_arg = argv[1]
+            options = argv[2:]
         seen = set()
         while options:
             option, *options = options
@@ -104,30 +172,31 @@ def execute(argv: list[str]) -> None:
             seen.add(option)
             if option in {"--new", "--json"}:
                 continue
-            if option not in {"--draft", "--description", "--metadata-file", "--theme", "--document-type", "--layout", "--typography"} or not options:
+            if option not in {
+                "--draft", "--slug", "--description", "--metadata-file",
+                "--theme", "--document-type", "--layout", "--typography",
+            } or not options:
                 deny("publish option is invalid")
             value, *options = options
             if option in {"--theme", "--document-type", "--layout", "--typography"} and not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", value):
                 deny("theme option is invalid")
             if option == "--draft" and DRAFT_RE.fullmatch(value) is None:
                 deny("draft option is invalid")
+            if option == "--slug" and SLUG_RE.fullmatch(value) is None:
+                deny("slug option is invalid")
             if option == "--description" and (len(value) > 1000 or value.startswith("-")):
                 deny("description is invalid")
             if option == "--metadata-file":
-                if value != str(Path(argv[1]).parent / "provenance.json"):
+                if value != str(Path(source_arg).parent / "provenance.json"):
                     deny("metadata path is invalid")
-                info = Path(value).stat(follow_symlinks=False)
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > 65536:
-                    deny("metadata file is invalid")
-        if {"--draft", "--new"}.issubset(seen):
+                _verify_staged_file(value, max_size=65536, label="metadata file")
+        if {"--draft", "--new"}.issubset(seen) or {"--slug", "--new"}.issubset(seen):
             deny("draft options conflict")
-        source = Path(argv[1])
-        try:
-            source_stat = source.stat(follow_symlinks=False)
-        except OSError:
-            deny("publish source is not available")
-        if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_uid != os.getuid():
-            deny("publish source has an invalid owner or type")
+        _verify_staged_file(
+            source_arg,
+            max_size=MAX_FILES_JSON_BYTES if argv[1] == "--files-json" else None,
+            label="publish source",
+        )
         command = configured_share_command()
         os.execv(command, [command, *argv[1:]])
 

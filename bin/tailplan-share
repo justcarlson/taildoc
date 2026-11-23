@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -55,11 +56,1259 @@ a { color: #2563eb; overflow-wrap: anywhere; }
 }
 """.strip()
 
+CLI_VERSION = "0.3.0"
+STAGED_UPLOAD_RE = re.compile(r"^/tmp/tailplan-upload\.[A-Za-z0-9]{8}/")
 TITLE_RE = re.compile(r"<title\b[^>]*>(.*?)</title\s*>", re.IGNORECASE | re.DOTALL)
+VIEWPORT_RE = re.compile(r"<meta\b[^>]*\bname\s*=\s*['\"]?viewport\b", re.IGNORECASE)
 DRAFT_ID_RE = re.compile(r"[a-z0-9]{6,32}")
+GENERATED_DRAFT_ID_RE = re.compile(r"[a-z0-9]{12}")
+SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,38}[a-z0-9]")
+DRAFT_REF_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,39}")
+PAGE_SEGMENT_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*")
+MAX_HTML_BYTES = 512 * 1024
+MAX_PAGES_PER_UPLOAD = 50
+MAX_DEPTH = 512
+MAX_PAGE_PATH_LENGTH = 200
+MAX_PAGE_PATH_SEGMENTS = 6
+RESERVED_SLUGS = {
+    "admin", "api", "app", "assets", "auth", "blog", "cdn", "cli", "d",
+    "dashboard", "docs", "files", "help", "login", "mail", "postplan", "raw",
+    "signin", "static", "status", "support", "taildoc", "tailplan", "www",
+}
+RESERVED_PAGE_ROOTS = {
+    "v", "raw", "content", "share", "preview.png", "api", "healthz",
+    "readyz", "favicon.ico", "favicon.png", "favicon.svg",
+}
+BLOCKED_TAGS_WITH_FIX = {
+    "applet": "Link to the page instead of embedding it.",
+    "base": "Remove the base tag.",
+    "embed": "Link to the page instead of embedding it.",
+    "form": "Forms cannot submit on Tailplan. Use inputs without a form wrapper.",
+    "frame": "Link to the page instead of embedding it.",
+    "iframe": "Link to the page instead of embedding it.",
+    "noembed": "Remove obsolete noembed tags.",
+    "noframes": "Remove obsolete noframes tags.",
+    "object": "Link to the page instead of embedding it.",
+    "plaintext": "Remove obsolete plaintext tags.",
+    "xmp": "Use a pre and code block instead of xmp.",
+}
+EXECUTABLE_SCRIPT_TYPES = {"", "text/javascript", "application/javascript", "module"}
+DATA_SCRIPT_TYPES = {
+    "application/json", "application/ld+json", "text/plain",
+    "text/template", "text/html", "text/markdown", "text/csv",
+}
+ALLOWED_LINK_RELS = {
+    "stylesheet", "alternate", "icon", "shortcut",
+    "apple-touch-icon", "preconnect", "dns-prefetch",
+}
+EVENT_HANDLER_ATTRS = {
+    f"on{event}"
+    for event in (
+        "abort afterprint animationcancel animationend animationiteration animationstart "
+        "auxclick beforecopy beforecut beforeinput beforematch beforepaste beforeprint "
+        "beforetoggle beforeunload beforexrselect begin blur cancel canplay "
+        "canplaythrough change click close command contentvisibilityautostatechange "
+        "contextlost contextmenu contextrestored copy cuechange cut dblclick devicemotion "
+        "deviceorientation deviceorientationabsolute drag dragend dragenter dragexit "
+        "dragleave dragover dragstart drop durationchange emptied encrypted end ended "
+        "error focus focusin focusout formdata freeze fullscreenchange fullscreenerror "
+        "gesturechange gestureend gesturestart gotpointercapture hashchange input "
+        "invalid keydown keypress keyup languagechange load loadeddata loadedmetadata "
+        "loadstart lostpointercapture message messageerror mousedown mouseenter "
+        "mouseleave mousemove mouseout mouseover mouseup mousewheel offline online "
+        "orientationchange pagehide pagereveal pageshow pageswap paste pause play "
+        "playing pointercancel pointerdown pointerenter pointerleave pointermove "
+        "pointerout pointerover pointerrawupdate pointerup popstate prerenderingchange "
+        "progress ratechange readystatechange rejectionhandled repeat reset resize "
+        "resume scroll scrollend scrollsnapchange scrollsnapchanging search "
+        "securitypolicyviolation seeked seeking select selectionchange selectstart "
+        "slotchange stalled storage submit suspend timeupdate toggle touchcancel "
+        "touchend touchmove touchstart transitioncancel transitionend transitionrun "
+        "transitionstart unhandledrejection unload visibilitychange volumechange waiting "
+        "waitingforkey webkitanimationend webkitanimationiteration webkitanimationstart "
+        "webkitfullscreenchange webkitfullscreenerror webkittransitionend wheel zoom"
+    ).split()
+}
+EMBED_SRC_TAGS = {"img", "video", "audio", "source", "track"}
+VOID_ELEMENTS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+}
+URL_ATTRIBUTES = {
+    "action", "background", "cite", "data", "formaction",
+    "href", "poster", "src", "xlink:href",
+}
+SMIL_ANIMATION_TAGS = {"animate", "animatemotion", "animatetransform", "set"}
+FOREIGN_ROOT_TAGS = {"svg", "math"}
+SVG_INTEGRATION_TAGS = {"desc", "foreignobject", "title"}
+MATH_TEXT_INTEGRATION_TAGS = {"mi", "mn", "mo", "ms", "mtext"}
+MATH_TEXT_FOREIGN_EXCEPTIONS = {"malignmark", "mglyph"}
+FOREIGN_MODES = {"svg", "math"}
+INTEGRATION_MODES = {"svg_html", "math_html", "math_text"}
+HTML_SCOPE_BARRIERS = {
+    "applet", "caption", "html", "marquee", "object", "select",
+    "table", "td", "template", "th",
+}
+HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+HTML_SCOPED_CLOSE_TAGS = HEADING_TAGS | {
+    "address", "article", "aside", "blockquote", "button", "caption", "center",
+    "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset",
+    "figcaption", "figure", "footer", "form", "header", "hgroup", "listing",
+    "main", "menu", "nav", "ol", "pre", "search", "section", "select",
+    "summary", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
+}
+HTML_SPECIAL_TAGS = HTML_SCOPE_BARRIERS | HTML_SCOPED_CLOSE_TAGS | {
+    "area", "base", "basefont", "bgsound", "body", "br", "col", "embed",
+    "frame", "frameset", "head", "hr", "iframe", "img", "input", "keygen",
+    "li", "link", "meta", "noembed", "noframes", "noscript", "p", "param",
+    "plaintext", "script", "source", "style", "textarea", "title", "track",
+    "wbr", "xmp",
+}
+SELECT_CLOSING_TAGS = {"input", "keygen", "select", "textarea"}
+SELECT_INNER_TAGS = {"hr", "optgroup", "option", "script", "template"}
+TABLE_STRUCTURE_TAGS = {"caption", "table", "tbody", "td", "tfoot", "th", "thead", "tr"}
+TABLE_CELL_CLOSERS = {"caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr"}
+TABLE_ROW_GROUPS = {"tbody", "tfoot", "thead"}
+SELECT_RE = re.compile(r"<select\b", re.IGNORECASE)
+DUAL_MODE_RE = re.compile(r"<(?:svg|math|select|noscript)\b", re.IGNORECASE)
+RAWTEXT_CLOSE_IN_COMMENT_RE = re.compile(r"</(?:style|title|textarea|noscript)\b[^>]*>", re.IGNORECASE)
+FOREIGN_BREAKOUT_TAGS = {
+    "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div",
+    "dl", "dt", "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head",
+    "hr", "i", "img", "li", "listing", "menu", "meta", "nobr", "ol", "p",
+    "pre", "ruby", "s", "small", "span", "strong", "strike", "sub", "sup",
+    "table", "tt", "u", "ul", "var",
+}
+NOSCRIPT_RE = re.compile(r"<noscript\b", re.IGNORECASE)
+META_TAG_RAW_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE | re.DOTALL)
+META_REFRESH_ATTR_RE = re.compile(
+    r"""(?:^|[\s/])http-equiv\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s/>]+))""",
+    re.IGNORECASE | re.DOTALL,
+)
+EMBED_FIX = "Link to the page instead of embedding it."
+SECURITY_SENSITIVE_ATTRIBUTES = URL_ATTRIBUTES | {
+    "http-equiv", "imagesrcset", "rel", "srcdoc", "srcset", "style", "type",
+}
+BLOCKED_URL_SCHEMES = {"file", "javascript", "vbscript"}
+CSS_URL_RE = re.compile(
+    r"""url\s*\(\s*(?:"([^"]*)(?:"|$)|'([^']*)(?:'|$)|([^)"']+))""",
+    re.IGNORECASE | re.DOTALL,
+)
+CSS_IMPORT_RE = re.compile(
+    r"""@import\s*(?:"([^"]*)(?:"|$)|'([^']*)(?:'|$))""",
+    re.IGNORECASE | re.DOTALL,
+)
+SANDBOX_APIS = (
+    (
+        "sandbox-storage",
+        re.compile(r"\b(?:localStorage|sessionStorage|indexedDB)\b"),
+        "Scripts use browser storage, which throws in the Tailplan sandbox.",
+        "Keep state in memory or in location.hash.",
+    ),
+    (
+        "sandbox-cookie",
+        re.compile(r"\bdocument\.cookie\b"),
+        "Scripts use document.cookie, which throws in the Tailplan sandbox.",
+        "Keep state in memory or in location.hash.",
+    ),
+    (
+        "sandbox-network",
+        re.compile(r"\bfetch\s*\(|\bXMLHttpRequest\b|\bWebSocket\b|\bEventSource\b"),
+        "Scripts make network requests, which the Tailplan sandbox blocks.",
+        'Inline the data in the page, for example in a <script type="application/json"> block.',
+    ),
+    (
+        "sandbox-dialog",
+        re.compile(r"\b(?:alert|confirm|prompt)\s*\("),
+        "Scripts use alert/confirm/prompt, which do nothing in the Tailplan sandbox.",
+        "Show messages in the page instead.",
+    ),
+    (
+        "sandbox-worker",
+        re.compile(r"\bnew\s+(?:Shared)?Worker\b"),
+        "Scripts start workers, which the Tailplan sandbox blocks.",
+        "Run the code on the main thread.",
+    ),
+)
 # Tailplan limits blockquote depth to `MAX_QUOTE_DEPTH` to protect the Python recursion limit.
 # Tailplan renders additional blockquote markers as escaped text.
 MAX_QUOTE_DEPTH = 16
+
+
+def slug_problem(slug: object) -> str | None:
+    """Return why a custom URL slug is invalid, or None when valid."""
+    if not isinstance(slug, str) or SLUG_RE.fullmatch(slug) is None:
+        return "Custom URLs are 3-40 characters of a-z, 0-9, and inner hyphens."
+    if slug[2:4] == "--":
+        return "Custom URLs cannot have hyphens as the third and fourth characters."
+    if GENERATED_DRAFT_ID_RE.fullmatch(slug) is not None:
+        return "Custom URLs cannot be 12 letters and numbers; that is the draft ID format."
+    if slug in RESERVED_SLUGS:
+        return f'"{slug}" is reserved.'
+    return None
+
+
+def page_path_problem(path: object) -> str | None:
+    """Return why a multi-page relative path is invalid, or None when valid."""
+    if not isinstance(path, str) or not path:
+        return "Page path is missing."
+    segments = path.split("/")
+    if len(path) > MAX_PAGE_PATH_LENGTH or len(segments) > MAX_PAGE_PATH_SEGMENTS:
+        return f'Page path "{path}" is too long.'
+    if not path.endswith(".html") or not all(
+        PAGE_SEGMENT_RE.fullmatch(segment) for segment in segments
+    ):
+        return (
+            f'Page path "{path}" must be a relative .html path '
+            'of letters, numbers, ".", "_", and "-".'
+        )
+    root = segments[0].removesuffix(".html").lower()
+    if root in RESERVED_PAGE_ROOTS or segments[0].lower() in RESERVED_PAGE_ROOTS:
+        return f'Page path "{path}" uses the reserved name "{root}".'
+    return None
+
+
+def format_bytes(size: int) -> str:
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f}".rstrip("0").rstrip(".") + " MiB"
+    if size >= 1024:
+        return f"{size / 1024:.1f}".rstrip("0").rstrip(".") + " KiB"
+    return f"{size} bytes"
+
+
+def format_issue(issue: dict) -> str:
+    location = f"line {issue['line']}:{issue['column']}" if issue.get("line") else None
+    where = " ".join(part for part in (issue.get("path"), location) if part)
+    count = f" ({issue['count']} places)" if issue.get("count", 1) > 1 else ""
+    fix = f" Fix: {issue['fix']}" if issue.get("fix") else ""
+    prefix = f"{where}: " if where else ""
+    return f"{prefix}{issue['message']}{count}{fix}"
+
+
+def shell_quote(value: str) -> str:
+    if re.fullmatch(r"[\w@%+=:,./-]+", value):
+        return value
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def parse_draft_ref(value: str, base_url: str | None = None) -> str:
+    """Parse a draft ID, custom slug, or draft URL into its normalized ref."""
+    raw = value.strip()
+    if "://" in raw:
+        try:
+            parsed = urllib.parse.urlsplit(raw)
+            parsed_port = parsed.port
+        except ValueError as exc:
+            raise ConfigurationFailure(f"Not a valid URL: {raw}") from exc
+        if base_url:
+            try:
+                base = urllib.parse.urlsplit(base_url.rstrip("/"))
+                base_port = base.port
+            except ValueError as exc:
+                raise ConfigurationFailure(f"Configured Tailplan URL is invalid: {base_url}") from exc
+            default_port = 443 if parsed.scheme.lower() == "https" else 80
+            base_default_port = 443 if base.scheme.lower() == "https" else 80
+            same_host = (
+                parsed.scheme.lower() == base.scheme.lower()
+                and (parsed_port or default_port) == (base_port or base_default_port)
+                and (
+                    (parsed.hostname or "").lower() == (base.hostname or "").lower()
+                    or (
+                        _loopback_hostname(parsed.hostname)
+                        and _loopback_hostname(base.hostname)
+                    )
+                )
+            )
+            base_prefix = base.path.rstrip("/")
+            path_ok = (not base_prefix) or parsed.path.startswith(base_prefix + "/d/")
+            if not same_host or not path_ok:
+                raise ConfigurationFailure(
+                    f"{raw} does not match configured Tailplan server {base_url}."
+                )
+            rel_path = parsed.path[len(base_prefix):] if base_prefix else parsed.path
+            match = re.match(r"^/d/([^/]+)", rel_path)
+        else:
+            match = re.search(r"(?:^|/)d/([^/]+)", parsed.path)
+        if not match:
+            raise ConfigurationFailure(f"{raw} is not a Tailplan draft URL.")
+        ref = match.group(1).lower()
+    else:
+        ref = raw.lower()
+    if DRAFT_REF_RE.fullmatch(ref) is None:
+        raise ConfigurationFailure("Draft ID or custom URL is invalid.")
+    return ref
+
+
+def unique_path(target: Path) -> Path:
+    """Return target, or the first unused <name>-2<ext> variant."""
+    if not target.exists() and not target.is_symlink():
+        return target
+    stem = target.stem if target.suffix else target.name
+    suffix = target.suffix
+    number = 2
+    while True:
+        candidate = target.with_name(f"{stem}-{number}{suffix}")
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+        number += 1
+
+
+def read_html_folder(directory: Path) -> list[dict]:
+    """Read all .html files under a folder as relative POSIX paths."""
+    resolved = directory.expanduser().resolve()
+    files: list[dict] = []
+
+    def walk(current: Path) -> None:
+        for entry in sorted(current.iterdir(), key=lambda item: item.name):
+            if entry.name.startswith(".") or entry.name == "node_modules":
+                continue
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                walk(entry)
+            elif entry.is_file() and entry.suffix.lower() == ".html":
+                rel = entry.relative_to(resolved).as_posix()
+                files.append({"path": rel, "html": entry.read_bytes().decode("utf-8")})
+
+    walk(resolved)
+    files.sort(key=lambda item: item["path"])
+    return files
+
+
+def _has_unsafe_scheme_offline(value: str) -> bool:
+    decoded = html.unescape(value)
+    for _ in range(3):
+        expanded = urllib.parse.unquote(decoded)
+        if expanded == decoded:
+            break
+        decoded = expanded
+    compact = re.sub(r"[\x00-\x20\x7f]+", "", decoded)
+    match = re.match(r"^([a-z][a-z0-9+.-]*):", compact, re.IGNORECASE)
+    return bool(match and match.group(1).lower() in BLOCKED_URL_SCHEMES)
+
+
+def _decode_css_escapes_offline(value: str) -> str:
+    decoded: list[str] = []
+    index = 0
+    while index < len(value):
+        if value[index] != "\\":
+            decoded.append(value[index])
+            index += 1
+            continue
+        index += 1
+        if index == len(value):
+            break
+        if value[index] in "\n\f":
+            index += 1
+            continue
+        if value[index] == "\r":
+            index += 1
+            if index < len(value) and value[index] == "\n":
+                index += 1
+            continue
+        start = index
+        while index < len(value) and index - start < 6 and value[index] in "0123456789abcdefABCDEF":
+            index += 1
+        if index > start:
+            codepoint = int(value[start:index], 16)
+            if index < len(value) and value[index] in " \t\n\r\f":
+                index += 1
+            if codepoint == 0 or codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+                decoded.append("\N{REPLACEMENT CHARACTER}")
+            else:
+                decoded.append(chr(codepoint))
+            continue
+        decoded.append(value[index])
+        index += 1
+    return "".join(decoded)
+
+
+def _strip_css_comments_offline(value: str) -> str:
+    out: list[str] = []
+    index = 0
+    length = len(value)
+    quote: str | None = None
+    while index < length:
+        ch = value[index]
+        if quote is not None:
+            if ch == "\\" and index + 1 < length:
+                if value[index + 1] == "\r" and index + 2 < length and value[index + 2] == "\n":
+                    out.append(value[index : index + 3])
+                    index += 3
+                else:
+                    out.append(value[index : index + 2])
+                    index += 2
+                continue
+            out.append(ch)
+            if ch in "\n\r\f" or ch == quote:
+                quote = None
+            index += 1
+            continue
+        if ch == "\\" and index + 1 < length:
+            if value[index + 1] == "\r" and index + 2 < length and value[index + 2] == "\n":
+                out.append(value[index : index + 3])
+                index += 3
+            else:
+                out.append(value[index : index + 2])
+                index += 2
+            continue
+        if ch in {'"', "'"}:
+            quote = ch
+            out.append(ch)
+            index += 1
+            continue
+        if ch == "/" and index + 1 < length and value[index + 1] == "*":
+            end = value.find("*/", index + 2)
+            index = length if end == -1 else end + 2
+            continue
+        out.append(ch)
+        index += 1
+    return "".join(out)
+
+
+def _css_text_is_unsafe_offline(text: str) -> bool:
+    urls = [
+        next(group for group in m.groups() if group is not None)
+        for m in CSS_URL_RE.finditer(text)
+    ]
+    urls.extend(
+        next(group for group in m.groups() if group is not None)
+        for m in CSS_IMPORT_RE.finditer(text)
+    )
+    return bool(re.search(r"expression\s*\(|behavior\s*:", text, re.IGNORECASE)) or any(
+        _has_unsafe_scheme_offline(url) for url in urls
+    )
+
+
+def _css_has_unsafe_url_offline(value: str) -> bool:
+    unstripped = _decode_css_escapes_offline(value)
+    stripped = _decode_css_escapes_offline(_strip_css_comments_offline(value))
+    return _css_text_is_unsafe_offline(stripped) or _css_text_is_unsafe_offline(unstripped)
+
+
+def _parse_srcset_urls_offline(value: str) -> list[str]:
+    urls: list[str] = []
+    index = 0
+    length = len(value)
+    while index < length:
+        while index < length and value[index] in " \t\n\r\f,":
+            index += 1
+        if index >= length:
+            break
+        start = index
+        while index < length and not value[index].isspace():
+            if value[index] == ",":
+                candidate = value[start:index]
+                if not candidate.lower().startswith("data:"):
+                    break
+            index += 1
+        raw_url = value[start:index]
+        ended_with_comma = raw_url.endswith(",")
+        url = raw_url.rstrip(",")
+        if url:
+            urls.append(url)
+        if ended_with_comma:
+            continue
+        while index < length and value[index] != ",":
+            index += 1
+        if index < length and value[index] == ",":
+            index += 1
+    return urls
+
+
+def _is_foreign_breakout_offline(tag_lower: str, attrs: list[tuple[str, str | None]]) -> bool:
+    if tag_lower in FOREIGN_BREAKOUT_TAGS:
+        return True
+    if tag_lower == "font":
+        return any(name.lower() in {"color", "face", "size"} for name, _ in attrs)
+    return False
+
+
+def _integration_mode_offline(
+    parent_mode: str,
+    tag_lower: str,
+    attrs: list[tuple[str, str | None]],
+) -> str | None:
+    if parent_mode == "svg":
+        return "svg_html" if tag_lower in SVG_INTEGRATION_TAGS else None
+    if parent_mode == "math":
+        if tag_lower in MATH_TEXT_INTEGRATION_TAGS:
+            return "math_text"
+        if tag_lower == "annotation-xml":
+            first_encoding = next(
+                (value for name, value in attrs if name.lower() == "encoding"),
+                None,
+            )
+            if isinstance(first_encoding, str) and first_encoding.lower() in {
+                "text/html",
+                "application/xhtml+xml",
+            }:
+                return "math_html"
+    return None
+
+
+def _script_ends_double_escaped_offline(text: str) -> bool:
+    state = 0
+    lower = text.lower()
+    index = 0
+    length = len(lower)
+    while index < length:
+        if state == 0:
+            if lower.startswith("<!--", index):
+                state = 1
+                index += 4
+                continue
+        elif state == 1:
+            if lower.startswith("-->", index):
+                state = 0
+                index += 3
+                continue
+            if lower.startswith("<script", index) and (
+                index + 7 == length or lower[index + 7] in "\t\n\r\f />"
+            ):
+                state = 2
+                index += 7
+                continue
+        else:
+            if lower.startswith("-->", index):
+                state = 0
+                index += 3
+                continue
+            if lower.startswith("</script", index) and (
+                index + 8 == length or lower[index + 8] in "\t\n\r\f />"
+            ):
+                state = 1
+                index += 8
+                continue
+        index += 1
+    return state == 2
+
+
+def _has_raw_meta_refresh_offline(doc: str) -> bool:
+    for match in META_TAG_RAW_RE.finditer(doc):
+        tag_text = html.unescape(match.group(0))
+        for attr in META_REFRESH_ATTR_RE.finditer(tag_text):
+            value = next(group for group in attr.groups() if group is not None)
+            if value.strip().lower() == "refresh":
+                return True
+    return False
+
+
+OPTIONAL_CLOSE_SIBLINGS = {
+    "dd": {"dd", "dt"},
+    "dt": {"dd", "dt"},
+    "li": {"li"},
+    "optgroup": {"optgroup", "option"},
+    "option": {"option"},
+    "p": {"p"},
+    "rp": {"rp", "rt"},
+    "rt": {"rp", "rt"},
+    "tbody": {"tbody", "tfoot", "thead"},
+    "td": {"td", "th"},
+    "tfoot": {"tbody", "tfoot", "thead"},
+    "th": {"td", "th"},
+    "thead": {"tbody", "tfoot", "thead"},
+    "tr": {"td", "th", "tr"},
+}
+P_CLOSING_BLOCKS = {
+    "address", "article", "aside", "blockquote", "details", "dialog", "dd",
+    "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
+    "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "li", "main",
+    "nav", "ol", "p", "pre", "section", "table", "ul",
+}
+
+
+class _NestingLimitExceeded(Exception):
+    """Raised to abort offline HTML validation immediately once MAX_DEPTH is exceeded."""
+
+
+class _OfflineHtmlValidator(HTMLParser):
+    def __init__(
+        self,
+        *,
+        scripting: bool = False,
+        classic_select: bool = False,
+        cdata_override: str | None = None,
+        inspect_comment_tails: bool = False,
+        tail_depth: int = 0,
+    ) -> None:
+        try:
+            super().__init__(convert_charrefs=True, scripting=scripting)
+        except TypeError:
+            super().__init__(convert_charrefs=True)
+            self.scripting = scripting
+        if hasattr(self, "_set_support_cdata"):
+            self._set_support_cdata(False)
+        self._classic_select = classic_select
+        self._cdata_override = cdata_override
+        self._inspect_comment_tails = inspect_comment_tails
+        self._tail_depth = tail_depth
+        self._by_key: dict[tuple[str, str, str], dict] = {}
+        self._style_stack: list[tuple[list[str], tuple[int, int]]] = []
+        self._tag_stack: list[tuple[str, str]] = []
+        self._last_start_in_foreign = False
+        self.too_deep = False
+        self.has_scripts = False
+        self.script_sources: list[tuple[str, tuple[int, int]]] = []
+        self._active_script: tuple[bool, list[str], tuple[int, int]] | None = None
+        self._in_title = False
+        self._title_parts: list[str] = []
+        self.title: str | None = None
+
+    def _add(self, level: str, code: str, message: str, *, fix: str | None = None, pos: tuple[int, int] | None = None) -> None:
+        key = (level, code, message)
+        if key in self._by_key:
+            self._by_key[key]["count"] += 1
+            return
+        entry: dict = {"level": level, "code": code, "message": message, "count": 1}
+        if fix:
+            entry["fix"] = fix
+        if pos is not None:
+            entry["line"] = pos[0]
+            entry["column"] = pos[1] + 1
+        self._by_key[key] = entry
+
+    def _in_foreign(self) -> bool:
+        return bool(self._tag_stack and self._tag_stack[-1][1] in FOREIGN_MODES)
+
+    def _in_select(self) -> bool:
+        for stack_tag, mode in reversed(self._tag_stack):
+            if mode != "html":
+                return False
+            if stack_tag == "select":
+                return True
+            if stack_tag in HTML_SCOPE_BARRIERS:
+                return False
+        return False
+
+    def _in_table(self) -> bool:
+        for stack_tag, mode in reversed(self._tag_stack):
+            if mode == "html" and stack_tag == "table":
+                return True
+            if mode == "html" and stack_tag in {"html", "template"}:
+                return False
+        return False
+
+    def _in_table_scope(self, low: str) -> bool:
+        for stack_tag, mode in reversed(self._tag_stack):
+            if mode != "html":
+                continue
+            if stack_tag == low:
+                return True
+            if stack_tag in {"table", "template", "html"}:
+                return False
+        return False
+
+    def _pop_table_tag(self, low: str) -> bool:
+        for idx in range(len(self._tag_stack) - 1, -1, -1):
+            stack_tag, mode = self._tag_stack[idx]
+            if mode != "html":
+                continue
+            if stack_tag == low:
+                del self._tag_stack[idx:]
+                return True
+            if stack_tag in {"table", "template", "html"}:
+                return False
+        return False
+
+    def _clear_table_context(self, low: str) -> None:
+        if low in {"td", "th"}:
+            targets = {"tr", "tbody", "thead", "tfoot", "table"}
+        elif low == "tr":
+            targets = {"tbody", "thead", "tfoot", "table"}
+        else:
+            targets = {"table"}
+        for idx in range(len(self._tag_stack) - 1, -1, -1):
+            stack_tag, mode = self._tag_stack[idx]
+            if mode != "html":
+                continue
+            if stack_tag in targets:
+                del self._tag_stack[idx + 1 :]
+                return
+            if stack_tag in {"template", "html"}:
+                return
+
+    def _pop_select(self) -> None:
+        for idx in range(len(self._tag_stack) - 1, -1, -1):
+            stack_tag, mode = self._tag_stack[idx]
+            if mode != "html":
+                return
+            if stack_tag == "select":
+                del self._tag_stack[idx:]
+                return
+            if stack_tag in HTML_SCOPE_BARRIERS:
+                return
+
+    def _sync_cdata_support(self) -> None:
+        if hasattr(self, "_set_support_cdata"):
+            self._set_support_cdata(self._in_foreign())
+
+    def _merge_issue(self, item: dict) -> None:
+        key = (item["level"], item["code"], item["message"])
+        existing = self._by_key.get(key)
+        if existing is not None:
+            existing["count"] += item.get("count", 1)
+            return
+        pos = (item["line"], item["column"] - 1) if "line" in item else None
+        self._add(item["level"], item["code"], item["message"], fix=item.get("fix"), pos=pos)
+        self._by_key[key]["count"] = item.get("count", 1)
+
+    def _inspect_rawtext_tail(self, text: str) -> None:
+        match = RAWTEXT_CLOSE_IN_COMMENT_RE.search(text)
+        if not match:
+            return
+        tail = text[match.end() :]
+        if "<" not in tail:
+            return
+        if self._tail_depth >= 8:
+            self._add(
+                "error",
+                "unsafe-declaration",
+                "Blocked deeply nested rawtext breakout.",
+                fix="Remove nested closing rawtext tags inside comments or attributes.",
+                pos=self.getpos(),
+            )
+            return
+        sub = _OfflineHtmlValidator(
+            cdata_override="disable_nonscript",
+            inspect_comment_tails=True,
+            tail_depth=self._tail_depth + 1,
+        )
+        try:
+            sub.feed(tail)
+            sub.close()
+        except _NestingLimitExceeded:
+            self.too_deep = True
+        for item in sub.issues():
+            if item["level"] == "error":
+                self._merge_issue(item)
+
+    def handle_comment(self, data: str) -> None:
+        if data.lstrip().upper().startswith("[CDATA["):
+            self._add(
+                "error",
+                "unsafe-declaration",
+                "Blocked unsupported markup declaration.",
+                fix="Remove CDATA or non-standard markup declarations.",
+                pos=self.getpos(),
+            )
+        if self._inspect_comment_tails:
+            self._inspect_rawtext_tail(data)
+
+    def unknown_decl(self, data: str) -> None:
+        self._add(
+            "error",
+            "unsafe-declaration",
+            "Blocked unsupported markup declaration.",
+            fix="Remove CDATA or non-standard markup declarations.",
+            pos=self.getpos(),
+        )
+
+    def _flush_style(self) -> None:
+        if not self._style_stack:
+            return
+        parts, pos = self._style_stack.pop()
+        if _css_has_unsafe_url_offline("".join(parts)):
+            self._add("error", "unsafe-css", "Blocked unsafe CSS URL found.", pos=pos)
+
+    def _flush_script(self) -> None:
+        if self._active_script is None:
+            return
+        executable, parts, pos = self._active_script
+        body = "".join(parts)
+        if _script_ends_double_escaped_offline(body):
+            self._add(
+                "error",
+                "unsafe-script",
+                "Blocked ambiguous nested script comment.",
+                fix="Remove nested script tags inside HTML comments in a script block.",
+                pos=pos,
+            )
+        if executable:
+            self.script_sources.append((body, pos))
+        self._active_script = None
+
+    def _flush_title(self) -> None:
+        if not self._in_title:
+            return
+        self._in_title = False
+        if self.title is None:
+            text = " ".join("".join(self._title_parts).split())[:140]
+            if text:
+                self.title = text
+        self._title_parts = []
+
+    def close(self) -> None:
+        super().close()
+        while self._style_stack:
+            self._flush_style()
+        self._flush_script()
+        self._flush_title()
+
+    def _push_tag(self, low: str, mode: str) -> None:
+        if mode == "html":
+            if low in P_CLOSING_BLOCKS and self._tag_stack and self._tag_stack[-1] == ("p", "html"):
+                self._tag_stack.pop()
+            closers = OPTIONAL_CLOSE_SIBLINGS.get(low)
+            if closers:
+                while (
+                    self._tag_stack
+                    and self._tag_stack[-1][1] == "html"
+                    and self._tag_stack[-1][0] in closers
+                ):
+                    self._tag_stack.pop()
+        self._tag_stack.append((low, mode))
+        if len(self._tag_stack) > MAX_DEPTH:
+            self.too_deep = True
+            raise _NestingLimitExceeded()
+
+    def set_cdata_mode(self, elem: str, *args: object, **kwargs: object) -> None:
+        low = elem.lower()
+        if self._cdata_override == "force_html":
+            super().set_cdata_mode(elem, *args, **kwargs)
+            return
+        if self._cdata_override == "disable_nonscript" and low != "script":
+            return
+        if (
+            self._last_start_in_foreign
+            or self._in_foreign()
+            or (self._classic_select and self._in_select() and low != "script")
+        ):
+            return
+        super().set_cdata_mode(elem, *args, **kwargs)
+
+    def _enter_cdata(self, low: str) -> None:
+        if not hasattr(self, "set_cdata_mode"):
+            return
+        cdata_tags = set(getattr(self, "CDATA_CONTENT_ELEMENTS", ("script", "style")))
+        rcdata_tags = set(getattr(self, "RCDATA_CONTENT_ELEMENTS", ("textarea", "title")))
+        scripting = bool(getattr(self, "scripting", False))
+        if low in cdata_tags or low == "plaintext" or (scripting and low == "noscript"):
+            self.set_cdata_mode(low)
+        elif low in rcdata_tags:
+            try:
+                self.set_cdata_mode(low, escapable=True)
+            except TypeError:
+                self.set_cdata_mode(low)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        low = tag.lower()
+        top_mode = self._tag_stack[-1][1] if self._tag_stack else "html"
+        in_foreign = top_mode in FOREIGN_MODES or (
+            top_mode == "math_text" and low in MATH_TEXT_FOREIGN_EXCEPTIONS
+        )
+        if in_foreign and _is_foreign_breakout_offline(low, attrs):
+            while self._tag_stack and self._tag_stack[-1][1] in FOREIGN_MODES:
+                self._tag_stack.pop()
+            in_foreign = False
+        self._last_start_in_foreign = in_foreign
+        if not in_foreign:
+            if self._classic_select and self._in_select():
+                if low == "select":
+                    self._pop_select()
+                    self._sync_cdata_support()
+                    self._inspect(low, attrs, self_closing=False, in_foreign=False)
+                    return
+                if low in SELECT_CLOSING_TAGS or (
+                    self._in_table() and low in TABLE_STRUCTURE_TAGS
+                ):
+                    self._pop_select()
+                elif low not in SELECT_INNER_TAGS:
+                    self._sync_cdata_support()
+                    self._inspect(low, attrs, self_closing=False, in_foreign=False)
+                    return
+            if low == "table" and self._in_table() and not any(
+                self._in_table_scope(cell) for cell in ("td", "th", "caption")
+            ):
+                self._pop_table_tag("table")
+            if low in TABLE_CELL_CLOSERS and self._in_table():
+                self._clear_table_context(low)
+                if low in {"tr", "td", "th"} and not any(
+                    self._in_table_scope(group) for group in TABLE_ROW_GROUPS
+                ):
+                    self._push_tag("tbody", "html")
+                if low in {"td", "th"} and not self._in_table_scope("tr"):
+                    self._push_tag("tr", "html")
+            if low in FOREIGN_ROOT_TAGS:
+                self._push_tag(low, low)
+            elif low not in VOID_ELEMENTS:
+                self._push_tag(low, "html")
+            if bool(getattr(self, "scripting", False)) and low == "noscript":
+                self._enter_cdata(low)
+        else:
+            parent_tag, raw_parent_mode = self._tag_stack[-1]
+            parent_mode = "math" if raw_parent_mode == "math_text" else raw_parent_mode
+            if parent_tag == "annotation-xml" and parent_mode == "math" and low == "svg":
+                self._push_tag("svg", "svg")
+            else:
+                imode = _integration_mode_offline(parent_mode, low, attrs)
+                self._push_tag(low, imode or parent_mode)
+        self._sync_cdata_support()
+        self._inspect(low, attrs, self_closing=False, in_foreign=in_foreign)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        low = tag.lower()
+        top_mode = self._tag_stack[-1][1] if self._tag_stack else "html"
+        in_foreign = top_mode in FOREIGN_MODES or (
+            top_mode == "math_text" and low in MATH_TEXT_FOREIGN_EXCEPTIONS
+        )
+        if in_foreign and _is_foreign_breakout_offline(low, attrs):
+            while self._tag_stack and self._tag_stack[-1][1] in FOREIGN_MODES:
+                self._tag_stack.pop()
+            in_foreign = False
+        if in_foreign or low in FOREIGN_ROOT_TAGS:
+            if len(self._tag_stack) + 1 > MAX_DEPTH:
+                self.too_deep = True
+                raise _NestingLimitExceeded()
+            self._sync_cdata_support()
+            self._inspect(low, attrs, self_closing=True, in_foreign=True)
+            return
+        self._last_start_in_foreign = False
+        if self._classic_select and self._in_select():
+            if low == "select":
+                self._pop_select()
+                self._sync_cdata_support()
+                self._inspect(low, attrs, self_closing=False, in_foreign=False)
+                return
+            if low in SELECT_CLOSING_TAGS or (
+                self._in_table() and low in TABLE_STRUCTURE_TAGS
+            ):
+                self._pop_select()
+            elif low not in SELECT_INNER_TAGS:
+                self._sync_cdata_support()
+                self._inspect(low, attrs, self_closing=False, in_foreign=False)
+                return
+        if low == "table" and self._in_table() and not any(
+            self._in_table_scope(cell) for cell in ("td", "th", "caption")
+        ):
+            self._pop_table_tag("table")
+        if low in TABLE_CELL_CLOSERS and self._in_table():
+            self._clear_table_context(low)
+            if low in {"tr", "td", "th"} and not any(
+                self._in_table_scope(group) for group in TABLE_ROW_GROUPS
+            ):
+                self._push_tag("tbody", "html")
+            if low in {"td", "th"} and not self._in_table_scope("tr"):
+                self._push_tag("tr", "html")
+        if low not in VOID_ELEMENTS:
+            self._push_tag(low, "html")
+        self._enter_cdata(low)
+        self._sync_cdata_support()
+        self._inspect(low, attrs, self_closing=False, in_foreign=False)
+
+    def _close_html_tag(self, low: str, start_idx: int) -> None:
+        if low == "li":
+            barriers = HTML_SCOPE_BARRIERS | {"ol", "ul"}
+        elif low == "p":
+            barriers = HTML_SCOPE_BARRIERS | {"button"}
+        elif low in HTML_SCOPED_CLOSE_TAGS:
+            barriers = HTML_SCOPE_BARRIERS
+        else:
+            barriers = HTML_SPECIAL_TAGS
+        for idx in range(start_idx, -1, -1):
+            stack_tag, mode = self._tag_stack[idx]
+            if mode != "html":
+                break
+            if stack_tag == low or (low in HEADING_TAGS and stack_tag in HEADING_TAGS):
+                del self._tag_stack[idx:]
+                break
+            if stack_tag in barriers:
+                break
+
+    def handle_endtag(self, tag: str) -> None:
+        low = tag.lower()
+        if self._in_foreign() and low in {"br", "p"}:
+            while self._tag_stack and self._tag_stack[-1][1] in FOREIGN_MODES:
+                self._tag_stack.pop()
+        elif low not in VOID_ELEMENTS and self._tag_stack:
+            top_mode = self._tag_stack[-1][1]
+            if top_mode in FOREIGN_MODES:
+                matched_idx: int | None = None
+                boundary = len(self._tag_stack)
+                crossed_barrier = False
+                for idx in range(len(self._tag_stack) - 1, -1, -1):
+                    stack_tag, mode = self._tag_stack[idx]
+                    if mode == "html":
+                        boundary = idx
+                        break
+                    if stack_tag == low:
+                        matched_idx = idx
+                        break
+                    if mode in INTEGRATION_MODES or (stack_tag, mode) == ("annotation-xml", "math"):
+                        crossed_barrier = True
+                if matched_idx is not None:
+                    del self._tag_stack[matched_idx:]
+                elif low in TABLE_STRUCTURE_TAGS and self._in_table_scope(low):
+                    self._pop_table_tag(low)
+                elif (
+                    not crossed_barrier
+                    and low not in FOREIGN_ROOT_TAGS
+                    and boundary < len(self._tag_stack)
+                ):
+                    self._close_html_tag(low, boundary)
+            elif low in TABLE_STRUCTURE_TAGS and self._in_table_scope(low):
+                if self._classic_select and self._in_select():
+                    self._pop_select()
+                self._pop_table_tag(low)
+            elif top_mode in INTEGRATION_MODES:
+                matched_idx = None
+                for idx in range(len(self._tag_stack) - 1, -1, -1):
+                    stack_tag, mode = self._tag_stack[idx]
+                    if mode == "html":
+                        break
+                    if stack_tag == low:
+                        matched_idx = idx
+                        break
+                if matched_idx is not None:
+                    del self._tag_stack[matched_idx:]
+            else:
+                self._close_html_tag(low, len(self._tag_stack) - 1)
+        self._sync_cdata_support()
+        if low == "style":
+            self._flush_style()
+        if low == "script":
+            self._flush_script()
+        if low == "title":
+            self._flush_title()
+
+    def handle_data(self, data: str) -> None:
+        for parts, _ in self._style_stack:
+            parts.append(data)
+        if self._active_script is not None:
+            self._active_script[1].append(data)
+        if self._in_title:
+            self._title_parts.append(data)
+
+    def _inspect(self, tag: str, attrs: list[tuple[str, str | None]], *, self_closing: bool, in_foreign: bool) -> None:
+        pos = self.getpos()
+        attr_values: dict[str, list[str]] = {}
+        for name, value in attrs:
+            attr_values.setdefault(name.lower(), []).append(value or "")
+            if self._inspect_comment_tails and value:
+                self._inspect_rawtext_tail(value)
+        if tag == "style" and not self_closing:
+            self._style_stack.append(([], pos))
+        if tag == "title" and not self_closing and not in_foreign:
+            self._in_title = True
+            self._title_parts = []
+        if tag in BLOCKED_TAGS_WITH_FIX:
+            self._add("error", "blocked-tag", f'Blocked "{tag}" tag.', fix=BLOCKED_TAGS_WITH_FIX[tag], pos=pos)
+        if tag == "script":
+            if any(name in attr_values for name in ("src", "href", "xlink:href")):
+                self._add("error", "external-script", "External script sources are not allowed.",
+                          fix="Inline the code in a script block.", pos=pos)
+            executable = False
+            for raw_type in attr_values.get("type", [""]):
+                script_type = raw_type.strip().lower()
+                if script_type in EXECUTABLE_SCRIPT_TYPES:
+                    executable = True
+                    self.has_scripts = True
+                elif script_type not in DATA_SCRIPT_TYPES:
+                    self._add("error", "script-type", f'Unsupported script type "{script_type}".',
+                              fix='Use a classic or type="module" inline script, or type="application/json" for data.', pos=pos)
+            if not self_closing:
+                self._active_script = (executable, [], pos)
+        if tag == "link":
+            rels = [t for v in attr_values.get("rel", []) for t in v.lower().split()]
+            blocked = next((r for r in rels if r not in ALLOWED_LINK_RELS), None)
+            href = (attr_values.get("href", [""])[0]).strip()
+            if not rels or blocked is not None:
+                self._add("error", "link-rel", f'link rel="{blocked or ""}" is not allowed.',
+                          fix="Only stylesheet, icon, and preconnect links are allowed.", pos=pos)
+            elif not re.match(r"^https://", href, re.IGNORECASE):
+                self._add("error", "link-href", "Linked stylesheets and icons must use https URLs.",
+                          fix="Inline the CSS in a style block, or use an https URL.", pos=pos)
+        for srcset_attr in ("srcset", "imagesrcset"):
+            for srcset in attr_values.get(srcset_attr, []):
+                for candidate in _parse_srcset_urls_offline(srcset):
+                    if _has_unsafe_scheme_offline(candidate):
+                        self._add("error", "unsafe-url", f'Blocked unsafe URL in "{srcset_attr}" attribute.',
+                                  fix="Use an https link, or an event listener in a script block.", pos=pos)
+                    elif tag in EMBED_SRC_TAGS:
+                        low = candidate.strip().lower()
+                        if candidate.strip() and not low.startswith("#") and not re.match(r"^(?:https?:|data:|blob:|//)", low):
+                            self._add("warning", "relative-asset", f'"{candidate}" will not load. Tailplan only hosts HTML pages.',
+                                      fix="Host the file over https, or inline it as a data: URL.", pos=pos)
+        if tag in EMBED_SRC_TAGS:
+            for attr_name in ("src", "poster"):
+                for ref in attr_values.get(attr_name, []):
+                    cleaned = ref.strip()
+                    low = cleaned.lower()
+                    if cleaned and not low.startswith("#") and not re.match(r"^(?:https?:|data:|blob:|//)", low) and not _has_unsafe_scheme_offline(cleaned):
+                        self._add("warning", "relative-asset", f'"{cleaned}" will not load. Tailplan only hosts HTML pages.',
+                                  fix="Host the file over https, or inline it as a data: URL.", pos=pos)
+        if tag in SMIL_ANIMATION_TAGS:
+            for attr_name in ("to", "from", "by", "values"):
+                for raw in attr_values.get(attr_name, []):
+                    candidates = raw.split(";") if attr_name == "values" else [raw]
+                    if any(_has_unsafe_scheme_offline(item) for item in candidates):
+                        self._add("error", "unsafe-url", f'Blocked unsafe URL in "{attr_name}" attribute.',
+                                  fix="Use an https link, or an event listener in a script block.", pos=pos)
+        for name, values in attr_values.items():
+            if name in EVENT_HANDLER_ATTRS:
+                self.has_scripts = True
+                for value in values:
+                    self.script_sources.append((value, pos))
+            if name == "srcdoc":
+                self._add("error", "srcdoc", 'Blocked "srcdoc" attribute.', fix=EMBED_FIX, pos=pos)
+        if any(len(v) > 1 and n in SECURITY_SENSITIVE_ATTRIBUTES for n, v in attr_values.items()):
+            self._add("error", "duplicate-attr", "Blocked duplicate security-sensitive attribute found.", pos=pos)
+        if tag == "meta" and any(v.strip().lower() == "refresh" for v in attr_values.get("http-equiv", [])):
+            self._add("error", "meta-refresh", "Blocked meta refresh tag found.", fix="Use a normal link.", pos=pos)
+        if any(_css_has_unsafe_url_offline(v) for v in attr_values.get("style", [])):
+            self._add("error", "unsafe-css", "Blocked unsafe CSS URL found.", pos=pos)
+        for name, values in attr_values.items():
+            if name in URL_ATTRIBUTES and any(_has_unsafe_scheme_offline(v) for v in values):
+                self._add("error", "unsafe-url", f'Blocked unsafe URL in "{name}" attribute.',
+                          fix="Use an https link, or an event listener in a script block.", pos=pos)
+
+    def issues(self) -> list[dict]:
+        return list(self._by_key.values())
+
+
+def validate_upload_offline(pages: list[dict]) -> dict:
+    """Validate HTML pages locally when the Tailplan server is unreachable."""
+    issues: list[dict] = []
+    results: list[dict] = []
+    multi_page = len(pages) > 1
+    if not pages:
+        issues.append({"level": "error", "code": "empty", "message": "Upload has no HTML pages.", "count": 1})
+        return {"ok": False, "totalBytes": 0, "pages": [], "issues": issues,
+                "errors": [format_issue(i) for i in issues], "warnings": []}
+    if len(pages) > MAX_PAGES_PER_UPLOAD:
+        issues.append({"level": "error", "code": "too-many-pages",
+                       "message": f"Upload has {len(pages)} pages; the limit is {MAX_PAGES_PER_UPLOAD}.", "count": 1})
+        return {"ok": False, "totalBytes": 0, "pages": [], "issues": issues,
+                "errors": [format_issue(i) for i in issues], "warnings": []}
+    seen: set[str] = set()
+    seen_lower: set[str] = set()
+    dir_prefixes_lower: set[str] = set()
+    running_bytes = 0
+    for page in pages:
+        page_path = page.get("path")
+        problem = page_path_problem(page_path)
+        if problem:
+            issues.append({"level": "error", "code": "page-path", "message": problem, "count": 1})
+            continue
+        lowered = page_path.lower()
+        if lowered in seen_lower:
+            issues.append({"level": "error", "code": "page-path", "message": f'Page path "{page_path}" appears twice.', "count": 1})
+            continue
+        seen.add(page_path)
+        seen_lower.add(lowered)
+        segments = lowered.split("/")
+        for idx in range(1, len(segments)):
+            dir_prefixes_lower.add("/".join(segments[:idx]))
+        doc = page.get("html")
+        if not isinstance(doc, str) or not doc.strip():
+            entry = {"level": "error", "code": "empty", "message": "HTML document is empty.", "count": 1}
+            issues.append({"path": page_path, **entry} if multi_page else entry)
+            results.append({"path": page_path, "bytes": 0, "title": None, "hasScripts": False})
+            continue
+        try:
+            size = len(doc.encode("utf-8"))
+        except UnicodeEncodeError:
+            entry = {"level": "error", "code": "invalid-unicode", "message": "HTML document contains invalid Unicode scalar values.", "count": 1}
+            issues.append({"path": page_path, **entry} if multi_page else entry)
+            results.append({"path": page_path, "bytes": 0, "title": None, "hasScripts": False})
+            continue
+        running_bytes += size
+        if running_bytes > MAX_HTML_BYTES:
+            results.append({"path": page_path, "bytes": size, "title": None, "hasScripts": False})
+            continue
+        validator = _OfflineHtmlValidator()
+        try:
+            validator.feed(doc)
+            validator.close()
+        except _NestingLimitExceeded:
+            validator.too_deep = True
+        page_issues = validator.issues()
+        too_deep = validator.too_deep
+        has_scripts = validator.has_scripts
+        script_sources = list(validator.script_sources)
+        extra_passes: list[dict[str, object]] = []
+        if not too_deep:
+            has_noscript = bool(NOSCRIPT_RE.search(doc))
+            has_select = bool(SELECT_RE.search(doc))
+            has_dual = bool(DUAL_MODE_RE.search(doc))
+            if has_noscript:
+                extra_passes.append({"scripting": True, "classic_select": False})
+            if has_select:
+                extra_passes.append({"scripting": False, "classic_select": True})
+            if has_noscript and has_select:
+                extra_passes.append({"scripting": True, "classic_select": True})
+            if has_dual:
+                extra_passes.append({"scripting": has_noscript, "cdata_override": "force_html"})
+                extra_passes.append({
+                    "scripting": False,
+                    "cdata_override": "disable_nonscript",
+                    "inspect_comment_tails": True,
+                })
+        for opts in extra_passes:
+            extra = _OfflineHtmlValidator(**opts)
+            try:
+                extra.feed(doc)
+                extra.close()
+            except _NestingLimitExceeded:
+                extra.too_deep = True
+            seen_keys = {(i["level"], i["code"], i["message"]) for i in page_issues}
+            for item in extra.issues():
+                if item["level"] == "error":
+                    key = (item["level"], item["code"], item["message"])
+                    if key not in seen_keys:
+                        page_issues.append(item)
+                        seen_keys.add(key)
+            too_deep = too_deep or extra.too_deep
+            has_scripts = has_scripts or extra.has_scripts
+            script_sources.extend(extra.script_sources)
+            if too_deep:
+                break
+        if _has_raw_meta_refresh_offline(doc) and not any(i["code"] == "meta-refresh" for i in page_issues):
+            page_issues.append({
+                "level": "error",
+                "code": "meta-refresh",
+                "message": "Meta refresh redirects are not allowed.",
+                "fix": "Remove the refresh meta tag.",
+                "count": 1,
+            })
+        if too_deep:
+            page_issues.append({"level": "error", "code": "too-deep", "message": f"HTML is nested more than {MAX_DEPTH} levels deep.", "count": 1})
+        for code, pattern, message, fix in SANDBOX_APIS:
+            matched = next(((t, p) for t, p in script_sources if pattern.search(t)), None)
+            if matched is not None:
+                page_issues.append({"level": "warning", "code": code, "message": message, "fix": fix,
+                                    "line": matched[1][0], "column": matched[1][1] + 1, "count": 1})
+        if not TITLE_RE.search(doc):
+            page_issues.append({"level": "warning", "code": "no-title", "message": "No <title> found; Tailplan will use a generic title.", "count": 1})
+        if not VIEWPORT_RE.search(doc):
+            page_issues.append({"level": "warning", "code": "no-viewport",
+                                "message": "No viewport meta tag found; phones will show a shrunken desktop page. "
+                                'Add <meta name="viewport" content="width=device-width, initial-scale=1">.', "count": 1})
+        results.append({"path": page_path, "bytes": size, "title": validator.title, "hasScripts": has_scripts})
+        for issue in page_issues:
+            issues.append({"path": page_path, **issue} if multi_page else issue)
+    for page in results:
+        if page["path"].lower() in dir_prefixes_lower:
+            issues.append({
+                "level": "error",
+                "code": "page-path",
+                "message": f'Page path "{page["path"]}" conflicts with a folder of the same name.',
+                "count": 1,
+            })
+    if "index.html" not in seen:
+        issues.append({"level": "error", "code": "missing-index", "message": "Uploads need an index.html page.", "count": 1})
+    total_bytes = sum(p["bytes"] for p in results)
+    if total_bytes > MAX_HTML_BYTES:
+        issues.append({"level": "error", "code": "too-large",
+                       "message": f"HTML is {total_bytes} bytes ({format_bytes(total_bytes)}); maximum is {MAX_HTML_BYTES} bytes ({format_bytes(MAX_HTML_BYTES)}).", "count": 1})
+    return {
+        "ok": not any(i["level"] == "error" for i in issues),
+        "totalBytes": total_bytes,
+        "pages": results,
+        "issues": issues,
+        "errors": [format_issue(i) for i in issues if i["level"] == "error"],
+        "warnings": [format_issue(i) for i in issues if i["level"] == "warning"],
+    }
 
 
 def make_links_openable(doc: str) -> str:
@@ -730,6 +1979,128 @@ def update_mapping(mapping_path: Path, source: Path, result: dict) -> None:
             os.close(lock_fd)
 
 
+def draft_binding_path(state_dir: Path, base_url: str, source: Path) -> Path:
+    """Return the per-draft binding path for one API URL and source."""
+    key = f"{base_url.rstrip('/')}\n{source.expanduser().resolve()}".encode("utf-8")
+    return state_dir / "drafts" / f"{hashlib.sha256(key).hexdigest()}.json"
+
+
+def read_state_json(path: Path, *, stderr=sys.stderr) -> dict | None:
+    """Read a JSON state file, moving corrupt JSON aside for recovery."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError) as exc:
+        print(f"Warning: could not read {path}: {exc}", file=stderr)
+        return None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        aside = path.with_name(f"{path.name}.corrupt-{int(time.time() * 1000)}")
+        try:
+            os.replace(path, aside)
+            print(f"Warning: {path} was not valid JSON. Moved it to {aside}.", file=stderr)
+        except OSError as exc:
+            print(f"Warning: {path} was not valid JSON and could not be moved: {exc}", file=stderr)
+        return None
+    if not isinstance(parsed, dict):
+        aside = path.with_name(f"{path.name}.corrupt-{int(time.time() * 1000)}")
+        try:
+            os.replace(path, aside)
+            print(f"Warning: {path} had invalid state. Moved it to {aside}.", file=stderr)
+        except OSError:
+            pass
+        return None
+    return parsed
+
+
+def _validate_binding_entry(entry: dict) -> str:
+    draft_id = entry.get("draftId")
+    if not isinstance(draft_id, str) or DRAFT_ID_RE.fullmatch(draft_id) is None:
+        raise MappingFailure("the selected source entry has an invalid draftId.")
+    if "publicUrl" in entry and not isinstance(entry["publicUrl"], str):
+        raise MappingFailure("the selected source entry has an invalid publicUrl.")
+    if "versionNumber" in entry and (
+        type(entry["versionNumber"]) is not int or entry["versionNumber"] <= 0
+    ):
+        raise MappingFailure("the selected source entry has an invalid versionNumber.")
+    return draft_id
+
+
+def find_draft_binding(
+    state_dir: Path,
+    base_url: str,
+    source: Path,
+    *,
+    legacy_mapping_path: Path | None = None,
+    stderr=sys.stderr,
+) -> dict | None:
+    """Find the draft mapped to this source on this API URL."""
+    binding_file = draft_binding_path(state_dir, base_url, source)
+    binding = read_state_json(binding_file, stderr=stderr)
+    if binding is not None:
+        try:
+            _validate_binding_entry(binding)
+            return binding
+        except MappingFailure:
+            aside = binding_file.with_name(f"{binding_file.name}.corrupt-{int(time.time() * 1000)}")
+            try:
+                os.replace(binding_file, aside)
+                print(f"Warning: {binding_file} had invalid state. Moved it to {aside}.", file=stderr)
+            except OSError as exc:
+                print(f"Warning: {binding_file} had invalid state and could not be moved: {exc}", file=stderr)
+    legacy_path = legacy_mapping_path or (state_dir / "drafts.json")
+    if not legacy_path.exists():
+        return None
+    mappings = load_mappings(legacy_path)
+    draft_id = mapped_draft_id(mappings, source)
+    if draft_id is None:
+        return None
+    entry = mappings["files"][str(source.expanduser().resolve())]
+    entry_api = entry.get("apiUrl")
+    if entry_api and entry_api.rstrip("/") != base_url.rstrip("/"):
+        return None
+    return entry
+
+
+def save_draft_binding(state_dir: Path, base_url: str, source: Path, result: dict) -> Path:
+    """Atomically write one per-draft binding file under drafts/."""
+    target = draft_binding_path(state_dir, base_url, source)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(target.parent, 0o700)
+    entry = {
+        "draftId": result["draftId"],
+        "publicUrl": result["publicUrl"],
+        "versionNumber": result["versionNumber"],
+        "apiUrl": base_url.rstrip("/"),
+        "file": str(source.expanduser().resolve()),
+        "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    if result.get("slug"):
+        entry["slug"] = result["slug"]
+    data = (json.dumps(entry, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+        directory_fd = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
+
+
 def source_publish_lock_path(mapping_path: Path, source: Path) -> Path:
     source_key = str(source.expanduser().resolve()).encode("utf-8")
     digest = hashlib.sha256(source_key).hexdigest()
@@ -926,18 +2297,23 @@ def validate_upload_result(
     draft_id = result.get("draftId")
     if not isinstance(draft_id, str) or DRAFT_ID_RE.fullmatch(draft_id) is None:
         raise ProtocolFailure()
+    slug = result.get("slug")
+    if slug is not None and (not isinstance(slug, str) or slug_problem(slug) is not None):
+        raise ProtocolFailure("server returned an invalid slug")
     public_url = result.get("publicUrl")
     normalized_public_url = _validated_http_url(
         public_url,
         label="Public URL",
         failure_type=ProtocolFailure,
     )
-    expected_public_url = (
-        f"{validate_base_url(base_url, allow_insecure_http=allow_insecure_http)}/d/{draft_id}"
-    )
-    if normalized_public_url != expected_public_url and not _equivalent_loopback_public_url(
-        normalized_public_url,
-        expected_public_url,
+    normalized_base = validate_base_url(base_url, allow_insecure_http=allow_insecure_http)
+    expected_urls = [f"{normalized_base}/d/{draft_id}"]
+    if slug:
+        expected_urls.append(f"{normalized_base}/d/{slug}")
+    if not any(
+        normalized_public_url == candidate
+        or _equivalent_loopback_public_url(normalized_public_url, candidate)
+        for candidate in expected_urls
     ):
         raise ProtocolFailure()
     if "shareUrl" in result and result["shareUrl"] != public_url.rstrip("/") + "/share":
@@ -952,15 +2328,23 @@ def validate_upload_result(
 
 
 class UploadFailure(RuntimeError):
-    def __init__(self, category: str, detail: str, *, status: int | None = None) -> None:
+    def __init__(
+        self,
+        category: str,
+        detail: str,
+        *,
+        status: int | None = None,
+        code: str | None = None,
+    ) -> None:
         self.category = category
         self.detail = detail
         self.status = status
+        self.code = code
         prefix = f"Upload failed ({category})"
         super().__init__(f"{prefix}: {detail}")
 
 
-def _http_failure(status: int, detail: str) -> UploadFailure:
+def _http_failure(status: int, detail: str, *, code: str | None = None) -> UploadFailure:
     if status in {401, 403}:
         category = "authentication"
     elif status == 413:
@@ -975,7 +2359,7 @@ def _http_failure(status: int, detail: str) -> UploadFailure:
         category = "server unavailable"
     else:
         category = "request rejected"
-    return UploadFailure(category, detail, status=status)
+    return UploadFailure(category, detail, status=status, code=code)
 
 
 def _safe_server_detail(value: str, *, sensitive: tuple[str, ...]) -> str:
@@ -990,15 +2374,17 @@ def _safe_server_detail(value: str, *, sensitive: tuple[str, ...]) -> str:
     return normalized
 
 
-def _error_detail(
+def _error_detail_and_code(
     error: urllib.error.HTTPError, *, sensitive: tuple[str, ...] = ()
-) -> str:
+) -> tuple[str, str | None]:
     try:
         decoded = json.loads(error.read().decode("utf-8", "replace"))
     except (ValueError, OSError, http.client.HTTPException):
-        return f"HTTP {error.code}"
+        return f"HTTP {error.code}", None
     if not isinstance(decoded, dict):
-        return f"HTTP {error.code}"
+        return f"HTTP {error.code}", None
+    code = decoded.get("code")
+    safe_code = code if isinstance(code, str) and re.fullmatch(r"[a-z0-9_-]{1,64}", code) else None
     errors = decoded.get("errors")
     if isinstance(errors, list):
         safe_errors = [
@@ -1007,11 +2393,18 @@ def _error_detail(
             if isinstance(item, str) and item.strip()
         ]
         if safe_errors:
-            return "; ".join(safe_errors)
+            return "; ".join(safe_errors), safe_code
     detail = decoded.get("error")
     if isinstance(detail, str) and detail.strip():
-        return _safe_server_detail(detail, sensitive=sensitive)
-    return f"HTTP {error.code}"
+        return _safe_server_detail(detail, sensitive=sensitive), safe_code
+    return f"HTTP {error.code}", safe_code
+
+
+def _error_detail(
+    error: urllib.error.HTTPError, *, sensitive: tuple[str, ...] = ()
+) -> str:
+    detail, _ = _error_detail_and_code(error, sensitive=sensitive)
+    return detail
 
 
 def upload(
@@ -1030,6 +2423,9 @@ def upload(
     description: str | None = None,
     metadata: dict | None = None,
     content_request: dict | None = None,
+    files: list[dict] | None = None,
+    slug: str | None = None,
+    filename_override: str | None = None,
 ) -> dict:
     token_file = token_path or Path(os.getenv("TAILPLAN_TOKEN_FILE", str(Path.home() / ".tailplan" / "token")))
     try:
@@ -1048,14 +2444,18 @@ def upload(
         base_url,
         allow_insecure_http=allow_insecure_http,
     )
-    payload = {
-        "html": final_html(html_path) if html_doc is None else html_doc,
-        "filename": html_path.name,
+    payload: dict = {
+        "filename": filename_override or html_path.name,
         "draftId": draft_id,
     }
-    if content_request is not None:
-        payload.pop("html")
+    if files is not None:
+        payload["files"] = files
+    elif content_request is not None:
         payload.update(content_request)
+    else:
+        payload["html"] = final_html(html_path) if html_doc is None else html_doc
+    if slug is not None:
+        payload["slug"] = slug
     if description is not None:
         payload["description"] = description
     if metadata is not None:
@@ -1093,8 +2493,8 @@ def upload(
                 raise ProtocolFailure(
                     f"upload endpoint returned HTTP {error.code}; redirects are not allowed"
                 ) from None
-            detail = _error_detail(error, sensitive=(token,))
-            failure = _http_failure(error.code, detail)
+            detail, code = _error_detail_and_code(error, sensitive=(token,))
+            failure = _http_failure(error.code, detail, code=code)
             retryable = error.code == 429 or error.code >= 500
             if not retryable or attempt == attempts:
                 raise failure from None
@@ -1192,10 +2592,22 @@ def verify_readback(
                         f"read-back Content-Security-Policy repeats {parts[0]}"
                     )
                 directives[parts[0]] = parts[1:]
-            for name in ("default-src", "script-src", "form-action", "frame-ancestors"):
+            for name in ("default-src", "form-action", "frame-ancestors"):
                 if directives.get(name) != ["'none'"]:
                     raise VerificationFailure(
                         "read-back Content-Security-Policy requires " f"{name} 'none'"
+                    )
+            script_src = directives.get("script-src")
+            if script_src != ["'none'"]:
+                sandbox = directives.get("sandbox") or []
+                valid_sandbox = (
+                    script_src == ["'unsafe-inline'"]
+                    and "allow-scripts" in sandbox
+                    and "allow-same-origin" not in sandbox
+                )
+                if not valid_sandbox:
+                    raise VerificationFailure(
+                        "read-back Content-Security-Policy requires script-src 'none' or a sandboxed inline script policy"
                     )
             actual_bytes = response.read()
     except VerificationFailure:
@@ -1246,11 +2658,15 @@ def _emit_failure(
     stdout,
     stderr,
     exit_code: int = 1,
+    code: str | None = None,
 ) -> int:
     if json_output:
+        payload = {"ok": False, "category": category, "error": error}
+        if code:
+            payload["code"] = code
         print(
             json.dumps(
-                {"ok": False, "category": category, "error": error},
+                payload,
                 ensure_ascii=False,
                 separators=(",", ":"),
             ),
@@ -1272,7 +2688,15 @@ def _emit_success(result: dict, *, json_output: bool, stdout, stderr) -> int:
                     "publicUrl": result["publicUrl"],
                     "versionNumber": result["versionNumber"],
                     "warnings": warnings,
-                    **{key: result[key] for key in ("rawUrl", "shareUrl", "versionId", "fileSha256", "requestId", "theme") if key in result},
+                    **{
+                        key: result[key]
+                        for key in (
+                            "rawUrl", "shareUrl", "versionUrl", "versionId",
+                            "fileSha256", "contentHash", "totalBytes", "requestId",
+                            "theme", "slug", "unchanged", "pages",
+                        )
+                        if key in result
+                    },
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -1280,12 +2704,21 @@ def _emit_success(result: dict, *, json_output: bool, stdout, stderr) -> int:
             file=stdout,
         )
         return 0
-    print("Uploaded draft" if result["versionNumber"] == 1 else "Updated draft", file=stdout)
+    if result.get("unchanged"):
+        print(f"Unchanged: this content is already version {result['versionNumber']}", file=stdout)
+    else:
+        print("Uploaded draft" if result["versionNumber"] == 1 else "Updated draft", file=stdout)
     print(f"URL: {result.get('shareUrl') or result['publicUrl']}", file=stdout)
     if result.get("rawUrl"):
         print(f"Raw HTML: {result['rawUrl']}", file=stdout)
+    if result.get("versionUrl"):
+        print(f"Version URL: {result['versionUrl']}", file=stdout)
     print(f"Draft ID: {result['draftId']}", file=stdout)
+    if result.get("slug"):
+        print(f"Slug: {result['slug']}", file=stdout)
     print(f"Version: {result['versionNumber']}", file=stdout)
+    if result.get("pages"):
+        print("Pages: " + ", ".join(page["path"] for page in result["pages"]), file=stdout)
     for warning in warnings:
         print(f"Warning: {warning}", file=stderr)
     return 0
@@ -1310,13 +2743,29 @@ def _publish_locked(
     document_type: str | None = None,
     layout: str | None = None,
     typography: str | None = None,
+    slug: str | None = None,
+    files: list[dict] | None = None,
+    filename_override: str | None = None,
 ) -> int:
     resolved_source = source.expanduser().resolve()
+    staged_upload = bool(STAGED_UPLOAD_RE.match(str(resolved_source)))
     state_home = home or Path.home()
-    is_html = resolved_source.suffix.lower() in {".html", ".htm"}
+    state_dir = state_home / ".tailplan"
+    is_folder = files is not None or resolved_source.is_dir()
+    is_html = is_folder or resolved_source.suffix.lower() in {".html", ".htm"}
     if is_html and any(value is not None for value in (theme, document_type, layout, typography)):
         return _emit_failure("theme", "Theme options require Markdown or text input.",
                              json_output=json_output, stdout=stdout, stderr=stderr)
+    upload_files = files
+    if upload_files is None and resolved_source.is_dir():
+        try:
+            upload_files = read_html_folder(resolved_source)
+        except (OSError, UnicodeError):
+            return _emit_failure("file", "Cannot read UTF-8 HTML files in folder.",
+                                 json_output=json_output, stdout=stdout, stderr=stderr)
+        if not upload_files:
+            return _emit_failure("file", f"No .html files found in {resolved_source}",
+                                 json_output=json_output, stdout=stdout, stderr=stderr)
     content_request = None
     if not is_html and uploader is None:
         try:
@@ -1330,42 +2779,60 @@ def _publish_locked(
         except (OSError, UnicodeError):
             return _emit_failure("file", "Cannot read UTF-8 input.", json_output=json_output,
                                  stdout=stdout, stderr=stderr)
-    try:
-        html_path = build_html(resolved_source, home=state_home)
-    except UnicodeError:
-        return _emit_failure(
-            "file",
-            "Input file is not valid UTF-8; convert it to UTF-8, then retry.",
-            json_output=json_output,
-            stdout=stdout,
-            stderr=stderr,
-        )
-    except OSError:
-        return _emit_failure(
-            "file",
-            "Could not read the input or write generated HTML; check file permissions, then retry.",
-            json_output=json_output,
-            stdout=stdout,
-            stderr=stderr,
-        )
+    if upload_files is not None:
+        html_path = resolved_source
+    else:
+        try:
+            html_path = build_html(resolved_source, home=state_home)
+        except UnicodeError:
+            return _emit_failure(
+                "file",
+                "Input file is not valid UTF-8; convert it to UTF-8, then retry.",
+                json_output=json_output,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        except OSError:
+            return _emit_failure(
+                "file",
+                "Could not read the input or write generated HTML; check file permissions, then retry.",
+                json_output=json_output,
+                stdout=stdout,
+                stderr=stderr,
+            )
 
-    mapping_path = state_home / ".tailplan" / "drafts.json"
+    mapping_path = state_dir / "drafts.json"
     try:
-        mappings = load_mappings(mapping_path)
-        mapped_id = mapped_draft_id(mappings, resolved_source)
-        if explicit_draft_id is None and not force_new and mapped_id is None:
+        binding = None if staged_upload else find_draft_binding(
+            state_dir,
+            base_url,
+            resolved_source,
+            legacy_mapping_path=mapping_path,
+            stderr=stderr,
+        )
+        mapped_id = binding["draftId"] if binding is not None else None
+        if (
+            not staged_upload
+            and explicit_draft_id is None
+            and not force_new
+            and slug is None
+            and mapped_id is None
+            and not is_folder
+            and mapping_path.exists()
+        ):
+            mappings = load_mappings(mapping_path)
             legacy_id = legacy_mapped_draft_id(mappings, resolved_source, state_home)
             if legacy_id is not None:
                 raise MappingFailure(
                     f"legacy draft {legacy_id} may belong to this source; "
                     f"rerun once with --draft {legacy_id} to preserve continuity."
                 )
-        draft_id = choose_draft_id(
-            mappings,
-            resolved_source,
-            explicit_draft_id=explicit_draft_id,
-            force_new=force_new,
-        )
+        if force_new:
+            draft_id = None
+        elif explicit_draft_id is not None:
+            draft_id = explicit_draft_id
+        else:
+            draft_id = mapped_id
     except MappingFailure as error:
         return _emit_failure(
             error.category,
@@ -1376,36 +2843,44 @@ def _publish_locked(
         )
 
     verify_function = verifier or verify_readback
-    try:
-        expected = final_html(html_path)
-    except UnicodeError:
-        return _emit_failure(
-            "file",
-            "Input file is not valid UTF-8; convert it to UTF-8, then retry.",
-            json_output=json_output,
-            stdout=stdout,
-            stderr=stderr,
-        )
-    except OSError:
-        return _emit_failure(
-            "file",
-            "Could not read the input; check file permissions, then retry.",
-            json_output=json_output,
-            stdout=stdout,
-            stderr=stderr,
-        )
+    if upload_files is not None:
+        index_entry = next((p for p in upload_files if p.get("path") == "index.html"), None)
+        expected = index_entry["html"] if index_entry else ""
+    else:
+        try:
+            expected = final_html(html_path)
+        except UnicodeError:
+            return _emit_failure(
+                "file",
+                "Input file is not valid UTF-8; convert it to UTF-8, then retry.",
+                json_output=json_output,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        except OSError:
+            return _emit_failure(
+                "file",
+                "Could not read the input; check file permissions, then retry.",
+                json_output=json_output,
+                stdout=stdout,
+                stderr=stderr,
+            )
 
     def upload_once(selected_draft_id: str | None):
         if uploader is None:
+            provenance_cwd = resolved_source if resolved_source.is_dir() else resolved_source.parent
             return upload(
                 html_path,
                 base_url,
                 selected_draft_id,
-                html_doc=expected,
+                html_doc=expected if upload_files is None else None,
+                **({"files": upload_files} if upload_files is not None else {}),
+                **({"slug": slug} if slug is not None else {}),
+                **({"filename_override": filename_override} if filename_override else {}),
                 **({"content_request": content_request} if content_request is not None else {}),
                 allow_insecure_http=allow_insecure_http,
                 description=description,
-                metadata=metadata if metadata is not None else collect_provenance(resolved_source.parent),
+                metadata=metadata if metadata is not None else collect_provenance(provenance_cwd),
             )
         return uploader(html_path, base_url, selected_draft_id)
 
@@ -1416,8 +2891,17 @@ def _publish_locked(
             explicit_draft_id is None
             and not force_new
             and draft_id is not None
-            and error.status == 404
-            and error.category == "missing draft"
+            and (
+                (error.status == 404 and error.category == "missing draft")
+                or (
+                    slug is not None
+                    and error.status == 409
+                    and (
+                        error.code == "slug_names_other_draft"
+                        or "already names draft" in error.detail
+                    )
+                )
+            )
         )
         if not stale_implicit_mapping:
             return _emit_failure(
@@ -1426,6 +2910,7 @@ def _publish_locked(
                 json_output=json_output,
                 stdout=stdout,
                 stderr=stderr,
+                code=error.code,
             )
         try:
             result = upload_once(None)
@@ -1477,17 +2962,18 @@ def _publish_locked(
             stderr=stderr,
         )
 
-    try:
-        update_mapping(mapping_path, resolved_source, result)
-    except (MappingFailure, OSError):
-        return _emit_failure(
-            "mapping",
-            "Could not save the local draft mapping after upload; fix disk/permissions, then "
-            f"rerun with --draft {result['draftId']} to avoid creating a duplicate.",
-            json_output=json_output,
-            stdout=stdout,
-            stderr=stderr,
-        )
+    if not staged_upload:
+        try:
+            save_draft_binding(state_dir, base_url, resolved_source, result)
+        except (MappingFailure, OSError):
+            return _emit_failure(
+                "mapping",
+                "Could not save the local draft mapping after upload; fix disk/permissions, then "
+                f"rerun with --draft {result['draftId']} to avoid creating a duplicate.",
+                json_output=json_output,
+                stdout=stdout,
+                stderr=stderr,
+            )
     try:
         if content_request is not None and verifier is None:
             digest = result.get("fileSha256")
@@ -1496,7 +2982,10 @@ def _publish_locked(
             verify_readback(result["publicUrl"] + f"/v/{result['versionNumber']}/content", None,
                             expected_sha256=digest)
         else:
-            verify_function(result["publicUrl"], expected)
+            verify_url = result["publicUrl"]
+            if result.get("pages"):
+                verify_url = verify_url.rstrip("/") + "/"
+            verify_function(verify_url, expected)
     except VerificationFailure as error:
         return _emit_failure(
             "verification",
@@ -1528,10 +3017,36 @@ def publish(
     document_type: str | None = None,
     layout: str | None = None,
     typography: str | None = None,
+    slug: str | None = None,
+    files: list[dict] | None = None,
+    filename_override: str | None = None,
 ) -> int:
     resolved_source = source.expanduser().resolve()
     state_home = home or Path.home()
     mapping_path = state_home / ".tailplan" / "drafts.json"
+    if STAGED_UPLOAD_RE.match(str(resolved_source)):
+        return _publish_locked(
+            resolved_source,
+            base_url,
+            explicit_draft_id=explicit_draft_id,
+            force_new=force_new,
+            home=state_home,
+            uploader=uploader,
+            verifier=verifier,
+            stdout=stdout,
+            stderr=stderr,
+            json_output=json_output,
+            allow_insecure_http=allow_insecure_http,
+            description=description,
+            metadata=metadata,
+            theme=theme,
+            document_type=document_type,
+            layout=layout,
+            typography=typography,
+            slug=slug,
+            files=files,
+            filename_override=filename_override,
+        )
     try:
         with source_publish_lock(mapping_path, resolved_source):
             return _publish_locked(
@@ -1548,7 +3063,13 @@ def publish(
                 allow_insecure_http=allow_insecure_http,
                 description=description,
                 metadata=metadata,
-                theme=theme, document_type=document_type, layout=layout, typography=typography,
+                theme=theme,
+                document_type=document_type,
+                layout=layout,
+                typography=typography,
+                slug=slug,
+                files=files,
+                filename_override=filename_override,
             )
     except OSError:
         return _emit_failure(
@@ -1570,20 +3091,40 @@ class TailplanArgumentParser(argparse.ArgumentParser):
         raise CliUsageFailure(message)
 
 
+def _load_files_json(path: Path) -> tuple[list[dict], str | None]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    files = data.get("files") if isinstance(data, dict) else data
+    filename = data.get("filename") if isinstance(data, dict) and isinstance(data.get("filename"), str) else None
+    if not isinstance(files, list) or not files:
+        raise ValueError("Files JSON must contain a non-empty files list.")
+    for item in files:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str) or not isinstance(item.get("html"), str):
+            raise ValueError("Each page entry must have string path and html fields.")
+    return files, filename
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
-    if raw_argv and raw_argv[0] in {"auth", "whoami", "list", "history", "keys", "disable", "enable", "delete", "themes", "typography"}:
+    if raw_argv and raw_argv[0] in {
+        "auth", "whoami", "list", "history", "keys", "disable", "enable", "delete",
+        "themes", "typography", "check", "favorite", "unfavorite", "download",
+    }:
         return management_main(raw_argv)
     if raw_argv and raw_argv[0] == "upload":
         raw_argv.pop(0)
     json_output = "--json" in raw_argv
     parser = TailplanArgumentParser(
-        description="Share a markdown/text/html artifact through Tailplan.",
-        epilog="Commands: upload, list, history, whoami, auth, keys, disable, enable, delete. Use COMMAND --help.",
+        description="Share a markdown/text/html artifact or HTML folder through Tailplan.",
+        epilog=(
+            "Commands: upload, check, download, favorite, unfavorite, list, "
+            "history, whoami, auth, keys, disable, enable, delete. Use COMMAND --help."
+        ),
     )
-    parser.add_argument("--version", action="version", version="tailplan 0.3.0")
-    parser.add_argument("file", help="Path to .md, .txt, .html, or .htm file")
+    parser.add_argument("--version", action="version", version=f"tailplan {CLI_VERSION}")
+    parser.add_argument("file", nargs="?", help="Path to .md, .txt, .html, .htm file, or HTML folder")
+    parser.add_argument("--files-json", dest="files_json", help="Read multi-page files array from a JSON file")
     parser.add_argument("--base-url", "--api-url", dest="base_url")
+    parser.add_argument("--slug", help="Set or update a custom URL slug")
     parser.add_argument("--description", help="Set a stable draft description")
     parser.add_argument("--theme", help="Theme ID or auto; list with tailplan themes")
     parser.add_argument("--document-type", help="Deterministic selection hint, such as plan or technical")
@@ -1611,35 +3152,92 @@ def main(argv: list[str] | None = None) -> int:
             exit_code=2,
         )
 
-    try:
-        source = Path(args.file).expanduser().resolve()
-    except OSError:
+    if args.new and args.slug is not None:
         return _emit_failure(
-            "file",
-            "Input path could not be resolved; check the path and retry.",
+            "usage",
+            "Invalid arguments: --new cannot be combined with --slug.",
             json_output=args.json,
             stdout=sys.stdout,
             stderr=sys.stderr,
             exit_code=2,
         )
-    if not source.is_file():
-        return _emit_failure(
-            "file",
-            f"File does not exist or is not a regular file: {source}",
-            json_output=args.json,
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-            exit_code=2,
-        )
-    if source.suffix.lower() not in {".md", ".txt", ".html", ".htm"}:
-        return _emit_failure(
-            "file",
-            "Unsupported file type; use .md, .txt, .html, or .htm.",
-            json_output=args.json,
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-            exit_code=2,
-        )
+    if args.slug is not None:
+        normalized_slug = args.slug.strip().lower()
+        problem = slug_problem(normalized_slug)
+        if problem is not None:
+            return _emit_failure(
+                "usage",
+                f"Invalid slug: {problem}",
+                json_output=args.json,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+                exit_code=2,
+            )
+        args.slug = normalized_slug
+
+    upload_files = None
+    filename_override = None
+    if args.files_json:
+        if args.file is not None:
+            return _emit_failure(
+                "usage",
+                "Invalid arguments: provide either a file path or --files-json, not both.",
+                json_output=args.json,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+                exit_code=2,
+            )
+        try:
+            source = Path(args.files_json).expanduser().resolve()
+            upload_files, filename_override = _load_files_json(source)
+        except (OSError, ValueError, TypeError, UnicodeError) as error:
+            return _emit_failure(
+                "file",
+                f"Could not read multi-page JSON: {error}",
+                json_output=args.json,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+                exit_code=2,
+            )
+    else:
+        if args.file is None:
+            return _emit_failure(
+                "usage",
+                "Invalid arguments: the following arguments are required: file",
+                json_output=args.json,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+                exit_code=2,
+            )
+        try:
+            source = Path(args.file).expanduser().resolve()
+        except OSError:
+            return _emit_failure(
+                "file",
+                "Input path could not be resolved; check the path and retry.",
+                json_output=args.json,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+                exit_code=2,
+            )
+        if not source.exists() or (not source.is_file() and not source.is_dir()):
+            return _emit_failure(
+                "file",
+                f"File does not exist or is not a regular file: {source}",
+                json_output=args.json,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+                exit_code=2,
+            )
+        if source.is_file() and source.suffix.lower() not in {".md", ".txt", ".html", ".htm"}:
+            return _emit_failure(
+                "file",
+                "Unsupported file type; use .md, .txt, .html, or .htm.",
+                json_output=args.json,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+                exit_code=2,
+            )
 
     try:
         configured_base_url = (
@@ -1681,7 +3279,13 @@ def main(argv: list[str] | None = None) -> int:
         allow_insecure_http=args.allow_insecure_http,
         description=args.description,
         metadata=metadata,
-        theme=args.theme, document_type=args.document_type, layout=args.layout, typography=args.typography,
+        theme=args.theme,
+        document_type=args.document_type,
+        layout=args.layout,
+        typography=args.typography,
+        slug=args.slug,
+        files=upload_files,
+        filename_override=filename_override,
     )
 
 
@@ -1693,7 +3297,7 @@ def collect_provenance(cwd: Path) -> dict:
         except (OSError, subprocess.SubprocessError, UnicodeError):
             return None
 
-    metadata = {"cliVersion": "0.3.0"}
+    metadata = {"cliVersion": CLI_VERSION}
     root = git("rev-parse", "--show-toplevel")
     if root:
         remote = git("config", "--get", "remote.origin.url") or ""
@@ -1720,6 +3324,156 @@ def collect_provenance(cwd: Path) -> dict:
     return metadata
 
 
+def _print_check_report(report: dict, *, stdout=sys.stdout) -> None:
+    print(f"tailplan {report.get('cliVersion', CLI_VERSION)} -> {report.get('apiUrl', '')}", file=stdout)
+    if report.get("offline"):
+        print(f"Offline: {report.get('networkError', 'server unreachable')}", file=stdout)
+        print("Checked markup locally. Account and server limits were not checked.", file=stdout)
+    elif report.get("limits"):
+        account = report.get("account") or {}
+        print(f"Account: {account.get('name', 'unknown')} (key: {account.get('apiKeyName', 'unknown')})", file=stdout)
+        limits = report["limits"]
+        print(f"Limit: {format_bytes(limits['maxBytes'])} per upload, {limits['maxPages']} page(s)", file=stdout)
+        caps = report.get("capabilities") or {}
+        print(f"Custom URLs: {'enabled' if caps.get('customUrls') else 'not enabled'}", file=stdout)
+    if report.get("slug"):
+        slug_info = report["slug"]
+        msg = f". {slug_info['message']}" if slug_info.get("message") else ""
+        print(f'Custom URL "{slug_info["slug"]}": {slug_info["status"]}{msg}', file=stdout)
+    if report.get("path") and report.get("pages") is not None:
+        count = len(report["pages"])
+        label = f"{count} page" if count == 1 else f"{count} pages"
+        print(f"\n{report['path']} ({label}, {format_bytes(report.get('totalBytes', 0))})", file=stdout)
+    for issue in report.get("issues") or []:
+        level = "Error" if issue.get("level") == "error" else "Warning"
+        print(f"{level}: {format_issue(issue)}", file=stdout)
+    if not report.get("issues"):
+        for err in report.get("errors") or []:
+            print(f"Error: {err}", file=stdout)
+    print("\nReady." if report.get("ok") else "\nNot ready.", file=stdout)
+
+
+def _write_new_file_nofollow(dest: Path, content: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    fd: int | None = os.open(dest, flags, 0o600)
+    try:
+        stream = os.fdopen(fd, "w", encoding="utf-8")
+        fd = None
+        with stream:
+            stream.write(content)
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+            fd = None
+        dest.unlink(missing_ok=True)
+        raise
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def write_downloaded_source(
+    source: dict,
+    *,
+    base_url: str,
+    state_dir: Path,
+    cwd: Path | None = None,
+    save_binding: bool = True,
+    upload_extra_args: list[str] | None = None,
+) -> dict:
+    """Write downloaded draft pages without overwriting existing files."""
+    if not isinstance(source, dict):
+        raise ConfigurationFailure("Server returned an invalid download payload.")
+    draft_id = source.get("draftId")
+    if not isinstance(draft_id, str) or DRAFT_ID_RE.fullmatch(draft_id) is None:
+        raise ConfigurationFailure("Server returned an invalid draft ID.")
+    slug = source.get("slug")
+    if slug is not None and (not isinstance(slug, str) or slug_problem(slug) is not None):
+        raise ConfigurationFailure("Server returned an invalid slug.")
+    version_number = source.get("versionNumber")
+    if type(version_number) is not int or not 1 <= version_number <= 999_999_999:
+        raise ConfigurationFailure("Server returned an invalid version number.")
+    pages = source.get("pages")
+    if not isinstance(pages, list) or not pages:
+        raise ConfigurationFailure("Server returned no pages to download.")
+    seen_lower: set[str] = set()
+    dir_prefixes_lower: set[str] = set()
+    for page in pages:
+        if not isinstance(page, dict) or page_path_problem(page.get("path")) is not None or not isinstance(page.get("html"), str):
+            raise ConfigurationFailure("Server returned an invalid page entry.")
+        lowered = page["path"].lower()
+        if lowered in seen_lower:
+            raise ConfigurationFailure("Server returned duplicate page paths.")
+        seen_lower.add(lowered)
+        segments = lowered.split("/")
+        for idx in range(1, len(segments)):
+            dir_prefixes_lower.add("/".join(segments[:idx]))
+    if any(path in dir_prefixes_lower for path in seen_lower):
+        raise ConfigurationFailure("Server returned conflicting page and folder paths.")
+    base_dir = (cwd or Path.cwd()).resolve()
+    name = slug or draft_id
+    if len(pages) == 1:
+        target = unique_path(base_dir / f"{name}-v{version_number}.html")
+        if target.parent.resolve() != base_dir:
+            raise ConfigurationFailure("Downloaded path escapes working directory.")
+        _write_new_file_nofollow(target, pages[0]["html"])
+    else:
+        target = unique_path(base_dir / f"{name}-v{version_number}")
+        if target.parent.resolve() != base_dir:
+            raise ConfigurationFailure("Downloaded path escapes working directory.")
+        target.mkdir(parents=True, exist_ok=False)
+        try:
+            for page in pages:
+                dest = (target / page["path"]).resolve()
+                if not dest.is_relative_to(target.resolve()):
+                    raise ConfigurationFailure("Downloaded page path escapes target folder.")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                _write_new_file_nofollow(dest, page["html"])
+        except Exception:
+            shutil.rmtree(target, ignore_errors=True)
+            raise
+    ref = slug or draft_id
+    public_url = f"{base_url.rstrip('/')}/d/{ref}"
+    if save_binding and source.get("owned"):
+        save_draft_binding(
+            state_dir,
+            base_url,
+            target,
+            {
+                "draftId": draft_id,
+                "slug": slug,
+                "publicUrl": public_url,
+                "versionNumber": version_number,
+            },
+        )
+    rel = os.path.relpath(target, base_dir)
+    cmd_parts = ["tailplan", "upload", shell_quote(rel)]
+    extra = list(upload_extra_args or [])
+    if not extra and base_url.startswith("ssh://"):
+        ssh_target = base_url.removeprefix("ssh://").rstrip("/")
+        if ssh_target and ssh_target != "tailplan-server":
+            extra = ["--target", ssh_target]
+    cmd_parts.extend(shell_quote(arg) for arg in extra)
+    if not source.get("owned"):
+        cmd_parts.append("--new")
+    upload_cmd = " ".join(cmd_parts)
+    return {
+        "ok": True,
+        "draftId": draft_id,
+        "slug": slug,
+        "title": source.get("title"),
+        "versionNumber": version_number,
+        "owned": bool(source.get("owned")),
+        "path": str(target),
+        "pages": [page["path"] for page in pages],
+        "uploadCommand": upload_cmd,
+    }
+
+
 def management_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Manage Tailplan drafts and API keys.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1732,11 +3486,18 @@ def management_main(argv: list[str]) -> int:
 
     for name in ("whoami", "list", "themes", "typography"):
         options(commands.add_parser(name))
-    for name in ("history", "disable", "enable", "delete"):
+    check_cmd = options(commands.add_parser("check"))
+    check_cmd.add_argument("file", nargs="?")
+    check_cmd.add_argument("--slug")
+    check_cmd.add_argument("--files-json", dest="files_json")
+    for name in ("history", "disable", "enable", "delete", "favorite", "unfavorite"):
         command = options(commands.add_parser(name))
         command.add_argument("draft")
         if name == "disable":
             command.add_argument("--reason")
+    download_cmd = options(commands.add_parser("download"))
+    download_cmd.add_argument("draft")
+    download_cmd.add_argument("--print-source", action="store_true", dest="print_source")
     auth = commands.add_parser("auth").add_subparsers(dest="action", required=True)
     options(auth.add_parser("login"))
     options(auth.add_parser("set")).add_argument("key", nargs="?")
@@ -1752,13 +3513,38 @@ def management_main(argv: list[str]) -> int:
         state = Path.home() / ".tailplan"
         token_path = Path(os.getenv("TAILPLAN_TOKEN_FILE", str(state / "token")))
 
-        def request(path, method="GET", payload=None, token=None):
-            credential = "" if path in {"/api/themes", "/api/typography"} else (token if token is not None else (os.getenv("TAILPLAN_API_KEY") or token_path.read_text().strip()))
-            body = json.dumps(payload).encode() if payload is not None else None
-            req = urllib.request.Request(base + path, data=body, method=method, headers={
-                "Authorization": "Bearer " + credential, "Content-Type": "application/json",
-                "User-Agent": "tailplan/0.3.0",
-            })
+        def read_credential(*, optional: bool = False) -> str:
+            env_key = os.getenv("TAILPLAN_API_KEY")
+            if env_key:
+                return env_key
+            try:
+                return token_path.read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
+                if optional:
+                    return ""
+                raise ConfigurationFailure(
+                    "Tailplan token is missing; create ~/.tailplan/token, then retry."
+                ) from None
+            except (OSError, UnicodeError):
+                raise ConfigurationFailure(
+                    "Tailplan token could not be read; check its permissions and UTF-8 encoding."
+                ) from None
+
+        def request(path, method="GET", payload=None, token=None, *, optional_auth: bool = False):
+            if path in {"/api/themes", "/api/typography"}:
+                credential = ""
+            elif token is not None:
+                credential = token
+            else:
+                credential = read_credential(optional=optional_auth)
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8") if payload is not None else None
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": f"tailplan/{CLI_VERSION}",
+            }
+            if credential:
+                headers["Authorization"] = "Bearer " + credential
+            req = urllib.request.Request(base + path, data=body, method=method, headers=headers)
             try:
                 with _open_without_redirects(req, timeout=20) as response:
                     result = json.loads(response.read())
@@ -1767,6 +3553,108 @@ def management_main(argv: list[str]) -> int:
                     return result
             except urllib.error.HTTPError as error:
                 raise ConfigurationFailure(_error_detail(error, sensitive=(credential,))) from None
+
+        if args.command == "check":
+            payload: dict = {}
+            offline_pages: list[dict] | None = None
+            display_path: str | None = None
+            if args.files_json:
+                source_path = Path(args.files_json).expanduser().resolve()
+                offline_pages, _fname = _load_files_json(source_path)
+                payload["files"] = offline_pages
+                display_path = str(source_path)
+            elif args.file:
+                source_path = Path(args.file).expanduser().resolve()
+                display_path = str(source_path)
+                if not source_path.exists():
+                    raise ConfigurationFailure(f"Path does not exist: {source_path}")
+                if source_path.is_dir():
+                    offline_pages = read_html_folder(source_path)
+                    if not offline_pages:
+                        raise ConfigurationFailure(f"No .html files found in {source_path}")
+                    payload["files"] = offline_pages
+                elif source_path.suffix.lower() in {".html", ".htm"}:
+                    doc = source_path.read_bytes().decode("utf-8")
+                    payload["html"] = doc
+                    offline_pages = [{"path": "index.html", "html": doc}]
+                elif source_path.suffix.lower() in {".md", ".txt"}:
+                    text = source_path.read_text(encoding="utf-8")
+                    payload["content"] = text
+                    payload["filename"] = source_path.name
+                    payload["format"] = "text" if source_path.suffix.lower() == ".txt" else "markdown"
+                    rendered = html_document(title_from_content(source_path, text), markdown_to_body(text), source_path.name)
+                    offline_pages = [{"path": "index.html", "html": rendered}]
+                else:
+                    raise ConfigurationFailure("Unsupported file type; use .md, .txt, .html, .htm, or a folder.")
+            if args.slug is not None:
+                payload["slug"] = args.slug.strip().lower()
+            check_token = read_credential(optional=True)
+            try:
+                report = request("/api/check", "POST", payload, token=check_token, optional_auth=True)
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                ConnectionError,
+                OSError,
+                http.client.HTTPException,
+            ) as net_error:
+                report = {
+                    "ok": False,
+                    "offline": True,
+                    "networkError": f"Could not reach {base}: {net_error}",
+                }
+                if offline_pages is not None:
+                    local = validate_upload_offline(offline_pages)
+                    report.update(
+                        {
+                            "markupOk": local["ok"],
+                            "totalBytes": local["totalBytes"],
+                            "pages": local["pages"],
+                            "issues": local["issues"],
+                            "errors": local["errors"],
+                            "warnings": local["warnings"],
+                        }
+                    )
+                if args.slug is not None:
+                    slug_val = args.slug.strip().lower()
+                    problem = slug_problem(slug_val)
+                    report["slug"] = (
+                        {"slug": slug_val, "status": "unavailable", "message": problem}
+                        if problem
+                        else {"slug": slug_val, "status": "unchecked", "message": "Availability was not checked offline."}
+                    )
+            report = {"cliVersion": CLI_VERSION, "apiUrl": base, **({"path": display_path} if display_path else {}), **report}
+            if args.json:
+                print(json.dumps(report, ensure_ascii=False))
+            else:
+                _print_check_report(report)
+            return 0 if report.get("ok") else 1
+
+        if args.command == "download":
+            ref = parse_draft_ref(args.draft, base)
+            source = request(f"/api/drafts/{ref}/source", optional_auth=True)
+            if args.print_source:
+                print(json.dumps(source, ensure_ascii=False))
+                return 0
+            extra_upload_args: list[str] = []
+            if args.base_url:
+                extra_upload_args.extend(["--base-url", base])
+            if args.allow_insecure_http:
+                extra_upload_args.append("--allow-insecure-http")
+            receipt = write_downloaded_source(
+                source,
+                base_url=base,
+                state_dir=state,
+                upload_extra_args=extra_upload_args,
+            )
+            if args.json:
+                print(json.dumps(receipt, ensure_ascii=False))
+            else:
+                count = len(receipt["pages"])
+                label = f"{count} page" if count == 1 else f"{count} pages"
+                print(f"Downloaded {receipt['path']} ({label}, v{receipt['versionNumber']})")
+                print(f"Upload: {receipt['uploadCommand']}")
+            return 0
 
         if args.command == "auth":
             if args.action == "logout":
@@ -1810,10 +3698,14 @@ def management_main(argv: list[str]) -> int:
                 if DRAFT_ID_RE.fullmatch(args.key_id) is None:
                     raise ConfigurationFailure("API key ID is invalid.")
                 result = request(f"/api/api-keys/{args.key_id}/revoke", "POST", {})
+        elif args.command in {"favorite", "unfavorite"}:
+            ref = parse_draft_ref(args.draft, base)
+            fav = args.command == "favorite"
+            result = request(f"/api/drafts/{ref}/favorite", "POST", {"favorite": fav})
+            result["message"] = f"Added {ref} to favorites." if fav else f"Removed {ref} from favorites."
         else:
-            if DRAFT_ID_RE.fullmatch(args.draft) is None:
-                raise ConfigurationFailure("Draft ID is invalid.")
-            path = f"/api/drafts/{args.draft}"
+            ref = parse_draft_ref(args.draft, base)
+            path = f"/api/drafts/{ref}"
             if args.command == "history":
                 result = request(path)
             elif args.command == "delete":
@@ -1825,7 +3717,8 @@ def management_main(argv: list[str]) -> int:
         elif args.command == "list":
             for draft in result["drafts"]:
                 repo = "/".join(filter(None, (draft.get("repoOrg"), draft.get("repoName")))) or "No repository"
-                print(f"{draft['title']}\n  {repo} · v{draft['latestVersionNumber']} · {draft['versionCount']} versions · {draft['updatedAt']}")
+                prefix = "★ " if draft.get("favorite") else ""
+                print(f"{prefix}{draft['title']}\n  {repo} · v{draft['latestVersionNumber']} · {draft['versionCount']} versions · {draft['updatedAt']}")
                 print(f"  {draft.get('shareUrl') or draft['publicUrl']}")
                 if draft.get("description"):
                     print(f"  {draft['description']}")

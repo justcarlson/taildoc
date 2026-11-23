@@ -163,10 +163,11 @@ class SourceIdentityTests(unittest.TestCase):
                 self.assertEqual(0, exit_code)
 
             self.assertEqual(["legacy", "legacy"], requested_drafts)
+            binding = share.find_draft_binding(root / ".tailplan", "https://tailplan.test", source)
+            self.assertEqual("legacy", binding["draftId"])
+            self.assertEqual(3, binding["versionNumber"])
             mappings = share.load_mappings(mapping_path)
-            self.assertEqual("legacy", share.mapped_draft_id(mappings, source))
             self.assertEqual("legacy", share.mapped_draft_id(mappings, legacy_generated))
-            self.assertEqual(3, mappings["files"][str(source.resolve())]["versionNumber"])
 
     def test_direct_html_mapping_remains_compatible(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -473,9 +474,9 @@ class MappingTests(unittest.TestCase):
             self.assertEqual(1, creates.value)
             self.assertEqual(2, versions.value)
             mapping_path = home / ".tailplan" / "drafts.json"
-            saved = share.load_mappings(mapping_path)
-            self.assertEqual("lineage1", share.mapped_draft_id(saved, source))
-            self.assertEqual(2, saved["files"][str(source.resolve())]["versionNumber"])
+            binding = share.find_draft_binding(home / ".tailplan", "https://tailplan.test", source)
+            self.assertEqual("lineage1", binding["draftId"])
+            self.assertEqual(2, binding["versionNumber"])
             lock_path = share.source_publish_lock_path(mapping_path, source)
             self.assertEqual(mapping_path.parent, lock_path.parent)
             self.assertEqual(0o600, stat.S_IMODE(lock_path.stat().st_mode))
@@ -611,10 +612,9 @@ class MappingTests(unittest.TestCase):
             )
             self.assertEqual(0, creates.value)
             self.assertEqual(9, versions.value)
-            saved = share.load_mappings(mapping_path)
-            self.assertEqual({str(source.resolve())}, set(saved["files"]))
-            self.assertEqual("existing123", share.mapped_draft_id(saved, source))
-            self.assertEqual(9, saved["files"][str(source.resolve())]["versionNumber"])
+            binding = share.find_draft_binding(home / ".tailplan", "https://tailplan.test", source)
+            self.assertEqual("existing123", binding["draftId"])
+            self.assertEqual(9, binding["versionNumber"])
 
     def test_mapping_load_fails_closed_for_corrupt_or_wrong_schema(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -732,8 +732,8 @@ class MappingTests(unittest.TestCase):
                 self.assertEqual(0, exit_code)
 
             self.assertEqual([None, "mapped1", None, "chosen3"], requested_drafts)
-            mappings = share.load_mappings(home / ".tailplan" / "drafts.json")
-            self.assertEqual("chosen3", share.mapped_draft_id(mappings, source))
+            binding = share.find_draft_binding(home / ".tailplan", "https://tailplan.test", source)
+            self.assertEqual("chosen3", binding["draftId"])
 
     def test_stale_implicit_mapping_falls_back_once_to_create_and_replaces_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -774,7 +774,8 @@ class MappingTests(unittest.TestCase):
             self.assertEqual(0, exit_code)
             self.assertEqual(["gone123", None], requested_drafts)
             self.assertEqual(["https://tailplan.test/d/fresh123"], verified)
-            self.assertEqual("fresh123", share.mapped_draft_id(share.load_mappings(mapping_path), source))
+            binding = share.find_draft_binding(home / ".tailplan", "https://tailplan.test", source)
+            self.assertEqual("fresh123", binding["draftId"])
 
     def test_explicit_missing_draft_fails_closed_without_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1383,7 +1384,7 @@ class UploadRetryTests(unittest.TestCase):
                     )
 
                 self.assertEqual("validation", raised.exception.category)
-                self.assertIn("Blocked active/embedding tag found.", raised.exception.detail)
+                self.assertIn('Blocked "iframe" tag.', raised.exception.detail)
                 self.assertNotIn("<script>", raised.exception.detail)
                 self.assertNotIn("isolated-token", raised.exception.detail)
             finally:
@@ -1781,8 +1782,8 @@ class VerificationTests(unittest.TestCase):
             self.assertNotIn("https://tailplan.test/d/saved123", stdout.getvalue())
             self.assertNotIn("URL:", stdout.getvalue())
             self.assertIn("verification failed", stderr.getvalue().lower())
-            mappings = share.load_mappings(home / ".tailplan" / "drafts.json")
-            self.assertEqual("saved123", share.mapped_draft_id(mappings, source))
+            binding = share.find_draft_binding(home / ".tailplan", "https://tailplan.test", source)
+            self.assertEqual("saved123", binding["draftId"])
 
     def test_verification_uses_the_uploaded_document_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1832,7 +1833,7 @@ class VerificationTests(unittest.TestCase):
                     "versionNumber": 1,
                 }
 
-            with patch.object(share, "update_mapping", side_effect=OSError("disk full")):
+            with patch.object(share, "save_draft_binding", side_effect=OSError("disk full")):
                 exit_code = share.publish(
                     source,
                     "https://tailplan.test",
@@ -2148,8 +2149,8 @@ class CliContractTests(unittest.TestCase):
                 self.assertEqual(1, result["versionNumber"])
                 self.assertEqual([], result["warnings"])
                 self.assertEqual(1, len(stdout.getvalue().splitlines()))
-                mapping = share.load_mappings(home / ".tailplan" / "drafts.json")
-                self.assertEqual(result["draftId"], share.mapped_draft_id(mapping, source))
+                binding = share.find_draft_binding(home / ".tailplan", base_url, source)
+                self.assertEqual(result["draftId"], binding["draftId"])
             finally:
                 stop_process(process)
 

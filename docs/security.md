@@ -17,8 +17,11 @@ The primary listener always ignores identity headers.
 The operator must keep the proxy listener behind Tailscale Serve.
 
 Uploaded HTML is served without rewriting.
-Inline classic scripts remain in the source, but the browser response policy blocks execution.
-Forms, external scripts, module scripts, embeds, and inline event handlers are rejected.
+Authenticated HTML drafts may run inline JavaScript, including `type="module"` scripts and standard `on*` handlers, inside an opaque CSP sandbox.
+The sandbox omits `allow-same-origin` and sets `connect-src 'none'`, `worker-src 'none'`, `form-action 'none'`, `frame-src 'none'`, `object-src 'none'`, and `frame-ancestors 'none'`.
+External HTTPS images, media, fonts, allowlisted stylesheets, and escaped popups remain permitted.
+Script-free drafts, Markdown drafts, anonymous uploads, and pre-0.0.6 versions keep `script-src 'none'`.
+Forms, external scripts, unsupported script types, embeds, meta refresh, and unsafe URL attributes are rejected.
 
 ## Suitable content
 

@@ -17,6 +17,15 @@ The project uses semantic version numbers.
 - Require every layout and server page to pass a 320px and 390px phone check in CI.
 - Let reading-layout tables widen to 1104px on tablets and desktops, so wide tables fit without sideways scroll.
 - Require every layout and server page to pass tablet and desktop checks at 768px, 1024px, 1280px, and 1920px.
+- Run inline JavaScript in authenticated HTML drafts inside an opaque CSP sandbox without `allow-same-origin`.
+- Expand HTML validation for `type="module"`, data scripts, standard `on*` handlers, allowlisted `<link>` tags, sandbox warnings, and line numbers.
+- Add `POST /api/check` and `tailplan check` with an offline markup validator fallback.
+- Add multi-page HTML folder uploads with clean URL serving and directory trailing-slash redirects.
+- Add custom URL slugs via `--slug` with portable updates, renames, conflict checks, and release on delete.
+- Add `GET /api/drafts/<ref>/source` and `tailplan download` for non-clobbering edit round-trips.
+- Add draft favorites via `POST /api/drafts/<ref>/favorite`, `tailplan favorite`/`unfavorite`, and dashboard star toggles.
+- Store per-draft CLI bindings under `~/.tailplan/drafts/` with read-only fallback to legacy `drafts.json`.
+- Deduplicate identical-content updates via `contentHash` and return `"unchanged": true` without bumping version numbers.
 
 ## 0.3.0 - 2026-09-13
 

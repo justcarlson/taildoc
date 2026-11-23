@@ -16,23 +16,32 @@ TAILPLAN_META = Path.home() / ".tailplan" / "metadata.json"
 APPROVAL = "--i-approve-public-sharing"
 
 
-def draft_id_from_value(value: str) -> str:
-    m = re.search(r"/d/([a-z0-9]{6,32})", value)
-    if m:
-        return m.group(1)
-    if re.fullmatch(r"[a-z0-9]{6,32}", value):
-        return value
-    raise SystemExit("Provide a Tailplan draft id or URL containing /d/<draft-id>.")
+DRAFT_REF_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,39}$")
 
 
-def load_draft(draft_id: str) -> dict:
+def draft_ref_from_value(value: str) -> str:
+    raw = value.strip()
+    m = re.search(r"/d/([^/?#]+)", raw)
+    candidate = m.group(1).lower() if m else raw.lower()
+    if DRAFT_REF_RE.fullmatch(candidate):
+        return candidate
+    raise SystemExit("Provide a Tailplan draft id, slug, or URL containing /d/<ref>.")
+
+
+def load_draft(ref: str) -> dict:
     try:
         meta = json.loads(TAILPLAN_META.read_text())
     except Exception as e:
         raise SystemExit(f"Could not read {TAILPLAN_META}: {e}")
-    draft = meta.get("drafts", {}).get(draft_id)
+    drafts = meta.get("drafts", {})
+    draft = drafts.get(ref)
     if not draft:
-        raise SystemExit(f"Tailplan draft not found: {draft_id}")
+        for candidate in drafts.values():
+            if not candidate.get("deletedAt") and candidate.get("slug") == ref:
+                draft = candidate
+                break
+    if not draft or draft.get("deletedAt"):
+        raise SystemExit(f"Tailplan draft not found: {ref}")
     return draft
 
 
@@ -40,7 +49,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Mirror a Tailplan draft to public postplan.dev. Requires explicit approval flag."
     )
-    parser.add_argument("draft", help="Tailplan draft id or Tailplan URL")
+    parser.add_argument("draft", help="Tailplan draft id, slug, or Tailplan URL")
     parser.add_argument(APPROVAL, dest="approved", action="store_true", help="Required. Confirms this draft may be shared on the open internet.")
     parser.add_argument("--new", action="store_true", help="Force a fresh public Postplan URL")
     args = parser.parse_args()
@@ -53,17 +62,42 @@ def main() -> int:
     if not shutil.which("postplan"):
         raise SystemExit("postplan CLI is not installed or not on PATH.")
 
-    draft_id = draft_id_from_value(args.draft)
-    draft = load_draft(draft_id)
+    ref = draft_ref_from_value(args.draft)
+    draft = load_draft(ref)
+    draft_id = draft["draftId"]
     source = Path(draft.get("currentObject", ""))
     if not source.exists():
         raise SystemExit(f"Tailplan draft object missing: {source}")
 
+    latest = draft.get("latestVersionNumber", 1)
+    version = draft.get("versions", {}).get(str(latest), {})
+    pages = version.get("pages") if (version.get("pageCount") or 1) > 1 else None
+
     with tempfile.TemporaryDirectory() as td:
-        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", draft.get("title") or draft_id).strip("-") or draft_id
-        public_file = Path(td) / f"{safe_name}.html"
-        public_file.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-        cmd = ["postplan", "upload", str(public_file)]
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", draft.get("title") or draft_id).strip("-.") or draft_id
+        if pages:
+            public_dir = Path(td) / safe_name
+            public_dir.mkdir(parents=True)
+            (public_dir / "index.html").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+            version_dir = source.parent / f"v{latest}"
+            for page in pages:
+                rel = page["path"]
+                if rel == "index.html":
+                    continue
+                page_src = (version_dir / rel).resolve()
+                if not page_src.is_relative_to(version_dir.resolve()) or not page_src.is_file():
+                    raise SystemExit(f"Tailplan draft page missing: {rel}")
+                dest = (public_dir / rel).resolve()
+                if not dest.is_relative_to(public_dir.resolve()):
+                    raise SystemExit(f"Unsafe page path: {rel}")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(page_src.read_text(encoding="utf-8"), encoding="utf-8")
+            upload_target = public_dir
+        else:
+            public_file = Path(td) / f"{safe_name}.html"
+            public_file.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+            upload_target = public_file
+        cmd = ["postplan", "upload", str(upload_target)]
         if args.new:
             cmd.append("--new")
         proc = subprocess.run(cmd, text=True, capture_output=True)
