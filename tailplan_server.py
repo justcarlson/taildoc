@@ -185,15 +185,27 @@ URL_ATTRIBUTES = {
 }
 SMIL_ANIMATION_TAGS = {"animate", "animatemotion", "animatetransform", "set"}
 FOREIGN_ROOT_TAGS = {"svg", "math"}
+SVG_INTEGRATION_TAGS = {"desc", "foreignobject", "title"}
+MATH_TEXT_INTEGRATION_TAGS = {"mi", "mn", "mo", "ms", "mtext"}
+FOREIGN_BREAKOUT_TAGS = {
+    "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div",
+    "dl", "dt", "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head",
+    "hr", "i", "img", "li", "listing", "menu", "meta", "nobr", "ol", "p",
+    "pre", "ruby", "s", "small", "span", "strong", "strike", "sub", "sup",
+    "table", "tt", "u", "ul", "var",
+}
+NOSCRIPT_RE = re.compile(r"<noscript\b", re.IGNORECASE)
 SECURITY_SENSITIVE_ATTRIBUTES = URL_ATTRIBUTES | {
     "http-equiv", "imagesrcset", "rel", "srcdoc", "srcset", "style", "type",
 }
 BLOCKED_URL_SCHEMES = {"file", "javascript", "vbscript"}
 CSS_URL_RE = re.compile(
-    r"url\s*\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE | re.DOTALL
+    r"""url\s*\(\s*(?:"([^"]*)(?:"|$)|'([^']*)(?:'|$)|([^)"']+))""",
+    re.IGNORECASE | re.DOTALL,
 )
 CSS_IMPORT_RE = re.compile(
-    r"@import\s*(['\"])(.*?)\1", re.IGNORECASE | re.DOTALL
+    r"""@import\s*(?:"([^"]*)"|'([^']*)')""",
+    re.IGNORECASE | re.DOTALL,
 )
 STORE_LOCK = threading.RLock()
 BUILD_ID = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
@@ -1168,14 +1180,26 @@ def _strip_css_comments(value: str) -> str:
     while index < length:
         ch = value[index]
         if quote is not None:
-            out.append(ch)
             if ch == "\\" and index + 1 < length:
-                out.append(value[index + 1])
-                index += 2
+                if value[index + 1] == "\r" and index + 2 < length and value[index + 2] == "\n":
+                    out.append(value[index : index + 3])
+                    index += 3
+                else:
+                    out.append(value[index : index + 2])
+                    index += 2
                 continue
-            if ch == quote:
+            out.append(ch)
+            if ch in "\n\r\f" or ch == quote:
                 quote = None
             index += 1
+            continue
+        if ch == "\\" and index + 1 < length:
+            if value[index + 1] == "\r" and index + 2 < length and value[index + 2] == "\n":
+                out.append(value[index : index + 3])
+                index += 3
+            else:
+                out.append(value[index : index + 2])
+                index += 2
             continue
         if ch in {'"', "'"}:
             quote = ch
@@ -1192,8 +1216,14 @@ def _strip_css_comments(value: str) -> str:
 
 
 def _css_text_is_unsafe(text: str) -> bool:
-    urls = [match.group(2) for match in CSS_URL_RE.finditer(text)]
-    urls.extend(match.group(2) for match in CSS_IMPORT_RE.finditer(text))
+    urls = [
+        next(group for group in match.groups() if group is not None)
+        for match in CSS_URL_RE.finditer(text)
+    ]
+    urls.extend(
+        next(group for group in match.groups() if group is not None)
+        for match in CSS_IMPORT_RE.finditer(text)
+    )
     return bool(re.search(r"expression\s*\(|behavior\s*:", text, re.IGNORECASE)) or any(
         _has_unsafe_scheme(url) for url in urls
     )
@@ -1222,9 +1252,13 @@ def _parse_srcset_urls(value: str) -> list[str]:
                 if not candidate.lower().startswith("data:"):
                     break
             index += 1
-        url = value[start:index].rstrip(",")
+        raw_url = value[start:index]
+        ended_with_comma = raw_url.endswith(",")
+        url = raw_url.rstrip(",")
         if url:
             urls.append(url)
+        if ended_with_comma:
+            continue
         while index < length and value[index] != ",":
             index += 1
         if index < length and value[index] == ",":
@@ -1413,15 +1447,46 @@ P_CLOSING_BLOCKS = {
 }
 
 
+def _is_foreign_breakout(tag_lower: str, attrs: list[tuple[str, str | None]]) -> bool:
+    if tag_lower in FOREIGN_BREAKOUT_TAGS:
+        return True
+    if tag_lower == "font":
+        return any(name.lower() in {"color", "face", "size"} for name, _ in attrs)
+    return False
+
+
+def _is_integration_point(
+    parent_mode: str,
+    tag_lower: str,
+    attrs: list[tuple[str, str | None]],
+) -> bool:
+    if parent_mode == "svg":
+        return tag_lower in SVG_INTEGRATION_TAGS
+    if parent_mode == "math":
+        if tag_lower in MATH_TEXT_INTEGRATION_TAGS:
+            return True
+        if tag_lower == "annotation-xml":
+            return any(
+                name.lower() == "encoding"
+                and (value or "").strip().lower() in {"text/html", "application/xhtml+xml"}
+                for name, value in attrs
+            )
+    return False
+
+
 class _HtmlValidator(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
+    def __init__(self, *, scripting: bool = False) -> None:
+        try:
+            super().__init__(convert_charrefs=True, scripting=scripting)
+        except TypeError:
+            super().__init__(convert_charrefs=True)
+            self.scripting = scripting
         if hasattr(self, "_set_support_cdata"):
             self._set_support_cdata(False)
         self.issues = _IssueList()
         self._style_stack: list[tuple[list[str], tuple[int, int]]] = []
-        self._tag_stack: list[str] = []
-        self._foreign_depth = 0
+        self._tag_stack: list[tuple[str, str]] = []
+        self._last_start_in_foreign = False
         self.too_deep = False
         self.has_inline_script = False
         self.external_image_hosts: set[str] = set()
@@ -1438,6 +1503,22 @@ class _HtmlValidator(HTMLParser):
             for issue in self.issues.items()
             if issue["level"] == "error"
         ]
+
+    def _in_foreign(self) -> bool:
+        return bool(self._tag_stack and self._tag_stack[-1][1] in {"svg", "math"})
+
+    def _sync_cdata_support(self) -> None:
+        if hasattr(self, "_set_support_cdata"):
+            self._set_support_cdata(self._in_foreign())
+
+    def handle_comment(self, data: str) -> None:
+        if data.lstrip().upper().startswith("[CDATA["):
+            self.issues.error(
+                "unsafe-declaration",
+                "Blocked unsupported markup declaration.",
+                fix="Remove CDATA or non-standard markup declarations.",
+                pos=self.getpos(),
+            )
 
     def unknown_decl(self, data: str) -> None:
         self.issues.error(
@@ -1479,63 +1560,122 @@ class _HtmlValidator(HTMLParser):
         self._flush_script()
         self._flush_title()
 
-    def _push_tag(self, tag_lower: str) -> None:
-        if tag_lower in P_CLOSING_BLOCKS and self._tag_stack and self._tag_stack[-1] == "p":
-            self._tag_stack.pop()
-        closers = OPTIONAL_CLOSE_SIBLINGS.get(tag_lower)
-        if closers:
-            while self._tag_stack and self._tag_stack[-1] in closers:
+    def _push_tag(self, tag_lower: str, mode: str) -> None:
+        if mode == "html":
+            if (
+                tag_lower in P_CLOSING_BLOCKS
+                and self._tag_stack
+                and self._tag_stack[-1] == ("p", "html")
+            ):
                 self._tag_stack.pop()
-        self._tag_stack.append(tag_lower)
+            closers = OPTIONAL_CLOSE_SIBLINGS.get(tag_lower)
+            if closers:
+                while (
+                    self._tag_stack
+                    and self._tag_stack[-1][1] == "html"
+                    and self._tag_stack[-1][0] in closers
+                ):
+                    self._tag_stack.pop()
+        self._tag_stack.append((tag_lower, mode))
         if len(self._tag_stack) > MAX_DEPTH:
             self.too_deep = True
 
     def set_cdata_mode(self, elem: str, *args: object, **kwargs: object) -> None:
-        if self._foreign_depth > 0:
+        if self._last_start_in_foreign or self._in_foreign():
             return
         super().set_cdata_mode(elem, *args, **kwargs)
 
+    def _enter_cdata(self, tag_lower: str) -> None:
+        if not hasattr(self, "set_cdata_mode"):
+            return
+        cdata_tags = set(getattr(self, "CDATA_CONTENT_ELEMENTS", ("script", "style")))
+        rcdata_tags = set(getattr(self, "RCDATA_CONTENT_ELEMENTS", ("textarea", "title")))
+        scripting = bool(getattr(self, "scripting", False))
+        if tag_lower in cdata_tags or tag_lower == "plaintext" or (scripting and tag_lower == "noscript"):
+            self.set_cdata_mode(tag_lower)
+        elif tag_lower in rcdata_tags:
+            try:
+                self.set_cdata_mode(tag_lower, escapable=True)
+            except TypeError:
+                self.set_cdata_mode(tag_lower)
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_lower = tag.lower()
-        in_foreign = self._foreign_depth > 0
-        if tag_lower in FOREIGN_ROOT_TAGS:
-            self._foreign_depth += 1
-        if tag_lower not in VOID_ELEMENTS:
-            self._push_tag(tag_lower)
+        in_foreign = self._in_foreign()
+        if in_foreign and _is_foreign_breakout(tag_lower, attrs):
+            while self._tag_stack and self._tag_stack[-1][1] in {"svg", "math"}:
+                self._tag_stack.pop()
+            in_foreign = False
+        self._last_start_in_foreign = in_foreign
+        if not in_foreign:
+            if tag_lower in FOREIGN_ROOT_TAGS:
+                self._push_tag(tag_lower, tag_lower)
+            elif tag_lower not in VOID_ELEMENTS:
+                self._push_tag(tag_lower, "html")
+            if bool(getattr(self, "scripting", False)) and tag_lower == "noscript":
+                self._enter_cdata(tag_lower)
+        else:
+            parent_mode = self._tag_stack[-1][1]
+            if _is_integration_point(parent_mode, tag_lower, attrs):
+                self._push_tag(tag_lower, "integration")
+            else:
+                self._push_tag(tag_lower, parent_mode)
+        self._sync_cdata_support()
         self._inspect_tag(tag_lower, attrs, self_closing=False, in_foreign=in_foreign)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_lower = tag.lower()
-        in_foreign = self._foreign_depth > 0
-        if in_foreign:
+        in_foreign = self._in_foreign()
+        if in_foreign and _is_foreign_breakout(tag_lower, attrs):
+            while self._tag_stack and self._tag_stack[-1][1] in {"svg", "math"}:
+                self._tag_stack.pop()
+            in_foreign = False
+        if in_foreign or tag_lower in FOREIGN_ROOT_TAGS:
             if len(self._tag_stack) + 1 > MAX_DEPTH:
                 self.too_deep = True
+            self._sync_cdata_support()
             self._inspect_tag(tag_lower, attrs, self_closing=True, in_foreign=True)
             return
-        if tag_lower in FOREIGN_ROOT_TAGS:
-            if len(self._tag_stack) + 1 > MAX_DEPTH:
-                self.too_deep = True
-            self._inspect_tag(tag_lower, attrs, self_closing=True, in_foreign=True)
-            return
+        self._last_start_in_foreign = False
         if tag_lower not in VOID_ELEMENTS:
-            self._push_tag(tag_lower)
-        cdata_tags = set(getattr(self, "CDATA_CONTENT_ELEMENTS", ("script", "style")))
-        rcdata_tags = set(getattr(self, "RCDATA_CONTENT_ELEMENTS", ("textarea", "title")))
-        if (tag_lower in cdata_tags or tag_lower in rcdata_tags or tag_lower == "plaintext") and hasattr(
-            self, "set_cdata_mode"
-        ):
-            self.set_cdata_mode(tag_lower)
+            self._push_tag(tag_lower, "html")
+        self._enter_cdata(tag_lower)
+        self._sync_cdata_support()
         self._inspect_tag(tag_lower, attrs, self_closing=False, in_foreign=False)
 
     def handle_endtag(self, tag: str) -> None:
         tag_lower = tag.lower()
-        if tag_lower in FOREIGN_ROOT_TAGS and self._foreign_depth > 0:
-            self._foreign_depth -= 1
-        if tag_lower not in VOID_ELEMENTS and tag_lower in self._tag_stack:
-            for idx in range(len(self._tag_stack) - 1, -1, -1):
-                if self._tag_stack[idx] == tag_lower:
-                    del self._tag_stack[idx:]
-                    break
+        if tag_lower not in VOID_ELEMENTS and self._tag_stack:
+            if self._in_foreign():
+                matched_idx: int | None = None
+                boundary = len(self._tag_stack)
+                for idx in range(len(self._tag_stack) - 1, -1, -1):
+                    stack_tag, mode = self._tag_stack[idx]
+                    if mode not in {"svg", "math"}:
+                        boundary = idx
+                        break
+                    if stack_tag == tag_lower:
+                        matched_idx = idx
+                        break
+                if matched_idx is not None:
+                    del self._tag_stack[matched_idx:]
+                elif tag_lower not in FOREIGN_ROOT_TAGS and boundary < len(self._tag_stack):
+                    for idx in range(boundary, -1, -1):
+                        stack_tag, mode = self._tag_stack[idx]
+                        if stack_tag == tag_lower:
+                            del self._tag_stack[idx:]
+                            break
+                        if mode == "integration":
+                            break
+            else:
+                for idx in range(len(self._tag_stack) - 1, -1, -1):
+                    stack_tag, mode = self._tag_stack[idx]
+                    if stack_tag == tag_lower:
+                        del self._tag_stack[idx:]
+                        break
+                    if mode in {"integration", "svg", "math"}:
+                        break
+        self._sync_cdata_support()
         if tag_lower == "style":
             self._flush_style()
         if tag_lower == "script":
@@ -1544,8 +1684,8 @@ class _HtmlValidator(HTMLParser):
             self._flush_title()
 
     def handle_data(self, data: str) -> None:
-        if self._style_stack:
-            self._style_stack[-1][0].append(data)
+        for parts, _ in self._style_stack:
+            parts.append(data)
         if self._active_script is not None:
             self._active_script[1].append(data)
         if self._in_title:
@@ -1765,11 +1905,26 @@ def validate_html_detailed(
     validator.close()
     for item in validator.issues.items():
         issues.merge(item)
-    if validator.too_deep:
+    too_deep = validator.too_deep
+    has_scripts = validator.has_inline_script
+    script_sources = list(validator.script_sources)
+    external_hosts = set(validator.external_image_hosts)
+    if NOSCRIPT_RE.search(doc):
+        scripted = _HtmlValidator(scripting=True)
+        scripted.feed(doc)
+        scripted.close()
+        for item in scripted.issues.items():
+            if item["level"] == "error":
+                issues.merge(item)
+        too_deep = too_deep or scripted.too_deep
+        has_scripts = has_scripts or scripted.has_inline_script
+        script_sources.extend(scripted.script_sources)
+        external_hosts.update(scripted.external_image_hosts)
+    if too_deep:
         issues.error("too-deep", f"HTML is nested more than {MAX_DEPTH} levels deep.")
     for code, pattern, message, fix in SANDBOX_APIS:
         matched = next(
-            ((text, pos) for text, pos in validator.script_sources if pattern.search(text)),
+            ((text, pos) for text, pos in script_sources if pattern.search(text)),
             None,
         )
         if matched is not None:
@@ -1791,9 +1946,9 @@ def validate_html_detailed(
         "warnings": warnings,
         "issues": items,
         "title": validator.title,
-        "hasScripts": validator.has_inline_script,
+        "hasScripts": has_scripts,
         "bytes": size,
-        "externalImageHosts": sorted(validator.external_image_hosts),
+        "externalImageHosts": sorted(external_hosts),
     }
 
 
@@ -1938,6 +2093,10 @@ class IdempotencyConflict(RuntimeError):
 
 class ConflictError(RuntimeError):
     """A requested custom URL conflicts with an existing draft."""
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class ListenerStartupError(RuntimeError):
@@ -2412,7 +2571,8 @@ class Store:
             if draft_id and slug_draft["draftId"] != draft_id:
                 raise ConflictError(
                     f'The custom URL "{slug}" already names draft {slug_draft["draftId"]}. '
-                    "Upload with --slug alone to update it."
+                    "Upload with --slug alone to update it.",
+                    code="slug_names_other_draft",
                 )
         resolved_draft_id = slug_draft["draftId"] if slug_draft is not None else draft_id
         if resolved_draft_id:
@@ -2480,6 +2640,12 @@ class Store:
             replayed["slug"] = current_slug
             replayed["publicUrl"] = f"{base_url.rstrip('/')}/d/{current_slug or current_draft['draftId']}"
             replayed["rawUrl"] = replayed["publicUrl"] + "/raw"
+            if isinstance(replayed.get("pages"), list):
+                replayed["pages"] = [
+                    {**page, "url": f"{replayed['publicUrl']}/{page['path']}"}
+                    for page in replayed["pages"]
+                    if isinstance(page, dict) and isinstance(page.get("path"), str)
+                ]
             return {
                 **replayed,
                 "created": False,
@@ -3659,7 +3825,10 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, UnicodeEncodeError):
             self.send_json(400, {"ok": False, "error": "Upload metadata is invalid."})
         except (IdempotencyConflict, ConflictError) as exc:
-            self.send_json(409, {"ok": False, "error": str(exc)})
+            body = {"ok": False, "error": str(exc)}
+            if getattr(exc, "code", None):
+                body["code"] = exc.code
+            self.send_json(409, body)
         except KeyError as e:
             self.send_json(404, {"ok": False, "error": str(e).strip("'")})
         except (StorageError, OSError) as e:

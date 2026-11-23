@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -84,20 +85,23 @@ def test_guard_allows_only_the_scoped_creation_command() -> None:
     assert raised.value.code == 126
 
 
-def test_guard_allows_the_exact_legacy_scp_sink_command() -> None:
-    directory = Path("/tmp/tailplan-upload.Ab12Cd34")
+def test_guard_allows_the_exact_legacy_scp_sink_command(tmp_path: Path) -> None:
+    directory = tmp_path / "tailplan-upload.Ab12Cd34"
     directory.mkdir(mode=0o700, exist_ok=False)
-    try:
-        command = ["scp", "-t", f"{directory}/draft.md"]
-        with (
-            patch.object(mod.os, "execv", side_effect=SystemExit(0)) as execute,
-            pytest.raises(SystemExit) as exited,
-        ):
-            mod.execute(command)
-        assert exited.value.code == 0
-        execute.assert_called_once_with("/usr/bin/scp", command)
-    finally:
-        directory.rmdir()
+    patched_dir_re = re.compile(rf"{re.escape(str(tmp_path))}/tailplan-upload\.[A-Za-z0-9]{{8}}")
+    patched_file_re = re.compile(
+        rf"({re.escape(str(tmp_path))}/tailplan-upload\.[A-Za-z0-9]{{8}})/([A-Za-z0-9_][A-Za-z0-9_.-]{{0,254}})"
+    )
+    command = ["scp", "-t", f"{directory}/draft.md"]
+    with (
+        patch.object(mod, "DIRECTORY_RE", patched_dir_re),
+        patch.object(mod, "FILE_RE", patched_file_re),
+        patch.object(mod.os, "execv", side_effect=SystemExit(0)) as execute,
+        pytest.raises(SystemExit) as exited,
+    ):
+        mod.execute(command)
+    assert exited.value.code == 0
+    execute.assert_called_once_with("/usr/bin/scp", command)
 
 
 @pytest.mark.parametrize(
@@ -116,45 +120,47 @@ def test_guard_rejects_other_transfer_commands(command: list[str]) -> None:
 
 
 def test_guard_allows_publish_options_and_rejects_other_options(tmp_path: Path) -> None:
-    directory = Path("/tmp/tailplan-upload.Ef56Gh78")
+    directory = tmp_path / "tailplan-upload.Ef56Gh78"
     directory.mkdir(mode=0o700, exist_ok=False)
     source = directory / "draft.md"
     source.write_text("# Draft\n")
-    try:
-        with (
-            patch.object(mod, "configured_share_command", return_value="/publisher"),
-            patch.object(mod.os, "execv", side_effect=SystemExit(0)) as execute,
-            pytest.raises(SystemExit) as exited,
-        ):
-            mod.execute(["tailplan-share", str(source), "--draft", "draft123"])
-        assert exited.value.code == 0
-        execute.assert_called_once_with(
-            "/publisher",
-            ["/publisher", str(source), "--draft", "draft123"],
-        )
+    patched_file_re = re.compile(
+        rf"({re.escape(str(tmp_path))}/tailplan-upload\.[A-Za-z0-9]{{8}})/([A-Za-z0-9_][A-Za-z0-9_.-]{{0,254}})"
+    )
+    with (
+        patch.object(mod, "FILE_RE", patched_file_re),
+        patch.object(mod, "configured_share_command", return_value="/publisher"),
+        patch.object(mod.os, "execv", side_effect=SystemExit(0)) as execute,
+        pytest.raises(SystemExit) as exited,
+    ):
+        mod.execute(["tailplan-share", str(source), "--draft", "draft123"])
+    assert exited.value.code == 0
+    execute.assert_called_once_with(
+        "/publisher",
+        ["/publisher", str(source), "--draft", "draft123"],
+    )
 
-        with pytest.raises(SystemExit) as raised:
-            mod.execute(["tailplan-share", str(source), "--base-url", "https://other.example.test"])
-        assert raised.value.code == 126
-    finally:
-        source.unlink()
-        directory.rmdir()
+    with (
+        patch.object(mod, "FILE_RE", patched_file_re),
+        pytest.raises(SystemExit) as raised,
+    ):
+        mod.execute(["tailplan-share", str(source), "--base-url", "https://other.example.test"])
+    assert raised.value.code == 126
 
 
-def test_guard_allows_only_scoped_owned_cleanup() -> None:
-    directory = Path("/tmp/tailplan-upload.Ij90Kl12")
+def test_guard_allows_only_scoped_owned_cleanup(tmp_path: Path) -> None:
+    directory = tmp_path / "tailplan-upload.Ij90Kl12"
     directory.mkdir(mode=0o700, exist_ok=False)
-    try:
-        command = ["rm", "-rf", "--", str(directory)]
-        with (
-            patch.object(mod.os, "execv", side_effect=SystemExit(0)) as execute,
-            pytest.raises(SystemExit) as exited,
-        ):
-            mod.execute(command)
-        assert exited.value.code == 0
-        execute.assert_called_once_with("/usr/bin/rm", command)
-    finally:
-        directory.rmdir()
+    patched_dir_re = re.compile(rf"{re.escape(str(tmp_path))}/tailplan-upload\.[A-Za-z0-9]{{8}}")
+    command = ["rm", "-rf", "--", str(directory)]
+    with (
+        patch.object(mod, "DIRECTORY_RE", patched_dir_re),
+        patch.object(mod.os, "execv", side_effect=SystemExit(0)) as execute,
+        pytest.raises(SystemExit) as exited,
+    ):
+        mod.execute(command)
+    assert exited.value.code == 0
+    execute.assert_called_once_with("/usr/bin/rm", command)
 
 
 @pytest.mark.parametrize("arguments", [

@@ -74,7 +74,7 @@ def main() -> int:
     pages = version.get("pages") if (version.get("pageCount") or 1) > 1 else None
 
     with tempfile.TemporaryDirectory() as td:
-        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", draft.get("title") or draft_id).strip("-") or draft_id
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", draft.get("title") or draft_id).strip("-.") or draft_id
         if pages:
             public_dir = Path(td) / safe_name
             public_dir.mkdir(parents=True)

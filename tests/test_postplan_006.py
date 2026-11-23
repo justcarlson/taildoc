@@ -435,6 +435,8 @@ class Postplan006ServerTests(unittest.TestCase):
         self.assertTrue(off_data["markupOk"])
 
     def test_security_bypasses_anonymous_slugs_collisions_rebase_and_traversal(self) -> None:
+        self.httpd.upload_ip_limit = 200
+        self.httpd.upload_key_limit = 200
         # SL1-3 / SL2-1 / SL2-2 / C1-1 / C1-3 / F1-3: HTML5 tokenizer, CSS comment, srcset, and SMIL bypasses.
         bypasses = (
             "<title>Bad</title><style/>body{background:url(javascript:alert(1))}</style>",
@@ -454,8 +456,31 @@ class Postplan006ServerTests(unittest.TestCase):
             '<svg><style><meta http-equiv="refresh" content="0;url=https://evil.test"></style></svg>',
             '<title>Bad</title><img srcset="javascript:alert(1) 1x">',
             '<title>Bad</title><img srcset="https://ok.test/a.png 1x,javascript:alert(1) 2x">',
+            '<title>Bad</title><img srcset="data:image/png;base64,AAAA, javascript:alert(1) 2x">',
             '<title>Bad</title><svg><set attributeName="href" to="javascript:alert(1)"/></svg>',
             '<title>Bad</title>' + ('<div/>' * 520),
+            '<title>Bad</title><style>.a\\" { background: url("javascript:alert(1)" /*x*/); }</style>',
+            '<title>Bad</title><style>a: "\n; } body { background: url("javascript:alert(1)" /*x*/); }</style>',
+            '<title>Bad</title><style>@layer a\\"; @import/*x*/"javascript:alert(1)";</style>',
+            '<title>Bad</title><style>.a\\" { behavior/*x*/: url(x); }</style>',
+            '<title>Bad</title><style>body { background: url("javascript:alert(1)" anonymous); }</style>',
+            '<title>Bad</title><style>a{content:"\n}body{background:url(/*x*/javascript:alert(1))}</style>',
+            '<title>Bad</title><style>a{foo:\\"}body{background:url(/*x*/javascript:alert(1))}</style>',
+            '<title>Bad</title><svg><p><style/>body{background:url(javascript:alert(1))}</style>',
+            '<title>Bad</title><svg><p/><style/>body{background:url(javascript:alert(1))}</style>',
+            '<title>Bad</title><svg><foreignObject><style/>body{background:url(javascript:alert(1))}</style></foreignObject></svg>',
+            '<title>Bad</title><div><svg></div><style/>body{background:url(javascript:alert(1))}</style>',
+            '<title>Bad</title><svg><p>' + ('<div/>' * 520),
+            '<title>Bad</title><svg></math><title><script src="https://evil.test/x.js"></script></title></svg>',
+            '<title>Bad</title><svg></math><style><meta http-equiv="refresh" content="0;url=https://evil.test"></style></svg>',
+            '<title>Bad</title><math></svg><style><meta http-equiv="refresh" content="0;url=https://evil.test"></style></math>',
+            '<title>Bad</title><svg><foreignObject><p></svg></p></foreignObject><style><meta http-equiv="refresh" content="0;url=https://evil.test"></style></svg>',
+            '<title>Bad</title><svg><foreignObject><style>a{b:url(/*<style>*/javascript:alert(1))}</style></foreignObject></svg>',
+            '<title>Bad</title><svg><p><style>a{b:url(/*<style>*/javascript:alert(1))}</style></p></svg>',
+            '<title>Bad</title><svg><math></svg><style><!--</style><meta http-equiv="refresh" content="0;url=https://evil.test">--></style>',
+            '<title>Bad</title><svg><style><![CDATA[a>/*</style>*/body{background:url(javascript:alert(1))}]]></style></svg>',
+            '<title>Bad</title><noscript><!--</noscript><meta http-equiv="refresh" content="0;url=https://evil.test">--></noscript>',
+            '<title>Bad</title><noscript><style></noscript><meta http-equiv="refresh" content="0;url=https://evil.test"></style>',
         )
         for bad in bypasses:
             status, _, res = self.api("/api/uploads", "POST", {"html": bad})
@@ -608,6 +633,88 @@ class Postplan006ServerTests(unittest.TestCase):
         reopened = server.Store(self.store.root)
         reopened.check_ready()
 
+        # N2-7 / F2-3: idempotency replay refreshes pages[*].url after a slug rename.
+        status, _, renamed_mp = self.api(
+            "/api/uploads",
+            "POST",
+            {"files": mp_files, "draftId": mp["draftId"], "slug": "reopen-site-v2"},
+        )
+        self.assertEqual(200, status, renamed_mp)
+        status, _, replayed_mp = self.api(
+            "/api/uploads",
+            "POST",
+            {"files": mp_files, "slug": "reopen-site"},
+            headers={"Idempotency-Key": "mp-key-1"},
+        )
+        self.assertEqual(200, status, replayed_mp)
+        self.assertTrue(replayed_mp["replayed"])
+        self.assertEqual("reopen-site-v2", replayed_mp["slug"])
+        self.assertTrue(
+            all(p["url"].startswith(f"{self.base}/d/reopen-site-v2/") for p in replayed_mp["pages"])
+        )
+        status, _, restored_mp = self.api(
+            "/api/uploads",
+            "POST",
+            {"files": mp_files, "draftId": mp["draftId"], "slug": "reopen-site"},
+        )
+        self.assertEqual(200, status, restored_mp)
+
+        # F2-2: bound file with --slug naming another draft retries via slug_names_other_draft code.
+        cli_home = self.root / "cli-home"
+        cli_home.mkdir()
+        tok = cli_home / ".tailplan" / "token"
+        tok.parent.mkdir(parents=True)
+        tok.write_text("bootstrap-test\n", encoding="utf-8")
+        tok.chmod(0o600)
+        cli_env = {**os.environ, "HOME": str(cli_home), "TAILPLAN_BASE_URL": self.base}
+        cli_env.pop("TAILPLAN_API_KEY", None)
+        cli_env.pop("TAILPLAN_TOKEN_FILE", None)
+
+        def run_local_cli(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [sys.executable, str(ROOT / "bin" / "tailplan"), *args],
+                cwd=cli_home,
+                env=cli_env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+
+        file_a = cli_home / "bound-a.html"
+        file_a.write_text("<title>A</title><p>one</p>", encoding="utf-8")
+        file_b = cli_home / "bound-b.html"
+        file_b.write_text("<title>B</title><p>two</p>", encoding="utf-8")
+        run_a = run_local_cli(str(file_a), "--slug", "slug-a", "--json")
+        self.assertEqual(0, run_a.returncode, run_a.stderr)
+        draft_a = json.loads(run_a.stdout)["draftId"]
+        run_b = run_local_cli(str(file_b), "--slug", "slug-b", "--json")
+        self.assertEqual(0, run_b.returncode, run_b.stderr)
+        draft_b = json.loads(run_b.stdout)["draftId"]
+        # Direct API 409 returns machine-readable code.
+        status, _, conflict_body = self.api(
+            "/api/uploads",
+            "POST",
+            {"html": "<title>B2</title>", "draftId": draft_b, "slug": "slug-a"},
+        )
+        self.assertEqual(409, status)
+        self.assertEqual("slug_names_other_draft", conflict_body.get("code"))
+        # Local CLI retries slug-only and updates draft_a.
+        file_b.write_text("<title>B into A</title><p>updated</p>", encoding="utf-8")
+        retry_res = run_local_cli(str(file_b), "--slug", "slug-a", "--json")
+        self.assertEqual(0, retry_res.returncode, retry_res.stderr + retry_res.stdout)
+        retry_data = json.loads(retry_res.stdout)
+        self.assertEqual(draft_a, retry_data["draftId"])
+        self.assertEqual("slug-a", retry_data["slug"])
+        self.assertEqual(2, retry_data["versionNumber"])
+
+        # N2-5: _write_new_file_nofollow leaves pre-existing files untouched on collision.
+        existing = cli_home / "keep.html"
+        existing.write_text("keep-me", encoding="utf-8")
+        with self.assertRaises(FileExistsError):
+            share._write_new_file_nofollow(existing, "overwrite")
+        self.assertEqual("keep-me", existing.read_text(encoding="utf-8"))
+
         # Viewer path traversal attempts return 404.
         for bad_route in (
             "/d/reopen-site/..",
@@ -756,12 +863,20 @@ class PerDraftBindingAndGuardTests(unittest.TestCase):
             self.assertFalse(bad_report["ok"])
             self.assertEqual("unavailable", bad_report["slug"]["status"])
 
-            # N1-5: parse_draft_ref rejects URLs from another host when base_url is provided.
+            # N1-5 / N2-4 / SL3-4: parse_draft_ref validates host/port and allows subpath URLs without base_url.
             with self.assertRaises(share.ConfigurationFailure):
                 share.parse_draft_ref("https://other.example/d/my-plan", "https://tailplan.test")
+            with self.assertRaises(share.ConfigurationFailure):
+                share.parse_draft_ref("https://tailplan.test:bad/d/my-plan", "https://tailplan.test")
+            with self.assertRaises(share.ConfigurationFailure):
+                share.parse_draft_ref("https://tailplan.test:bad/d/my-plan")
             self.assertEqual(
                 "my-plan",
                 share.parse_draft_ref("https://tailplan.test/d/my-plan/share", "https://tailplan.test"),
+            )
+            self.assertEqual(
+                "my-plan",
+                share.parse_draft_ref("https://tailplan.test/tailplan/d/my-plan/share"),
             )
 
             completed = subprocess.run(
@@ -778,20 +893,95 @@ class PerDraftBindingAndGuardTests(unittest.TestCase):
             self.assertTrue(report["markupOk"])
             self.assertEqual("unchecked", report["slug"]["status"])
 
-            # SL1-8: URL ref is normalized before invoking SSH for management subcommands.
+            # SL1-8 / N2-4: subpath URL ref is normalized before SSH management commands.
             echo_ssh = root / "bin2" / "ssh"
             echo_ssh.parent.mkdir()
             echo_ssh.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n', encoding="utf-8")
             echo_ssh.chmod(0o755)
             env2 = {**os.environ, "PATH": str(echo_ssh.parent) + os.pathsep + os.environ["PATH"]}
             fav_run = subprocess.run(
-                [sys.executable, str(ROOT / "bin" / "tailplan-share-remote"), "favorite", "https://tailplan.test/d/My-Plan"],
+                [sys.executable, str(ROOT / "bin" / "tailplan-share-remote"), "favorite", "https://tailplan.test/tailplan/d/My-Plan"],
                 env=env2,
                 capture_output=True,
                 text=True,
                 check=True,
             )
             self.assertEqual(["tailplan-server", "tailplan-share", "favorite", "my-plan"], json.loads(fav_run.stdout))
+
+            # C2-4: online remote check rewrites the staged remote path to the local source path.
+            online_bin = root / "bin3"
+            online_bin.mkdir()
+            (online_bin / "scp").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (online_bin / "scp").chmod(0o755)
+            (online_bin / "ssh").write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                "args = sys.argv[2:]\n"
+                "if args[:2] == ['mktemp', '-d']:\n"
+                "    print('/tmp/tailplan-upload.Ab12Cd34')\n"
+                "elif args[:2] == ['tailplan-share', 'check']:\n"
+                "    print(json.dumps({'ok': True, 'path': args[2], 'pages': [], 'issues': [], 'errors': [], 'warnings': []}))\n",
+                encoding="utf-8",
+            )
+            (online_bin / "ssh").chmod(0o755)
+            env3 = {**os.environ, "PATH": str(online_bin) + os.pathsep + os.environ["PATH"]}
+            online_chk = subprocess.run(
+                [sys.executable, str(ROOT / "bin" / "tailplan-share-remote"), "check", str(html_file), "--json"],
+                env=env3,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(str(html_file.resolve()), json.loads(online_chk.stdout)["path"])
+
+            # F2-2: remote CLI retries slug-only on slug_names_other_draft conflict code.
+            retry_bin = root / "bin4"
+            retry_bin.mkdir()
+            (retry_bin / "scp").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (retry_bin / "scp").chmod(0o755)
+            calls_log = root / "ssh-calls.jsonl"
+            (retry_bin / "ssh").write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                f"log = {str(calls_log)!r}\n"
+                "args = sys.argv[2:]\n"
+                "if args[:2] == ['mktemp', '-d']:\n"
+                "    print('/tmp/tailplan-upload.Cd34Ef56')\n"
+                "elif args and args[0] == 'tailplan-share':\n"
+                "    with open(log, 'a', encoding='utf-8') as f:\n"
+                "        f.write(json.dumps(args) + '\\n')\n"
+                "    if '--draft' in args:\n"
+                "        print(json.dumps({'ok': False, 'category': 'conflict', 'code': 'slug_names_other_draft', 'error': 'different wording'}))\n"
+                "        sys.exit(1)\n"
+                "    print(json.dumps({'ok': True, 'draftId': 'target123456', 'slug': 'target-slug', 'publicUrl': 'https://tailplan.test/d/target-slug', 'versionNumber': 2, 'warnings': []}))\n",
+                encoding="utf-8",
+            )
+            (retry_bin / "ssh").chmod(0o755)
+            fake_home = root / "home"
+            fake_home.mkdir()
+            share.save_draft_binding(
+                fake_home / ".tailplan",
+                "ssh://tailplan-server",
+                html_file,
+                {
+                    "draftId": "olddraft1234",
+                    "publicUrl": "https://tailplan.test/d/olddraft1234",
+                    "versionNumber": 1,
+                },
+            )
+            env4 = {**os.environ, "HOME": str(fake_home), "PATH": str(retry_bin) + os.pathsep + os.environ["PATH"]}
+            remote_retry = subprocess.run(
+                [sys.executable, str(ROOT / "bin" / "tailplan-share-remote"), str(html_file), "--slug", "target-slug", "--json"],
+                env=env4,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual("target123456", json.loads(remote_retry.stdout)["draftId"])
+            logged = [json.loads(line) for line in calls_log.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(2, len(logged))
+            self.assertIn("--draft", logged[0])
+            self.assertNotIn("--draft", logged[1])
 
     def test_publish_guard_allows_new_safe_commands_and_rejects_abuse(self) -> None:
         for args in (
@@ -850,38 +1040,6 @@ class PerDraftBindingAndGuardTests(unittest.TestCase):
                         guard.execute(cmd)
                     self.assertEqual(126, exited.exception.code, cmd)
 
-    def test_share_public_resolves_slug_urls_and_multipage(self) -> None:
-        public_mod = _load_script("tailplan_share_public_006", ROOT / "bin" / "tailplan-share-public")
-        self.assertEqual(
-            "secret-plan-v2",
-            public_mod.draft_ref_from_value("https://host.test/tailplan/d/secret-plan-v2/share"),
-        )
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            meta_file = root / "metadata.json"
-            v1_html = root / "drafts" / "abc123456789" / "v1.html"
-            v1_html.parent.mkdir(parents=True)
-            v1_html.write_text("<title>S</title>", encoding="utf-8")
-            meta_file.write_text(
-                json.dumps(
-                    {
-                        "drafts": {
-                            "abc123456789": {
-                                "draftId": "abc123456789",
-                                "slug": "secret-plan-v2",
-                                "title": "Secret Plan",
-                                "currentObject": str(v1_html),
-                                "latestVersionNumber": 1,
-                            }
-                        }
-                    }
-                ),
-                encoding="utf-8",
-            )
-            with patch.object(public_mod, "TAILPLAN_META", meta_file):
-                loaded = public_mod.load_draft("secret-plan-v2")
-            self.assertEqual("abc123456789", loaded["draftId"])
-
         for bad in (
             ["download", "my-plan"],
             ["download", "../secret", "--print-source"],
@@ -892,6 +1050,77 @@ class PerDraftBindingAndGuardTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exited:
                 guard.execute(["tailplan-share", *bad])
             self.assertEqual(126, exited.exception.code, bad)
+
+    def test_share_public_resolves_slug_urls_and_multipage(self) -> None:
+        public_mod = _load_script("tailplan_share_public_006", ROOT / "bin" / "tailplan-share-public")
+        self.assertEqual(
+            "secret-plan-v2",
+            public_mod.draft_ref_from_value("https://host.test/tailplan/d/secret-plan-v2/share"),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            meta_file = root / "metadata.json"
+            draft_dir = root / "drafts" / "abc123456789"
+            v1_html = draft_dir / "v1.html"
+            sub_html = draft_dir / "v1" / "sub" / "page.html"
+            sub_html.parent.mkdir(parents=True)
+            v1_html.write_text("<title>..</title><p>Home</p>", encoding="utf-8")
+            sub_html.write_text("<title>Sub</title><p>Subpage</p>", encoding="utf-8")
+            meta_file.write_text(
+                json.dumps(
+                    {
+                        "drafts": {
+                            "abc123456789": {
+                                "draftId": "abc123456789",
+                                "slug": "secret-plan-v2",
+                                "title": "..",
+                                "currentObject": str(v1_html),
+                                "latestVersionNumber": 1,
+                                "versions": {
+                                    "1": {
+                                        "pageCount": 2,
+                                        "pages": [
+                                            {"path": "index.html"},
+                                            {"path": "sub/page.html"},
+                                        ],
+                                    }
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(public_mod, "TAILPLAN_META", meta_file):
+                loaded = public_mod.load_draft("secret-plan-v2")
+            self.assertEqual("abc123456789", loaded["draftId"])
+
+            # C1-4 / C2-3: multi-page folder export handles dot-only titles and copies subpages.
+            captured: dict[str, object] = {}
+
+            def fake_run(cmd: list[str], **_kwargs):
+                target_dir = Path(cmd[2])
+                captured["name"] = target_dir.name
+                captured["files"] = sorted(
+                    p.relative_to(target_dir).as_posix()
+                    for p in target_dir.rglob("*.html")
+                )
+                return subprocess.CompletedProcess(cmd, 0, stdout="https://postplan.test/p/ok\n", stderr="")
+
+            with (
+                patch.object(public_mod, "TAILPLAN_META", meta_file),
+                patch.object(public_mod.shutil, "which", return_value="/usr/bin/postplan"),
+                patch.object(public_mod.subprocess, "run", side_effect=fake_run),
+                patch.object(
+                    public_mod.sys,
+                    "argv",
+                    ["tailplan-share-public", "https://host.test/tailplan/d/secret-plan-v2", "--i-approve-public-sharing"],
+                ),
+            ):
+                rc = public_mod.main()
+            self.assertEqual(0, rc)
+            self.assertEqual("abc123456789", captured["name"])
+            self.assertEqual(["index.html", "sub/page.html"], captured["files"])
 
 
 if __name__ == "__main__":

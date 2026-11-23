@@ -136,13 +136,29 @@ URL_ATTRIBUTES = {
 }
 SMIL_ANIMATION_TAGS = {"animate", "animatemotion", "animatetransform", "set"}
 FOREIGN_ROOT_TAGS = {"svg", "math"}
+SVG_INTEGRATION_TAGS = {"desc", "foreignobject", "title"}
+MATH_TEXT_INTEGRATION_TAGS = {"mi", "mn", "mo", "ms", "mtext"}
+FOREIGN_BREAKOUT_TAGS = {
+    "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div",
+    "dl", "dt", "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head",
+    "hr", "i", "img", "li", "listing", "menu", "meta", "nobr", "ol", "p",
+    "pre", "ruby", "s", "small", "span", "strong", "strike", "sub", "sup",
+    "table", "tt", "u", "ul", "var",
+}
+NOSCRIPT_RE = re.compile(r"<noscript\b", re.IGNORECASE)
 EMBED_FIX = "Link to the page instead of embedding it."
 SECURITY_SENSITIVE_ATTRIBUTES = URL_ATTRIBUTES | {
     "http-equiv", "imagesrcset", "rel", "srcdoc", "srcset", "style", "type",
 }
 BLOCKED_URL_SCHEMES = {"file", "javascript", "vbscript"}
-CSS_URL_RE = re.compile(r"url\s*\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE | re.DOTALL)
-CSS_IMPORT_RE = re.compile(r"@import\s*(['\"])(.*?)\1", re.IGNORECASE | re.DOTALL)
+CSS_URL_RE = re.compile(
+    r"""url\s*\(\s*(?:"([^"]*)(?:"|$)|'([^']*)(?:'|$)|([^)"']+))""",
+    re.IGNORECASE | re.DOTALL,
+)
+CSS_IMPORT_RE = re.compile(
+    r"""@import\s*(?:"([^"]*)"|'([^']*)')""",
+    re.IGNORECASE | re.DOTALL,
+)
 SANDBOX_APIS = (
     (
         "sandbox-storage",
@@ -242,15 +258,20 @@ def parse_draft_ref(value: str, base_url: str | None = None) -> str:
     if "://" in raw:
         try:
             parsed = urllib.parse.urlsplit(raw)
+            parsed_port = parsed.port
         except ValueError as exc:
             raise ConfigurationFailure(f"Not a valid URL: {raw}") from exc
         if base_url:
-            base = urllib.parse.urlsplit(base_url.rstrip("/"))
+            try:
+                base = urllib.parse.urlsplit(base_url.rstrip("/"))
+                base_port = base.port
+            except ValueError as exc:
+                raise ConfigurationFailure(f"Configured Tailplan URL is invalid: {base_url}") from exc
             default_port = 443 if parsed.scheme.lower() == "https" else 80
             base_default_port = 443 if base.scheme.lower() == "https" else 80
             same_host = (
                 parsed.scheme.lower() == base.scheme.lower()
-                and (parsed.port or default_port) == (base.port or base_default_port)
+                and (parsed_port or default_port) == (base_port or base_default_port)
                 and (
                     (parsed.hostname or "").lower() == (base.hostname or "").lower()
                     or (
@@ -266,9 +287,9 @@ def parse_draft_ref(value: str, base_url: str | None = None) -> str:
                     f"{raw} does not match configured Tailplan server {base_url}."
                 )
             rel_path = parsed.path[len(base_prefix):] if base_prefix else parsed.path
+            match = re.match(r"^/d/([^/]+)", rel_path)
         else:
-            rel_path = parsed.path
-        match = re.match(r"^/d/([^/]+)", rel_path)
+            match = re.search(r"(?:^|/)d/([^/]+)", parsed.path)
         if not match:
             raise ConfigurationFailure(f"{raw} is not a Tailplan draft URL.")
         ref = match.group(1).lower()
@@ -371,14 +392,26 @@ def _strip_css_comments_offline(value: str) -> str:
     while index < length:
         ch = value[index]
         if quote is not None:
-            out.append(ch)
             if ch == "\\" and index + 1 < length:
-                out.append(value[index + 1])
-                index += 2
+                if value[index + 1] == "\r" and index + 2 < length and value[index + 2] == "\n":
+                    out.append(value[index : index + 3])
+                    index += 3
+                else:
+                    out.append(value[index : index + 2])
+                    index += 2
                 continue
-            if ch == quote:
+            out.append(ch)
+            if ch in "\n\r\f" or ch == quote:
                 quote = None
             index += 1
+            continue
+        if ch == "\\" and index + 1 < length:
+            if value[index + 1] == "\r" and index + 2 < length and value[index + 2] == "\n":
+                out.append(value[index : index + 3])
+                index += 3
+            else:
+                out.append(value[index : index + 2])
+                index += 2
             continue
         if ch in {'"', "'"}:
             quote = ch
@@ -395,8 +428,14 @@ def _strip_css_comments_offline(value: str) -> str:
 
 
 def _css_text_is_unsafe_offline(text: str) -> bool:
-    urls = [m.group(2) for m in CSS_URL_RE.finditer(text)]
-    urls.extend(m.group(2) for m in CSS_IMPORT_RE.finditer(text))
+    urls = [
+        next(group for group in m.groups() if group is not None)
+        for m in CSS_URL_RE.finditer(text)
+    ]
+    urls.extend(
+        next(group for group in m.groups() if group is not None)
+        for m in CSS_IMPORT_RE.finditer(text)
+    )
     return bool(re.search(r"expression\s*\(|behavior\s*:", text, re.IGNORECASE)) or any(
         _has_unsafe_scheme_offline(url) for url in urls
     )
@@ -424,14 +463,45 @@ def _parse_srcset_urls_offline(value: str) -> list[str]:
                 if not candidate.lower().startswith("data:"):
                     break
             index += 1
-        url = value[start:index].rstrip(",")
+        raw_url = value[start:index]
+        ended_with_comma = raw_url.endswith(",")
+        url = raw_url.rstrip(",")
         if url:
             urls.append(url)
+        if ended_with_comma:
+            continue
         while index < length and value[index] != ",":
             index += 1
         if index < length and value[index] == ",":
             index += 1
     return urls
+
+
+def _is_foreign_breakout_offline(tag_lower: str, attrs: list[tuple[str, str | None]]) -> bool:
+    if tag_lower in FOREIGN_BREAKOUT_TAGS:
+        return True
+    if tag_lower == "font":
+        return any(name.lower() in {"color", "face", "size"} for name, _ in attrs)
+    return False
+
+
+def _is_integration_point_offline(
+    parent_mode: str,
+    tag_lower: str,
+    attrs: list[tuple[str, str | None]],
+) -> bool:
+    if parent_mode == "svg":
+        return tag_lower in SVG_INTEGRATION_TAGS
+    if parent_mode == "math":
+        if tag_lower in MATH_TEXT_INTEGRATION_TAGS:
+            return True
+        if tag_lower == "annotation-xml":
+            return any(
+                name.lower() == "encoding"
+                and (value or "").strip().lower() in {"text/html", "application/xhtml+xml"}
+                for name, value in attrs
+            )
+    return False
 
 
 OPTIONAL_CLOSE_SIBLINGS = {
@@ -459,14 +529,18 @@ P_CLOSING_BLOCKS = {
 
 
 class _OfflineHtmlValidator(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
+    def __init__(self, *, scripting: bool = False) -> None:
+        try:
+            super().__init__(convert_charrefs=True, scripting=scripting)
+        except TypeError:
+            super().__init__(convert_charrefs=True)
+            self.scripting = scripting
         if hasattr(self, "_set_support_cdata"):
             self._set_support_cdata(False)
         self._by_key: dict[tuple[str, str, str], dict] = {}
         self._style_stack: list[tuple[list[str], tuple[int, int]]] = []
-        self._tag_stack: list[str] = []
-        self._foreign_depth = 0
+        self._tag_stack: list[tuple[str, str]] = []
+        self._last_start_in_foreign = False
         self.too_deep = False
         self.has_scripts = False
         self.script_sources: list[tuple[str, tuple[int, int]]] = []
@@ -487,6 +561,23 @@ class _OfflineHtmlValidator(HTMLParser):
             entry["line"] = pos[0]
             entry["column"] = pos[1] + 1
         self._by_key[key] = entry
+
+    def _in_foreign(self) -> bool:
+        return bool(self._tag_stack and self._tag_stack[-1][1] in {"svg", "math"})
+
+    def _sync_cdata_support(self) -> None:
+        if hasattr(self, "_set_support_cdata"):
+            self._set_support_cdata(self._in_foreign())
+
+    def handle_comment(self, data: str) -> None:
+        if data.lstrip().upper().startswith("[CDATA["):
+            self._add(
+                "error",
+                "unsafe-declaration",
+                "Blocked unsupported markup declaration.",
+                fix="Remove CDATA or non-standard markup declarations.",
+                pos=self.getpos(),
+            )
 
     def unknown_decl(self, data: str) -> None:
         self._add(
@@ -529,56 +620,118 @@ class _OfflineHtmlValidator(HTMLParser):
         self._flush_script()
         self._flush_title()
 
-    def _push_tag(self, low: str) -> None:
-        if low in P_CLOSING_BLOCKS and self._tag_stack and self._tag_stack[-1] == "p":
-            self._tag_stack.pop()
-        closers = OPTIONAL_CLOSE_SIBLINGS.get(low)
-        if closers:
-            while self._tag_stack and self._tag_stack[-1] in closers:
+    def _push_tag(self, low: str, mode: str) -> None:
+        if mode == "html":
+            if low in P_CLOSING_BLOCKS and self._tag_stack and self._tag_stack[-1] == ("p", "html"):
                 self._tag_stack.pop()
-        self._tag_stack.append(low)
+            closers = OPTIONAL_CLOSE_SIBLINGS.get(low)
+            if closers:
+                while (
+                    self._tag_stack
+                    and self._tag_stack[-1][1] == "html"
+                    and self._tag_stack[-1][0] in closers
+                ):
+                    self._tag_stack.pop()
+        self._tag_stack.append((low, mode))
         if len(self._tag_stack) > MAX_DEPTH:
             self.too_deep = True
 
     def set_cdata_mode(self, elem: str, *args: object, **kwargs: object) -> None:
-        if self._foreign_depth > 0:
+        if self._last_start_in_foreign or self._in_foreign():
             return
         super().set_cdata_mode(elem, *args, **kwargs)
 
+    def _enter_cdata(self, low: str) -> None:
+        if not hasattr(self, "set_cdata_mode"):
+            return
+        cdata_tags = set(getattr(self, "CDATA_CONTENT_ELEMENTS", ("script", "style")))
+        rcdata_tags = set(getattr(self, "RCDATA_CONTENT_ELEMENTS", ("textarea", "title")))
+        scripting = bool(getattr(self, "scripting", False))
+        if low in cdata_tags or low == "plaintext" or (scripting and low == "noscript"):
+            self.set_cdata_mode(low)
+        elif low in rcdata_tags:
+            try:
+                self.set_cdata_mode(low, escapable=True)
+            except TypeError:
+                self.set_cdata_mode(low)
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         low = tag.lower()
-        in_foreign = self._foreign_depth > 0
-        if low in FOREIGN_ROOT_TAGS:
-            self._foreign_depth += 1
-        if low not in VOID_ELEMENTS:
-            self._push_tag(low)
+        in_foreign = self._in_foreign()
+        if in_foreign and _is_foreign_breakout_offline(low, attrs):
+            while self._tag_stack and self._tag_stack[-1][1] in {"svg", "math"}:
+                self._tag_stack.pop()
+            in_foreign = False
+        self._last_start_in_foreign = in_foreign
+        if not in_foreign:
+            if low in FOREIGN_ROOT_TAGS:
+                self._push_tag(low, low)
+            elif low not in VOID_ELEMENTS:
+                self._push_tag(low, "html")
+            if bool(getattr(self, "scripting", False)) and low == "noscript":
+                self._enter_cdata(low)
+        else:
+            parent_mode = self._tag_stack[-1][1]
+            if _is_integration_point_offline(parent_mode, low, attrs):
+                self._push_tag(low, "integration")
+            else:
+                self._push_tag(low, parent_mode)
+        self._sync_cdata_support()
         self._inspect(low, attrs, self_closing=False, in_foreign=in_foreign)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         low = tag.lower()
-        in_foreign = self._foreign_depth > 0
+        in_foreign = self._in_foreign()
+        if in_foreign and _is_foreign_breakout_offline(low, attrs):
+            while self._tag_stack and self._tag_stack[-1][1] in {"svg", "math"}:
+                self._tag_stack.pop()
+            in_foreign = False
         if in_foreign or low in FOREIGN_ROOT_TAGS:
             if len(self._tag_stack) + 1 > MAX_DEPTH:
                 self.too_deep = True
+            self._sync_cdata_support()
             self._inspect(low, attrs, self_closing=True, in_foreign=True)
             return
+        self._last_start_in_foreign = False
         if low not in VOID_ELEMENTS:
-            self._push_tag(low)
-        cdata_tags = set(getattr(self, "CDATA_CONTENT_ELEMENTS", ("script", "style")))
-        rcdata_tags = set(getattr(self, "RCDATA_CONTENT_ELEMENTS", ("textarea", "title")))
-        if (low in cdata_tags or low in rcdata_tags or low == "plaintext") and hasattr(self, "set_cdata_mode"):
-            self.set_cdata_mode(low)
+            self._push_tag(low, "html")
+        self._enter_cdata(low)
+        self._sync_cdata_support()
         self._inspect(low, attrs, self_closing=False, in_foreign=False)
 
     def handle_endtag(self, tag: str) -> None:
         low = tag.lower()
-        if low in FOREIGN_ROOT_TAGS and self._foreign_depth > 0:
-            self._foreign_depth -= 1
-        if low not in VOID_ELEMENTS and low in self._tag_stack:
-            for idx in range(len(self._tag_stack) - 1, -1, -1):
-                if self._tag_stack[idx] == low:
-                    del self._tag_stack[idx:]
-                    break
+        if low not in VOID_ELEMENTS and self._tag_stack:
+            if self._in_foreign():
+                matched_idx: int | None = None
+                boundary = len(self._tag_stack)
+                for idx in range(len(self._tag_stack) - 1, -1, -1):
+                    stack_tag, mode = self._tag_stack[idx]
+                    if mode not in {"svg", "math"}:
+                        boundary = idx
+                        break
+                    if stack_tag == low:
+                        matched_idx = idx
+                        break
+                if matched_idx is not None:
+                    del self._tag_stack[matched_idx:]
+                elif low not in FOREIGN_ROOT_TAGS and boundary < len(self._tag_stack):
+                    for idx in range(boundary, -1, -1):
+                        stack_tag, mode = self._tag_stack[idx]
+                        if stack_tag == low:
+                            del self._tag_stack[idx:]
+                            break
+                        if mode == "integration":
+                            break
+            else:
+                for idx in range(len(self._tag_stack) - 1, -1, -1):
+                    stack_tag, mode = self._tag_stack[idx]
+                    if stack_tag == low:
+                        del self._tag_stack[idx:]
+                        break
+                    if mode in {"integration", "svg", "math"}:
+                        break
+        self._sync_cdata_support()
         if low == "style":
             self._flush_style()
         if low == "script":
@@ -587,8 +740,8 @@ class _OfflineHtmlValidator(HTMLParser):
             self._flush_title()
 
     def handle_data(self, data: str) -> None:
-        if self._style_stack:
-            self._style_stack[-1][0].append(data)
+        for parts, _ in self._style_stack:
+            parts.append(data)
         if self._active_script is not None:
             self._active_script[1].append(data)
         if self._in_title:
@@ -733,10 +886,27 @@ def validate_upload_offline(pages: list[dict]) -> dict:
         validator.feed(doc)
         validator.close()
         page_issues = validator.issues()
-        if validator.too_deep:
+        too_deep = validator.too_deep
+        has_scripts = validator.has_scripts
+        script_sources = list(validator.script_sources)
+        if NOSCRIPT_RE.search(doc):
+            scripted = _OfflineHtmlValidator(scripting=True)
+            scripted.feed(doc)
+            scripted.close()
+            seen_keys = {(i["level"], i["code"], i["message"]) for i in page_issues}
+            for item in scripted.issues():
+                if item["level"] == "error":
+                    key = (item["level"], item["code"], item["message"])
+                    if key not in seen_keys:
+                        page_issues.append(item)
+                        seen_keys.add(key)
+            too_deep = too_deep or scripted.too_deep
+            has_scripts = has_scripts or scripted.has_scripts
+            script_sources.extend(scripted.script_sources)
+        if too_deep:
             page_issues.append({"level": "error", "code": "too-deep", "message": f"HTML is nested more than {MAX_DEPTH} levels deep.", "count": 1})
         for code, pattern, message, fix in SANDBOX_APIS:
-            matched = next(((t, p) for t, p in validator.script_sources if pattern.search(t)), None)
+            matched = next(((t, p) for t, p in script_sources if pattern.search(t)), None)
             if matched is not None:
                 page_issues.append({"level": "warning", "code": code, "message": message, "fix": fix,
                                     "line": matched[1][0], "column": matched[1][1] + 1, "count": 1})
@@ -746,7 +916,7 @@ def validate_upload_offline(pages: list[dict]) -> dict:
             page_issues.append({"level": "warning", "code": "no-viewport",
                                 "message": "No viewport meta tag found; phones will show a shrunken desktop page. "
                                 'Add <meta name="viewport" content="width=device-width, initial-scale=1">.', "count": 1})
-        results.append({"path": page_path, "bytes": size, "title": validator.title, "hasScripts": validator.has_scripts})
+        results.append({"path": page_path, "bytes": size, "title": validator.title, "hasScripts": has_scripts})
         for issue in page_issues:
             issues.append({"path": page_path, **issue} if multi_page else issue)
     for page in results:
@@ -1790,15 +1960,23 @@ def validate_upload_result(
 
 
 class UploadFailure(RuntimeError):
-    def __init__(self, category: str, detail: str, *, status: int | None = None) -> None:
+    def __init__(
+        self,
+        category: str,
+        detail: str,
+        *,
+        status: int | None = None,
+        code: str | None = None,
+    ) -> None:
         self.category = category
         self.detail = detail
         self.status = status
+        self.code = code
         prefix = f"Upload failed ({category})"
         super().__init__(f"{prefix}: {detail}")
 
 
-def _http_failure(status: int, detail: str) -> UploadFailure:
+def _http_failure(status: int, detail: str, *, code: str | None = None) -> UploadFailure:
     if status in {401, 403}:
         category = "authentication"
     elif status == 413:
@@ -1813,7 +1991,7 @@ def _http_failure(status: int, detail: str) -> UploadFailure:
         category = "server unavailable"
     else:
         category = "request rejected"
-    return UploadFailure(category, detail, status=status)
+    return UploadFailure(category, detail, status=status, code=code)
 
 
 def _safe_server_detail(value: str, *, sensitive: tuple[str, ...]) -> str:
@@ -1828,15 +2006,17 @@ def _safe_server_detail(value: str, *, sensitive: tuple[str, ...]) -> str:
     return normalized
 
 
-def _error_detail(
+def _error_detail_and_code(
     error: urllib.error.HTTPError, *, sensitive: tuple[str, ...] = ()
-) -> str:
+) -> tuple[str, str | None]:
     try:
         decoded = json.loads(error.read().decode("utf-8", "replace"))
     except (ValueError, OSError, http.client.HTTPException):
-        return f"HTTP {error.code}"
+        return f"HTTP {error.code}", None
     if not isinstance(decoded, dict):
-        return f"HTTP {error.code}"
+        return f"HTTP {error.code}", None
+    code = decoded.get("code")
+    safe_code = code if isinstance(code, str) and re.fullmatch(r"[a-z0-9_-]{1,64}", code) else None
     errors = decoded.get("errors")
     if isinstance(errors, list):
         safe_errors = [
@@ -1845,11 +2025,18 @@ def _error_detail(
             if isinstance(item, str) and item.strip()
         ]
         if safe_errors:
-            return "; ".join(safe_errors)
+            return "; ".join(safe_errors), safe_code
     detail = decoded.get("error")
     if isinstance(detail, str) and detail.strip():
-        return _safe_server_detail(detail, sensitive=sensitive)
-    return f"HTTP {error.code}"
+        return _safe_server_detail(detail, sensitive=sensitive), safe_code
+    return f"HTTP {error.code}", safe_code
+
+
+def _error_detail(
+    error: urllib.error.HTTPError, *, sensitive: tuple[str, ...] = ()
+) -> str:
+    detail, _ = _error_detail_and_code(error, sensitive=sensitive)
+    return detail
 
 
 def upload(
@@ -1938,8 +2125,8 @@ def upload(
                 raise ProtocolFailure(
                     f"upload endpoint returned HTTP {error.code}; redirects are not allowed"
                 ) from None
-            detail = _error_detail(error, sensitive=(token,))
-            failure = _http_failure(error.code, detail)
+            detail, code = _error_detail_and_code(error, sensitive=(token,))
+            failure = _http_failure(error.code, detail, code=code)
             retryable = error.code == 429 or error.code >= 500
             if not retryable or attempt == attempts:
                 raise failure from None
@@ -2103,11 +2290,15 @@ def _emit_failure(
     stdout,
     stderr,
     exit_code: int = 1,
+    code: str | None = None,
 ) -> int:
     if json_output:
+        payload = {"ok": False, "category": category, "error": error}
+        if code:
+            payload["code"] = code
         print(
             json.dumps(
-                {"ok": False, "category": category, "error": error},
+                payload,
                 ensure_ascii=False,
                 separators=(",", ":"),
             ),
@@ -2337,7 +2528,10 @@ def _publish_locked(
                 or (
                     slug is not None
                     and error.status == 409
-                    and "already names draft" in error.detail
+                    and (
+                        error.code == "slug_names_other_draft"
+                        or "already names draft" in error.detail
+                    )
                 )
             )
         )
@@ -2348,6 +2542,7 @@ def _publish_locked(
                 json_output=json_output,
                 stdout=stdout,
                 stderr=stderr,
+                code=error.code,
             )
         try:
             result = upload_once(None)
@@ -2802,6 +2997,12 @@ def _write_new_file_nofollow(dest: Path, content: str) -> None:
         fd = None
         with stream:
             stream.write(content)
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+            fd = None
+        dest.unlink(missing_ok=True)
+        raise
     finally:
         if fd is not None:
             os.close(fd)
@@ -2850,11 +3051,7 @@ def write_downloaded_source(
         target = unique_path(base_dir / f"{name}-v{version_number}.html")
         if target.parent.resolve() != base_dir:
             raise ConfigurationFailure("Downloaded path escapes working directory.")
-        try:
-            _write_new_file_nofollow(target, pages[0]["html"])
-        except Exception:
-            target.unlink(missing_ok=True)
-            raise
+        _write_new_file_nofollow(target, pages[0]["html"])
     else:
         target = unique_path(base_dir / f"{name}-v{version_number}")
         if target.parent.resolve() != base_dir:

@@ -137,7 +137,7 @@ def _remote_check(argv: list[str], target: str) -> int:
     args = parser.parse_args(argv)
     validate_target(target)
     library = _load_library()
-    cli_version = library.get("CLI_VERSION", "0.3.0")
+    cli_version = library["CLI_VERSION"]
     slug_value = args.slug.strip().lower() if args.slug is not None else None
     if slug_value is not None:
         problem = library["slug_problem"](slug_value)
@@ -272,9 +272,25 @@ def _remote_check(argv: list[str], target: str) -> int:
                 cmd.append(remote_path)
             if slug_value is not None:
                 cmd.extend(["--slug", slug_value])
-            if args.json:
-                cmd.append("--json")
-            return subprocess.run(cmd, check=False).returncode
+            cmd.append("--json")
+            completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if completed.stdout.strip():
+                try:
+                    report = json.loads(completed.stdout)
+                except ValueError:
+                    report = None
+                if isinstance(report, dict) and "ok" in report:
+                    report["path"] = str(source)
+                    if args.json:
+                        print(json.dumps(report, ensure_ascii=False))
+                    else:
+                        library["_print_check_report"](report)
+                    return completed.returncode
+            if completed.stdout:
+                sys.stdout.write(completed.stdout)
+            if completed.stderr:
+                sys.stderr.write(completed.stderr)
+            return completed.returncode
         finally:
             subprocess.run(["ssh", target, "rm", "-rf", "--", remote_dir], check=False, capture_output=True)
 
@@ -439,7 +455,10 @@ def main() -> int:
                     slug_mismatch = (
                         slug is not None
                         and err_obj.get("category") == "conflict"
-                        and "already names draft" in str(err_obj.get("error", ""))
+                        and (
+                            err_obj.get("code") == "slug_names_other_draft"
+                            or "already names draft" in str(err_obj.get("error", ""))
+                        )
                     )
                 except (TypeError, ValueError):
                     stale = False
