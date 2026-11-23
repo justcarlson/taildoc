@@ -117,8 +117,8 @@ class HtmlValidationTests(unittest.TestCase):
     def test_active_html_and_obfuscated_unsafe_urls_are_rejected(self) -> None:
         cases = {
             "external script": '<script src="https://example.test/app.js"></script>',
-            "module script": '<script type="module">import "x"</script>',
-            "event handler": '<p OnClick="alert(1)">x</p>',
+            "unsupported script type": '<script type="text/vbscript">x</script>',
+            "blocked link rel": '<link rel="preload" href="https://example.test/a.css">',
             "srcdoc": '<div SRCDOC="<p>x</p>"></div>',
             "meta refresh": '<meta HTTP-EQUIV="Refresh" content="0; URL=https://example.com">',
             "entity scheme": '<a href="java&#x73;cript:alert(1)">x</a>',
@@ -856,7 +856,7 @@ class ApiTests(unittest.TestCase):
             413,
             self.raw_status(base_request + b"Content-Length: " + oversized + b"\r\n\r\n"),
         )
-        unsafe = server.json.dumps({"html": '<script type="module">x</script>'}).encode()
+        unsafe = server.json.dumps({"html": '<script type="text/vbscript">x</script>'}).encode()
         self.assertEqual(
             422,
             self.request("POST", path, unsafe, self.auth_headers())[0],

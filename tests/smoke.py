@@ -193,7 +193,7 @@ with tempfile.TemporaryDirectory() as td:
 
         status, _headers, bad = urlopen(
             base + "/api/uploads",
-            data={"html": '<script type="module">x</script>', "filename": "bad.html"},
+            data={"html": '<script src="https://evil.example/x.js"></script>', "filename": "bad.html"},
             token=TOKEN,
         )
         assert status == 422, (status, bad)

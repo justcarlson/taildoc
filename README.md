@@ -39,10 +39,14 @@ Use a named key with the direct client:
 ```sh
 tailplan auth login --api-url https://host.example.ts.net/tailplan
 tailplan whoami
-tailplan upload ./plan.html --description "Migration plan" --new
-tailplan upload ./plan.html
+tailplan check ./plan.html --slug migration-plan
+tailplan upload ./plan.html --slug migration-plan --description "Migration plan"
+tailplan upload ./site-folder/
+tailplan download migration-plan
+tailplan favorite migration-plan
+tailplan unfavorite migration-plan
 tailplan list --json
-tailplan history <draft-id> --json
+tailplan history migration-plan --json
 tailplan disable <draft-id> --reason "Revision in progress"
 tailplan enable <draft-id>
 tailplan delete <draft-id>
@@ -52,26 +56,29 @@ tailplan keys revoke <key-id>
 ```
 
 The `tailplan-share FILE` command remains available.
-Both upload commands accept `--description`, `--json`, and `--api-url`.
+Both upload commands accept `--slug`, `--description`, `--json`, and `--api-url`, and also accept folders of `.html` pages.
 The CLI collects Git repository, branch, commit, dirty state, and supported CI metadata from the source directory.
-An update retains the description when `--description` is omitted.
+An update retains the description and slug when those options are omitted.
 `--metadata-file FILE` supplies a JSON object instead of automatic metadata collection.
+Per-draft bindings are stored under `~/.tailplan/drafts/` with read-only fallback to legacy `drafts.json`.
 
-The SSH client supports upload, list, history, whoami, keys, disable, enable, and delete through the existing SSH alias.
+The SSH client supports upload, check, download, favorite, unfavorite, list, history, whoami, keys, disable, enable, and delete.
 The SSH client keeps source mappings on the workstation and sends local Git metadata with each upload.
 The direct client uses `TAILPLAN_API_KEY` or the configured token file.
 `TAILPLAN_TOKEN_FILE` overrides `~/.tailplan/token`.
 
-Draft responses include `publicUrl`, `rawUrl`, `versionId`, `versionNumber`, and `fileSha256`.
+Draft responses include `publicUrl`, `rawUrl`, `versionUrl`, `versionId`, `versionNumber`, `fileSha256`, and `contentHash`.
+Re-uploading identical content keeps the current version and returns `"unchanged": true`.
 The canonical URL and its `/raw` alias return identical uploaded bytes.
 Append `/v/N` or `/v/N/raw` to retrieve an immutable version.
 Draft responses include `X-Tailplan-Draft-Id`, `X-Tailplan-Draft-Version`, and `X-Tailplan-Content-SHA256` headers.
 Equivalent `X-Postplan-Draft-Id` and `X-Postplan-Draft-Version` headers support existing Postplan clients.
 
-Inline classic JavaScript is accepted as source.
-The browser response policy blocks script execution, form submission, script-driven network requests, and page embedding.
-External HTTPS images and fonts remain permitted by the response policy.
-External scripts, module scripts, inline event handlers, forms, embeds, and unsafe URL attributes are rejected.
+Authenticated HTML drafts may run inline JavaScript, including `type="module"` scripts and standard `on*` handlers, inside a sandboxed CSP.
+The sandbox uses an opaque origin without `allow-same-origin` and blocks network requests, storage, cookies, dialogs, workers, forms, and embeds.
+Script-free drafts and Markdown pages keep `script-src 'none'`.
+External HTTPS images, media, fonts, and allowlisted `<link>` stylesheets or icons are permitted.
+External scripts, unsupported script types, forms, embeds, meta refresh, and unsafe URL attributes are rejected.
 
 ### Server settings
 

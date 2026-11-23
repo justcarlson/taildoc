@@ -228,8 +228,10 @@ def _server_pages():
     base = 'https://tailnet.example/tailplan'
     link = base + '/' + 'a' * 120
     session = {'csrf': 'c' * 40, 'accountName': 'someone-with-a-long-login-name@example.com'}
-    draft = {'draftId': 'd1', 'title': 'Draft ' + 'title ' * 12, 'description': 'Description ' * 20,
-             'shareUrl': base + '/d/d1/share', 'rawUrl': base + '/d/d1/raw', 'publicUrl': base + '/d/d1',
+    draft = {'draftId': 'd1', 'slug': 'quarterly-plan', 'favorite': True, 'title': 'Draft ' + 'title ' * 12,
+             'description': 'Description ' * 20,
+             'shareUrl': base + '/d/quarterly-plan/share', 'rawUrl': base + '/d/quarterly-plan/raw',
+             'publicUrl': base + '/d/quarterly-plan', 'versionBaseUrl': base + '/d/d1',
              'disabled': False, 'disabledReason': '', 'latestVersionNumber': 2, 'versionCount': 2,
              'updatedAt': '2026-11-14T10:00:00Z', 'repoHost': 'github.com', 'repoOrg': 'org', 'repoName': 'repo'}
     version = {'versionNumber': 1, 'gitCommitSubject': 'fix: a long commit subject ' * 3, 'gitDirty': True,
@@ -241,7 +243,7 @@ def _server_pages():
         'home': server.home(base),
         'not-found': server.not_found(),
         'login': server.render_login(base, 'c' * 40, '/dashboard', True),
-        'dashboard': server.render_dashboard(base, session, [draft, dict(draft, repoOrg=None, repoName=None, disabled=True)]),
+        'dashboard': server.render_dashboard(base, session, [draft, dict(draft, draftId='d2', slug=None, favorite=False, repoOrg=None, repoName=None, disabled=True)]),
         'detail': server.render_detail(base, session, {'draft': draft, 'versions': [version, dict(version, versionNumber=2)]}),
         'keys': server.render_keys(base, session, [key]),
         'new-key': server.render_key(base, session, {'apiKey': {'name': 'Laptop'}, 'token': 'tp_' + 'z' * 60}),
