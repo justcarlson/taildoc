@@ -199,6 +199,20 @@ HTML_SCOPE_BARRIERS = {
     "table", "td", "template", "th",
 }
 HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+HTML_SCOPED_CLOSE_TAGS = HEADING_TAGS | {
+    "address", "article", "aside", "blockquote", "button", "caption", "center",
+    "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset",
+    "figcaption", "figure", "footer", "form", "header", "hgroup", "listing",
+    "main", "menu", "nav", "ol", "pre", "search", "section", "select",
+    "summary", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
+}
+HTML_SPECIAL_TAGS = HTML_SCOPE_BARRIERS | HTML_SCOPED_CLOSE_TAGS | {
+    "area", "base", "basefont", "bgsound", "body", "br", "col", "embed",
+    "frame", "frameset", "head", "hr", "iframe", "img", "input", "keygen",
+    "li", "link", "meta", "noembed", "noframes", "noscript", "p", "param",
+    "plaintext", "script", "source", "style", "textarea", "title", "track",
+    "wbr", "xmp",
+}
 SELECT_CLOSING_TAGS = {"input", "keygen", "select", "textarea"}
 FOREIGN_BREAKOUT_TAGS = {
     "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div",
@@ -1681,7 +1695,11 @@ class _HtmlValidator(HTMLParser):
             self.too_deep = True
 
     def set_cdata_mode(self, elem: str, *args: object, **kwargs: object) -> None:
-        if self._last_start_in_foreign or self._in_foreign() or self._in_select():
+        if (
+            self._last_start_in_foreign
+            or self._in_foreign()
+            or (self._in_select() and elem.lower() != "script")
+        ):
             return
         super().set_cdata_mode(elem, *args, **kwargs)
 
@@ -1755,6 +1773,27 @@ class _HtmlValidator(HTMLParser):
         self._sync_cdata_support()
         self._inspect_tag(tag_lower, attrs, self_closing=False, in_foreign=False)
 
+    def _close_html_tag(self, tag_lower: str, start_idx: int) -> None:
+        if tag_lower == "li":
+            barriers = HTML_SCOPE_BARRIERS | {"ol", "ul"}
+        elif tag_lower == "p":
+            barriers = HTML_SCOPE_BARRIERS | {"button"}
+        elif tag_lower in HTML_SCOPED_CLOSE_TAGS:
+            barriers = HTML_SCOPE_BARRIERS
+        else:
+            barriers = HTML_SPECIAL_TAGS
+        for idx in range(start_idx, -1, -1):
+            stack_tag, mode = self._tag_stack[idx]
+            if mode != "html":
+                break
+            if stack_tag == tag_lower or (
+                tag_lower in HEADING_TAGS and stack_tag in HEADING_TAGS
+            ):
+                del self._tag_stack[idx:]
+                break
+            if stack_tag in barriers:
+                break
+
     def handle_endtag(self, tag: str) -> None:
         tag_lower = tag.lower()
         if self._in_foreign() and tag_lower in {"br", "p"}:
@@ -1765,6 +1804,7 @@ class _HtmlValidator(HTMLParser):
             if top_mode in FOREIGN_MODES or top_mode in INTEGRATION_MODES:
                 matched_idx: int | None = None
                 boundary = len(self._tag_stack)
+                crossed_barrier = False
                 for idx in range(len(self._tag_stack) - 1, -1, -1):
                     stack_tag, mode = self._tag_stack[idx]
                     if mode == "html":
@@ -1773,32 +1813,18 @@ class _HtmlValidator(HTMLParser):
                     if stack_tag == tag_lower:
                         matched_idx = idx
                         break
+                    if mode in INTEGRATION_MODES or (stack_tag, mode) == ("annotation-xml", "math"):
+                        crossed_barrier = True
                 if matched_idx is not None:
                     del self._tag_stack[matched_idx:]
-                elif tag_lower not in FOREIGN_ROOT_TAGS and boundary < len(self._tag_stack):
-                    for idx in range(boundary, -1, -1):
-                        stack_tag, mode = self._tag_stack[idx]
-                        if mode != "html":
-                            break
-                        if stack_tag == tag_lower or (
-                            tag_lower in HEADING_TAGS and stack_tag in HEADING_TAGS
-                        ):
-                            del self._tag_stack[idx:]
-                            break
-                        if stack_tag in HTML_SCOPE_BARRIERS:
-                            break
+                elif (
+                    not crossed_barrier
+                    and tag_lower not in FOREIGN_ROOT_TAGS
+                    and boundary < len(self._tag_stack)
+                ):
+                    self._close_html_tag(tag_lower, boundary)
             else:
-                for idx in range(len(self._tag_stack) - 1, -1, -1):
-                    stack_tag, mode = self._tag_stack[idx]
-                    if mode != "html":
-                        break
-                    if stack_tag == tag_lower or (
-                        tag_lower in HEADING_TAGS and stack_tag in HEADING_TAGS
-                    ):
-                        del self._tag_stack[idx:]
-                        break
-                    if stack_tag in HTML_SCOPE_BARRIERS:
-                        break
+                self._close_html_tag(tag_lower, len(self._tag_stack) - 1)
         self._sync_cdata_support()
         if tag_lower == "style":
             self._flush_style()

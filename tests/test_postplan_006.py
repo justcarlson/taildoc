@@ -498,6 +498,15 @@ class Postplan006ServerTests(unittest.TestCase):
             '<title>Bad</title><select><style></select><meta http-equiv="refresh" content="0;url=https://evil.test"></style>',
             '<title>Bad</title><script type="text/plain"><!--<script></script><style><!--</script><meta http-equiv="refresh" content="0;url=https://evil.test">--></style>',
             '<title>Bad</title><style>@import "javascript:alert(1)</style>',
+            '<title>Bad</title><div><svg><foreignObject></div></foreignObject><style><p><iframe src="about:blank"></iframe></style>',
+            '<title>Bad</title><div><svg><desc></div></desc><style><p><iframe src="about:blank"></iframe></style>',
+            '<title>Bad</title><div><svg><title></div></title><style><p><a href="javascript:alert(1)">x</a></style>',
+            '<title>Bad</title><div><math><mi></div></mi><style><p><iframe src="about:blank"></iframe></style>',
+            '<title>Bad</title><div><math><annotation-xml></div><style><p><iframe src="about:blank"></iframe></style>',
+            '<title>Bad</title><span><div><svg></span><style><p><iframe src="about:blank"></iframe></style>',
+            '<title>Bad</title><ul><li><ul><svg></li><style><p><iframe src="about:blank"></iframe></style>',
+            '<title>Bad</title><select><script>var a = "</select><style>";</script></select><iframe src="about:blank"></iframe></style>',
+            '<title>Bad</title><select><script>var a = "</select><style>";</script></select><a href="javascript:alert(1)">x</a></style>',
         )
         for bad in bypasses:
             status, _, res = self.api("/api/uploads", "POST", {"html": bad})
