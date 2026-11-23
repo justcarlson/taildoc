@@ -166,17 +166,46 @@ def _remote_check(argv: list[str], target: str) -> int:
             capture_output=True, text=True, check=False,
         )
         if created.returncode != 0:
-            offline_pages = (
-                library["read_html_folder"](source)
-                if source.is_dir()
-                else [{"path": "index.html", "html": source.read_bytes().decode("utf-8")}]
-                if source.suffix.lower() in {".html", ".htm"}
-                else None
-            )
-            report = {"ok": False, "offline": True, "networkError": f"Could not reach SSH target {target}."}
+            offline_pages = None
+            if source.is_dir():
+                offline_pages = library["read_html_folder"](source)
+            elif source.suffix.lower() in {".html", ".htm"}:
+                offline_pages = [{"path": "index.html", "html": source.read_bytes().decode("utf-8")}]
+            elif source.suffix.lower() in {".md", ".txt"}:
+                text = source.read_text(encoding="utf-8")
+                rendered = library["html_document"](
+                    library["title_from_content"](source, text),
+                    library["markdown_to_body"](text),
+                    source.name,
+                )
+                offline_pages = [{"path": "index.html", "html": rendered}]
+            report = {
+                "cliVersion": "0.3.0",
+                "apiUrl": f"ssh://{target}",
+                "path": str(source),
+                "ok": False,
+                "offline": True,
+                "networkError": f"Could not reach SSH target {target}.",
+            }
             if offline_pages is not None:
                 local = library["validate_upload_offline"](offline_pages)
-                report.update({"markupOk": local["ok"], **local})
+                report.update(
+                    {
+                        "markupOk": local["ok"],
+                        "totalBytes": local["totalBytes"],
+                        "pages": local["pages"],
+                        "issues": local["issues"],
+                        "errors": local["errors"],
+                        "warnings": local["warnings"],
+                    }
+                )
+            if slug_value is not None:
+                problem = library["slug_problem"](slug_value)
+                report["slug"] = (
+                    {"slug": slug_value, "status": "unavailable", "message": problem}
+                    if problem
+                    else {"slug": slug_value, "status": "unchecked", "message": "Availability was not checked offline."}
+                )
             if args.json:
                 print(json.dumps(report, ensure_ascii=False))
             else:
@@ -249,8 +278,21 @@ def main() -> int:
     }:
         try:
             validate_target(target)
-            return subprocess.run(["ssh", target, "tailplan-share", *map(shlex.quote, argv)], check=False).returncode
-        except (ValueError, OSError) as exc:
+            forwarded = list(argv)
+            if forwarded[0] in {"history", "disable", "enable", "delete", "favorite", "unfavorite"}:
+                library = _load_library()
+                idx = 1
+                while idx < len(forwarded):
+                    if forwarded[idx] == "--reason":
+                        idx += 2
+                        continue
+                    if forwarded[idx].startswith("-"):
+                        idx += 1
+                        continue
+                    forwarded[idx] = library["parse_draft_ref"](forwarded[idx])
+                    break
+            return subprocess.run(["ssh", target, "tailplan-share", *map(shlex.quote, forwarded)], check=False).returncode
+        except (ValueError, RuntimeError, OSError) as exc:
             print(f"tailplan: {exc}", file=sys.stderr)
             return 2
     if argv and argv[0] == "check":

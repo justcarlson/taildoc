@@ -190,7 +190,7 @@ CSS_URL_RE = re.compile(
     r"url\s*\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE | re.DOTALL
 )
 CSS_IMPORT_RE = re.compile(
-    r"@import\s+(['\"])(.*?)\1", re.IGNORECASE | re.DOTALL
+    r"@import\s*(['\"])(.*?)\1", re.IGNORECASE | re.DOTALL
 )
 STORE_LOCK = threading.RLock()
 BUILD_ID = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
@@ -1158,9 +1158,10 @@ def _decode_css_escapes(value: str) -> str:
 
 def _css_has_unsafe_url(value: str) -> bool:
     normalized = _decode_css_escapes(value)
-    urls = [match.group(2) for match in CSS_URL_RE.finditer(normalized)]
-    urls.extend(match.group(2) for match in CSS_IMPORT_RE.finditer(normalized))
-    return bool(re.search(r"expression\s*\(|behavior\s*:", normalized, re.IGNORECASE)) or any(
+    stripped = re.sub(r"/\*.*?\*/", "", normalized, flags=re.DOTALL)
+    urls = [match.group(2) for match in CSS_URL_RE.finditer(stripped)]
+    urls.extend(match.group(2) for match in CSS_IMPORT_RE.finditer(stripped))
+    return bool(re.search(r"expression\s*\(|behavior\s*:", stripped, re.IGNORECASE)) or any(
         _has_unsafe_scheme(url) for url in urls
     )
 
@@ -1312,12 +1313,36 @@ class _IssueList:
         return list(self._by_key.values())
 
 
+OPTIONAL_CLOSE_SIBLINGS = {
+    "dd": {"dd", "dt"},
+    "dt": {"dd", "dt"},
+    "li": {"li"},
+    "optgroup": {"optgroup", "option"},
+    "option": {"option"},
+    "p": {"p"},
+    "rp": {"rp", "rt"},
+    "rt": {"rp", "rt"},
+    "tbody": {"tbody", "tfoot", "thead"},
+    "td": {"td", "th"},
+    "tfoot": {"tbody", "tfoot", "thead"},
+    "th": {"td", "th"},
+    "thead": {"tbody", "tfoot", "thead"},
+    "tr": {"td", "th", "tr"},
+}
+P_CLOSING_BLOCKS = {
+    "address", "article", "aside", "blockquote", "details", "dialog", "dd",
+    "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
+    "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "li", "main",
+    "nav", "ol", "p", "pre", "section", "table", "ul",
+}
+
+
 class _HtmlValidator(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.issues = _IssueList()
         self._style_depth = 0
-        self._depth = 0
+        self._tag_stack: list[str] = []
         self.too_deep = False
         self.has_inline_script = False
         self.external_image_hosts: set[str] = set()
@@ -1335,24 +1360,38 @@ class _HtmlValidator(HTMLParser):
             if issue["level"] == "error"
         ]
 
+    def _push_tag(self, tag_lower: str) -> None:
+        if tag_lower in P_CLOSING_BLOCKS and self._tag_stack and self._tag_stack[-1] == "p":
+            self._tag_stack.pop()
+        closers = OPTIONAL_CLOSE_SIBLINGS.get(tag_lower)
+        if closers:
+            while self._tag_stack and self._tag_stack[-1] in closers:
+                self._tag_stack.pop()
+        self._tag_stack.append(tag_lower)
+        if len(self._tag_stack) > MAX_DEPTH:
+            self.too_deep = True
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_lower = tag.lower()
         if tag_lower not in VOID_ELEMENTS:
-            self._depth += 1
-            if self._depth > MAX_DEPTH:
-                self.too_deep = True
-        self._inspect_tag(tag_lower, attrs, self_closing=False)
+            self._push_tag(tag_lower)
+        self._inspect_tag(tag_lower, attrs)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_lower = tag.lower()
-        if self._depth + 1 > MAX_DEPTH:
+        if tag_lower in {"style", "script", "title"}:
+            self._push_tag(tag_lower)
+        elif len(self._tag_stack) + 1 > MAX_DEPTH:
             self.too_deep = True
-        self._inspect_tag(tag_lower, attrs, self_closing=True)
+        self._inspect_tag(tag_lower, attrs)
 
     def handle_endtag(self, tag: str) -> None:
         tag_lower = tag.lower()
-        if tag_lower not in VOID_ELEMENTS and self._depth > 0:
-            self._depth -= 1
+        if tag_lower not in VOID_ELEMENTS and tag_lower in self._tag_stack:
+            for idx in range(len(self._tag_stack) - 1, -1, -1):
+                if self._tag_stack[idx] == tag_lower:
+                    del self._tag_stack[idx:]
+                    break
         if tag_lower == "style" and self._style_depth:
             self._style_depth -= 1
         if tag_lower == "script" and self._active_script is not None:
@@ -1384,16 +1423,14 @@ class _HtmlValidator(HTMLParser):
         self,
         tag: str,
         attrs: list[tuple[str, str | None]],
-        *,
-        self_closing: bool,
     ) -> None:
         pos = self.getpos()
         attr_values: dict[str, list[str]] = {}
         for name, value in attrs:
             attr_values.setdefault(name.lower(), []).append(value or "")
-        if tag == "style" and not self_closing:
+        if tag == "style":
             self._style_depth += 1
-        if tag == "title" and not self_closing:
+        if tag == "title":
             self._in_title = True
             self._title_parts = []
         if tag in BLOCKED_TAGS_WITH_FIX:
@@ -1404,7 +1441,7 @@ class _HtmlValidator(HTMLParser):
                 pos=pos,
             )
         if tag == "script":
-            if "src" in attr_values:
+            if any(name in attr_values for name in ("src", "href", "xlink:href")):
                 self.issues.error(
                     "external-script",
                     "External script sources are not allowed.",
@@ -1425,8 +1462,7 @@ class _HtmlValidator(HTMLParser):
                         fix='Use a classic or type="module" inline script, or type="application/json" for data.',
                         pos=pos,
                     )
-            if not self_closing:
-                self._active_script = (executable, [], pos)
+            self._active_script = (executable, [], pos)
         if tag == "link":
             rel_values = attr_values.get("rel", [])
             rels = [token for value in rel_values for token in value.lower().split()]
@@ -1644,6 +1680,8 @@ def validate_upload(
             "count": 1,
         })
     seen: set[str] = set()
+    seen_lower: set[str] = set()
+    dir_prefixes_lower: set[str] = set()
     for entry in pages:
         if not isinstance(entry, dict):
             issues.append({"level": "error", "code": "page-path", "message": "Page entry must be an object.", "count": 1})
@@ -1654,7 +1692,8 @@ def validate_upload(
             issues.append({"level": "error", "code": "page-path", "message": problem, "count": 1})
             continue
         assert isinstance(page_path, str)
-        if page_path in seen:
+        lowered = page_path.lower()
+        if lowered in seen_lower:
             issues.append({
                 "level": "error",
                 "code": "page-path",
@@ -1663,10 +1702,22 @@ def validate_upload(
             })
             continue
         seen.add(page_path)
+        seen_lower.add(lowered)
+        segments = lowered.split("/")
+        for idx in range(1, len(segments)):
+            dir_prefixes_lower.add("/".join(segments[:idx]))
         checked = validate_html_detailed(entry.get("html"), max_bytes=None)
         results.append({"path": page_path, "html": entry.get("html"), **checked})
         for issue in checked["issues"]:
             issues.append({"path": page_path, **issue} if multi_page else issue)
+    for page in results:
+        if page["path"].lower() in dir_prefixes_lower:
+            issues.append({
+                "level": "error",
+                "code": "page-path",
+                "message": f'Page path "{page["path"]}" conflicts with a folder of the same name.',
+                "count": 1,
+            })
     if "index.html" not in seen:
         issues.append({
             "level": "error",
@@ -2145,6 +2196,8 @@ class Store:
         data.setdefault("drafts", {})
         data.setdefault("idempotency", {})
         if slug is not None:
+            if account_id == "anonymous":
+                raise PermissionError("Custom URLs require an authenticated account.")
             problem = slug_problem(slug)
             if problem is not None:
                 raise ValueError(problem)
@@ -3212,7 +3265,7 @@ class Handler(BaseHTTPRequestHandler):
                 "capabilities": {
                     "inlineScripts": identity["accountId"] != "anonymous",
                     "multiPage": MAX_PAGES_PER_UPLOAD > 1,
-                    "customUrls": True,
+                    "customUrls": identity["accountId"] != "anonymous",
                     "externalAssets": "https images, video, audio, fonts, and stylesheets",
                     "blockedInSandbox": SANDBOX_LIMITS,
                 },
@@ -3251,7 +3304,14 @@ class Handler(BaseHTTPRequestHandler):
                     )
             if "slug" in payload and payload["slug"] is not None:
                 slug_value = normalize_slug(payload["slug"]) or ""
-                status = self.store.slug_status(slug_value, identity["accountId"])
+                if identity["accountId"] == "anonymous":
+                    status = {
+                        "slug": slug_value,
+                        "status": "unavailable",
+                        "message": "Custom URLs require an authenticated account.",
+                    }
+                else:
+                    status = self.store.slug_status(slug_value, identity["accountId"])
                 report["slug"] = status
                 if status["status"] in {"unavailable", "taken"}:
                     report["ok"] = False
@@ -3303,6 +3363,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             slug = normalize_slug(payload.get("slug")) if "slug" in payload else None
             if slug is not None:
+                if identity["accountId"] == "anonymous":
+                    self.send_json(403, {"ok": False, "error": "Custom URLs require an authenticated account."})
+                    return
                 problem = slug_problem(slug)
                 if problem is not None:
                     self.send_json(422, {"ok": False, "error": problem})

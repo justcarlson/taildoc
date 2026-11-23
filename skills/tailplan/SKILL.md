@@ -18,8 +18,9 @@ The name Tailplan does not mean a checklist or an agent plan mode.
 1. Read the complete source material.
 2. Separate completed work from incomplete work.
 3. Verify numbers and claims against live data or primary sources before writing.
-4. Create one standalone source file in static HTML, Markdown, or plain text format without active content.
+4. Create one standalone source file in HTML, Markdown, or plain text format, or a folder of `.html` pages.
    Prefer static HTML for plans, comparisons, and decision reports.
+   Authenticated HTML drafts may use inline JavaScript inside the opaque CSP sandbox.
    Use Markdown for quick notes or the `brief` layout.
 5. Use a temporary source file unless the user requests a durable repository document.
 6. Remove credentials, secret values, access URLs, and sensitive personal data before publication.

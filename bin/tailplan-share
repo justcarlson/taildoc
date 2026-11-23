@@ -134,7 +134,7 @@ URL_ATTRIBUTES = {
 SECURITY_SENSITIVE_ATTRIBUTES = URL_ATTRIBUTES | {"http-equiv", "rel", "srcdoc", "style", "type"}
 BLOCKED_URL_SCHEMES = {"file", "javascript", "vbscript"}
 CSS_URL_RE = re.compile(r"url\s*\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE | re.DOTALL)
-CSS_IMPORT_RE = re.compile(r"@import\s+(['\"])(.*?)\1", re.IGNORECASE | re.DOTALL)
+CSS_IMPORT_RE = re.compile(r"@import\s*(['\"])(.*?)\1", re.IGNORECASE | re.DOTALL)
 SANDBOX_APIS = (
     (
         "sandbox-storage",
@@ -249,14 +249,14 @@ def parse_draft_ref(value: str, base_url: str | None = None) -> str:
 
 def unique_path(target: Path) -> Path:
     """Return target, or the first unused <name>-2<ext> variant."""
-    if not target.exists():
+    if not target.exists() and not target.is_symlink():
         return target
     stem = target.stem if target.suffix else target.name
     suffix = target.suffix
     number = 2
     while True:
         candidate = target.with_name(f"{stem}-{number}{suffix}")
-        if not candidate.exists():
+        if not candidate.exists() and not candidate.is_symlink():
             return candidate
         number += 1
 
@@ -295,12 +295,74 @@ def _has_unsafe_scheme_offline(value: str) -> bool:
     return bool(match and match.group(1).lower() in BLOCKED_URL_SCHEMES)
 
 
+def _decode_css_escapes_offline(value: str) -> str:
+    decoded: list[str] = []
+    index = 0
+    while index < len(value):
+        if value[index] != "\\":
+            decoded.append(value[index])
+            index += 1
+            continue
+        index += 1
+        if index == len(value):
+            break
+        if value[index] in "\n\f":
+            index += 1
+            continue
+        if value[index] == "\r":
+            index += 1
+            if index < len(value) and value[index] == "\n":
+                index += 1
+            continue
+        start = index
+        while index < len(value) and index - start < 6 and value[index] in "0123456789abcdefABCDEF":
+            index += 1
+        if index > start:
+            codepoint = int(value[start:index], 16)
+            if index < len(value) and value[index] in " \t\n\r\f":
+                index += 1
+            if codepoint == 0 or codepoint > 0x10FFFF or 0xD800 <= codepoint <= 0xDFFF:
+                decoded.append("\N{REPLACEMENT CHARACTER}")
+            else:
+                decoded.append(chr(codepoint))
+            continue
+        decoded.append(value[index])
+        index += 1
+    return "".join(decoded)
+
+
 def _css_has_unsafe_url_offline(value: str) -> bool:
-    urls = [m.group(2) for m in CSS_URL_RE.finditer(value)]
-    urls.extend(m.group(2) for m in CSS_IMPORT_RE.finditer(value))
-    return bool(re.search(r"expression\s*\(|behavior\s*:", value, re.IGNORECASE)) or any(
+    normalized = _decode_css_escapes_offline(value)
+    stripped = re.sub(r"/\*.*?\*/", "", normalized, flags=re.DOTALL)
+    urls = [m.group(2) for m in CSS_URL_RE.finditer(stripped)]
+    urls.extend(m.group(2) for m in CSS_IMPORT_RE.finditer(stripped))
+    return bool(re.search(r"expression\s*\(|behavior\s*:", stripped, re.IGNORECASE)) or any(
         _has_unsafe_scheme_offline(url) for url in urls
     )
+
+
+OPTIONAL_CLOSE_SIBLINGS = {
+    "dd": {"dd", "dt"},
+    "dt": {"dd", "dt"},
+    "li": {"li"},
+    "optgroup": {"optgroup", "option"},
+    "option": {"option"},
+    "p": {"p"},
+    "rp": {"rp", "rt"},
+    "rt": {"rp", "rt"},
+    "tbody": {"tbody", "tfoot", "thead"},
+    "td": {"td", "th"},
+    "tfoot": {"tbody", "tfoot", "thead"},
+    "th": {"td", "th"},
+    "thead": {"tbody", "tfoot", "thead"},
+    "tr": {"td", "th", "tr"},
+}
+P_CLOSING_BLOCKS = {
+    "address", "article", "aside", "blockquote", "details", "dialog", "dd",
+    "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
+    "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "li", "main",
+    "nav", "ol", "p", "pre", "section", "table", "ul",
+}
 
 
 class _OfflineHtmlValidator(HTMLParser):
@@ -308,7 +370,7 @@ class _OfflineHtmlValidator(HTMLParser):
         super().__init__(convert_charrefs=True)
         self._by_key: dict[tuple[str, str, str], dict] = {}
         self._style_depth = 0
-        self._depth = 0
+        self._tag_stack: list[str] = []
         self.too_deep = False
         self.has_scripts = False
         self.script_sources: list[tuple[str, tuple[int, int]]] = []
@@ -330,23 +392,38 @@ class _OfflineHtmlValidator(HTMLParser):
             entry["column"] = pos[1] + 1
         self._by_key[key] = entry
 
+    def _push_tag(self, low: str) -> None:
+        if low in P_CLOSING_BLOCKS and self._tag_stack and self._tag_stack[-1] == "p":
+            self._tag_stack.pop()
+        closers = OPTIONAL_CLOSE_SIBLINGS.get(low)
+        if closers:
+            while self._tag_stack and self._tag_stack[-1] in closers:
+                self._tag_stack.pop()
+        self._tag_stack.append(low)
+        if len(self._tag_stack) > MAX_DEPTH:
+            self.too_deep = True
+
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         low = tag.lower()
         if low not in VOID_ELEMENTS:
-            self._depth += 1
-            if self._depth > MAX_DEPTH:
-                self.too_deep = True
-        self._inspect(low, attrs, False)
+            self._push_tag(low)
+        self._inspect(low, attrs)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if self._depth + 1 > MAX_DEPTH:
+        low = tag.lower()
+        if low in {"style", "script", "title"}:
+            self._push_tag(low)
+        elif len(self._tag_stack) + 1 > MAX_DEPTH:
             self.too_deep = True
-        self._inspect(tag.lower(), attrs, True)
+        self._inspect(low, attrs)
 
     def handle_endtag(self, tag: str) -> None:
         low = tag.lower()
-        if low not in VOID_ELEMENTS and self._depth > 0:
-            self._depth -= 1
+        if low not in VOID_ELEMENTS and low in self._tag_stack:
+            for idx in range(len(self._tag_stack) - 1, -1, -1):
+                if self._tag_stack[idx] == low:
+                    del self._tag_stack[idx:]
+                    break
         if low == "style" and self._style_depth:
             self._style_depth -= 1
         if low == "script" and self._active_script is not None:
@@ -370,20 +447,20 @@ class _OfflineHtmlValidator(HTMLParser):
         if self._in_title:
             self._title_parts.append(data)
 
-    def _inspect(self, tag: str, attrs: list[tuple[str, str | None]], self_closing: bool) -> None:
+    def _inspect(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         pos = self.getpos()
         attr_values: dict[str, list[str]] = {}
         for name, value in attrs:
             attr_values.setdefault(name.lower(), []).append(value or "")
-        if tag == "style" and not self_closing:
+        if tag == "style":
             self._style_depth += 1
-        if tag == "title" and not self_closing:
+        if tag == "title":
             self._in_title = True
             self._title_parts = []
         if tag in BLOCKED_TAGS_WITH_FIX:
             self._add("error", "blocked-tag", f'Blocked "{tag}" tag.', fix=BLOCKED_TAGS_WITH_FIX[tag], pos=pos)
         if tag == "script":
-            if "src" in attr_values:
+            if any(name in attr_values for name in ("src", "href", "xlink:href")):
                 self._add("error", "external-script", "External script sources are not allowed.",
                           fix="Inline the code in a script block.", pos=pos)
             executable = False
@@ -395,8 +472,7 @@ class _OfflineHtmlValidator(HTMLParser):
                 elif script_type not in DATA_SCRIPT_TYPES:
                     self._add("error", "script-type", f'Unsupported script type "{script_type}".',
                               fix='Use a classic or type="module" inline script, or type="application/json" for data.', pos=pos)
-            if not self_closing:
-                self._active_script = (executable, [], pos)
+            self._active_script = (executable, [], pos)
         if tag == "link":
             rels = [t for v in attr_values.get("rel", []) for t in v.lower().split()]
             blocked = next((r for r in rels if r not in ALLOWED_LINK_RELS), None)
@@ -452,16 +528,23 @@ def validate_upload_offline(pages: list[dict]) -> dict:
         issues.append({"level": "error", "code": "too-many-pages",
                        "message": f"Upload has {len(pages)} pages; the limit is {MAX_PAGES_PER_UPLOAD}.", "count": 1})
     seen: set[str] = set()
+    seen_lower: set[str] = set()
+    dir_prefixes_lower: set[str] = set()
     for page in pages:
         page_path = page.get("path")
         problem = page_path_problem(page_path)
         if problem:
             issues.append({"level": "error", "code": "page-path", "message": problem, "count": 1})
             continue
-        if page_path in seen:
+        lowered = page_path.lower()
+        if lowered in seen_lower:
             issues.append({"level": "error", "code": "page-path", "message": f'Page path "{page_path}" appears twice.', "count": 1})
             continue
         seen.add(page_path)
+        seen_lower.add(lowered)
+        segments = lowered.split("/")
+        for idx in range(1, len(segments)):
+            dir_prefixes_lower.add("/".join(segments[:idx]))
         doc = page.get("html")
         if not isinstance(doc, str) or not doc.strip():
             entry = {"level": "error", "code": "empty", "message": "HTML document is empty.", "count": 1}
@@ -488,6 +571,14 @@ def validate_upload_offline(pages: list[dict]) -> dict:
         results.append({"path": page_path, "bytes": size, "title": validator.title, "hasScripts": validator.has_scripts})
         for issue in page_issues:
             issues.append({"path": page_path, **issue} if multi_page else issue)
+    for page in results:
+        if page["path"].lower() in dir_prefixes_lower:
+            issues.append({
+                "level": "error",
+                "code": "page-path",
+                "message": f'Page path "{page["path"]}" conflicts with a folder of the same name.',
+                "count": 1,
+            })
     if "index.html" not in seen:
         issues.append({"level": "error", "code": "missing-index", "message": "Uploads need an index.html page.", "count": 1})
     total_bytes = sum(p["bytes"] for p in results)
@@ -1233,8 +1324,16 @@ def find_draft_binding(
     binding_file = draft_binding_path(state_dir, base_url, source)
     binding = read_state_json(binding_file, stderr=stderr)
     if binding is not None:
-        _validate_binding_entry(binding)
-        return binding
+        try:
+            _validate_binding_entry(binding)
+            return binding
+        except MappingFailure:
+            aside = binding_file.with_name(f"{binding_file.name}.corrupt-{int(time.time() * 1000)}")
+            try:
+                os.replace(binding_file, aside)
+                print(f"Warning: {binding_file} had invalid state. Moved it to {aside}.", file=stderr)
+            except OSError as exc:
+                print(f"Warning: {binding_file} had invalid state and could not be moved: {exc}", file=stderr)
     legacy_path = legacy_mapping_path or (state_dir / "drafts.json")
     if not legacy_path.exists():
         return None
@@ -2476,6 +2575,24 @@ def _print_check_report(report: dict, *, stdout=sys.stdout) -> None:
     print("\nReady." if report.get("ok") else "\nNot ready.", file=stdout)
 
 
+def _write_new_file_nofollow(dest: Path, content: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    fd = os.open(dest, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
 def write_downloaded_source(
     source: dict,
     *,
@@ -2485,28 +2602,47 @@ def write_downloaded_source(
     save_binding: bool = True,
 ) -> dict:
     """Write downloaded draft pages without overwriting existing files."""
+    if not isinstance(source, dict):
+        raise ConfigurationFailure("Server returned an invalid download payload.")
+    draft_id = source.get("draftId")
+    if not isinstance(draft_id, str) or DRAFT_ID_RE.fullmatch(draft_id) is None:
+        raise ConfigurationFailure("Server returned an invalid draft ID.")
+    slug = source.get("slug")
+    if slug is not None and (not isinstance(slug, str) or slug_problem(slug) is not None):
+        raise ConfigurationFailure("Server returned an invalid slug.")
+    version_number = source.get("versionNumber")
+    if type(version_number) is not int or not 1 <= version_number <= 999_999_999:
+        raise ConfigurationFailure("Server returned an invalid version number.")
     pages = source.get("pages")
     if not isinstance(pages, list) or not pages:
         raise ConfigurationFailure("Server returned no pages to download.")
+    seen_lower: set[str] = set()
     for page in pages:
         if not isinstance(page, dict) or page_path_problem(page.get("path")) is not None or not isinstance(page.get("html"), str):
             raise ConfigurationFailure("Server returned an invalid page entry.")
+        lowered = page["path"].lower()
+        if lowered in seen_lower:
+            raise ConfigurationFailure("Server returned duplicate page paths.")
+        seen_lower.add(lowered)
     base_dir = (cwd or Path.cwd()).resolve()
-    name = source.get("slug") or source["draftId"]
-    version_number = source["versionNumber"]
+    name = slug or draft_id
     if len(pages) == 1:
         target = unique_path(base_dir / f"{name}-v{version_number}.html")
-        target.write_text(pages[0]["html"], encoding="utf-8")
+        if target.parent.resolve() != base_dir:
+            raise ConfigurationFailure("Downloaded path escapes working directory.")
+        _write_new_file_nofollow(target, pages[0]["html"])
     else:
         target = unique_path(base_dir / f"{name}-v{version_number}")
+        if target.parent.resolve() != base_dir:
+            raise ConfigurationFailure("Downloaded path escapes working directory.")
         target.mkdir(parents=True, exist_ok=False)
         for page in pages:
             dest = (target / page["path"]).resolve()
             if not dest.is_relative_to(target.resolve()):
                 raise ConfigurationFailure("Downloaded page path escapes target folder.")
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(page["html"], encoding="utf-8")
-    ref = source.get("slug") or source["draftId"]
+            _write_new_file_nofollow(dest, page["html"])
+    ref = slug or draft_id
     public_url = f"{base_url.rstrip('/')}/d/{ref}"
     if save_binding and source.get("owned"):
         save_draft_binding(
@@ -2514,8 +2650,8 @@ def write_downloaded_source(
             base_url,
             target,
             {
-                "draftId": source["draftId"],
-                "slug": source.get("slug"),
+                "draftId": draft_id,
+                "slug": slug,
                 "publicUrl": public_url,
                 "versionNumber": version_number,
             },
@@ -2524,8 +2660,8 @@ def write_downloaded_source(
     upload_cmd = f"tailplan upload {shell_quote(rel)}" + ("" if source.get("owned") else " --new")
     return {
         "ok": True,
-        "draftId": source["draftId"],
-        "slug": source.get("slug"),
+        "draftId": draft_id,
+        "slug": slug,
         "title": source.get("title"),
         "versionNumber": version_number,
         "owned": bool(source.get("owned")),

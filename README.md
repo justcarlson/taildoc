@@ -17,7 +17,7 @@ Read [briefs](docs/briefs.md) for reports on a video, podcast, article, or other
 - Tailplan stores each draft on local disk.
 - Tailplan binds the primary listener to a Tailscale address by default.
 - Tailplan can use Tailscale Serve for HTTPS access.
-- Tailplan rejects active HTML content and prohibited URL attributes.
+- Tailplan runs inline HTML scripts inside an opaque CSP sandbox and rejects external scripts, forms, embeds, and unsafe URLs.
 - Tailplan renders Markdown tables as responsive HTML tables.
 - Tailplan can mirror one approved draft to Postplan.
 - The dashboard groups drafts by repository and displays every version.

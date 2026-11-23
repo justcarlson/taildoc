@@ -60,6 +60,26 @@ def parse_original_command() -> list[str]:
         deny("SSH_ORIGINAL_COMMAND has invalid quoting")
 
 
+def _verify_staged_file(path_str: str, *, max_size: int | None = None, label: str = "file") -> None:
+    """Verify staged upload directory and file without following symlinks."""
+    path = Path(path_str)
+    parent = path.parent
+    try:
+        parent_stat = parent.stat(follow_symlinks=False)
+    except OSError:
+        deny(f"{label} directory is not available")
+    if not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != os.getuid():
+        deny(f"{label} directory has an invalid owner or type")
+    try:
+        info = path.stat(follow_symlinks=False)
+    except OSError:
+        deny(f"{label} is not available")
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        deny(f"{label} has an invalid owner or type")
+    if max_size is not None and info.st_size > max_size:
+        deny(f"{label} is too large")
+
+
 def execute(argv: list[str]) -> None:
     if argv == ["mktemp", "-d", "/tmp/tailplan-upload.XXXXXXXX"]:
         os.execv("/usr/bin/mktemp", argv)
@@ -108,12 +128,7 @@ def execute(argv: list[str]) -> None:
                 else:
                     deny("check arguments are invalid")
             if source_path is not None:
-                try:
-                    info = Path(source_path).stat(follow_symlinks=False)
-                except OSError:
-                    deny("check source is not available")
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > MAX_FILES_JSON_BYTES:
-                    deny("check source has an invalid owner, type, or size")
+                _verify_staged_file(source_path, max_size=MAX_FILES_JSON_BYTES, label="check source")
             command = configured_share_command()
             os.execv(command, [command, *argv[1:]])
         if values[0] == "download":
@@ -174,20 +189,14 @@ def execute(argv: list[str]) -> None:
             if option == "--metadata-file":
                 if value != str(Path(source_arg).parent / "provenance.json"):
                     deny("metadata path is invalid")
-                info = Path(value).stat(follow_symlinks=False)
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > 65536:
-                    deny("metadata file is invalid")
+                _verify_staged_file(value, max_size=65536, label="metadata file")
         if {"--draft", "--new"}.issubset(seen) or {"--slug", "--new"}.issubset(seen):
             deny("draft options conflict")
-        source = Path(source_arg)
-        try:
-            source_stat = source.stat(follow_symlinks=False)
-        except OSError:
-            deny("publish source is not available")
-        if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_uid != os.getuid():
-            deny("publish source has an invalid owner or type")
-        if argv[1] == "--files-json" and source_stat.st_size > MAX_FILES_JSON_BYTES:
-            deny("publish source is too large")
+        _verify_staged_file(
+            source_arg,
+            max_size=MAX_FILES_JSON_BYTES if argv[1] == "--files-json" else None,
+            label="publish source",
+        )
         command = configured_share_command()
         os.execv(command, [command, *argv[1:]])
 
