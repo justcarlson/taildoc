@@ -17,23 +17,26 @@ The name Tailplan does not mean a checklist or an agent plan mode.
 
 1. Read the complete source material.
 2. Separate completed work from incomplete work.
-3. Create one standalone source file in Markdown, plain text, or static HTML format without active content.
-4. Use a temporary source file unless the user requests a durable repository document.
-5. Check the source file for credentials, secret values, access URLs, and medical, legal, financial, or identifying personal data.
-6. Remove each credential, secret value, access URL, and personal record before publication.
-7. Publish a new draft:
+3. Verify numbers and claims against live data or primary sources before writing.
+4. Create one standalone source file in static HTML, Markdown, or plain text format without active content.
+   Prefer static HTML for plans, comparisons, and decision reports.
+   Use Markdown for quick notes or the `brief` layout.
+5. Use a temporary source file unless the user requests a durable repository document.
+6. Remove credentials, secret values, access URLs, and sensitive personal data before publication.
+   Do not over-censor ordinary private context on a tailnet-only draft.
+7. Publish a new draft, or update an existing draft in place with `--draft <draft-id>`:
 
    ```sh
-   tailplan-share /path/to/artifact.md --new
+   tailplan-share /path/to/artifact.html --new
    ```
 
 8. Copy the `URL:` value from the command output. It uses the automatic preview
    page at `/d/ID/share` when the server supports it. For JSON output, prefer
    `shareUrl` and fall back to `publicUrl`.
 9. Verify the URL with `curl -fsS` from a tailnet device.
-10. If the source material describes a change to a rendered Tailplan page, open the published page with the `agent-browser` UAT tool.
+10. Open the published page at 390px, 768px, and 1280px with the `agent-browser` UAT tool when publishing custom HTML or layout changes.
 11. Return the URL and one short description.
-12. If step 4 created a durable repository document, report its repository path.
+12. If step 5 created a durable repository document, report its repository path.
 
 The remote client transfers the source file and repository metadata through OpenSSH.
 The upload token remains on the Tailplan server.
@@ -105,6 +108,19 @@ h2 { font-size: 22px; }  /* no underline rule under h2 */
 - Put an optional kicker (13px uppercase muted text, `letter-spacing: .06em`) above the h1.
 - Use small rounded chips for metadata and a surface card for the summary.
   Do not use bordered link boxes or blocks with a heavy left rule.
+- When the active model is not the strongest visual designer available, delegate rich HTML authoring and layout refinement to a design subagent.
+- Lead with a verdict or summary card.
+  Keep default visible prose concise, around 800 to 1,000 words.
+  Place deep technical specs, logs, and raw evidence inside `<details>` blocks.
+- Prefer inline SVG charts, diagrams, and embedded screenshots over dense data tables.
+- Link each chart mark or label to its source in a new tab.
+  Show the source title on hover.
+  Fit charts inside a 360px phone, keep axis ticks at least 44px apart, and put the unit on the last tick only.
+- Write in plain adult technical terms.
+  Link factual claims to primary evidence.
+  Avoid emojis and patronizing metaphors.
+- Pass a phone glance check at 390px, not only zero horizontal scroll.
+  Verify readable typography and generous spacing at 390px, 768px, and 1280px.
 
 The server stores resolved HTML and theme metadata in each published version.
 Palette updates do not change stored documents.
