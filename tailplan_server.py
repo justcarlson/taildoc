@@ -214,6 +214,9 @@ HTML_SPECIAL_TAGS = HTML_SCOPE_BARRIERS | HTML_SCOPED_CLOSE_TAGS | {
     "wbr", "xmp",
 }
 SELECT_CLOSING_TAGS = {"input", "keygen", "select", "textarea"}
+SELECT_INNER_TAGS = {"hr", "optgroup", "option", "script", "template"}
+TABLE_STRUCTURE_TAGS = {"caption", "table", "tbody", "td", "tfoot", "th", "thead", "tr"}
+SELECT_RE = re.compile(r"<select\b", re.IGNORECASE)
 FOREIGN_BREAKOUT_TAGS = {
     "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div",
     "dl", "dt", "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head",
@@ -1560,7 +1563,7 @@ def _has_raw_meta_refresh(doc: str) -> bool:
 
 
 class _HtmlValidator(HTMLParser):
-    def __init__(self, *, scripting: bool = False) -> None:
+    def __init__(self, *, scripting: bool = False, classic_select: bool = False) -> None:
         try:
             super().__init__(convert_charrefs=True, scripting=scripting)
         except TypeError:
@@ -1568,6 +1571,7 @@ class _HtmlValidator(HTMLParser):
             self.scripting = scripting
         if hasattr(self, "_set_support_cdata"):
             self._set_support_cdata(False)
+        self._classic_select = classic_select
         self.issues = _IssueList()
         self._style_stack: list[tuple[list[str], tuple[int, int]]] = []
         self._tag_stack: list[tuple[str, str]] = []
@@ -1599,6 +1603,16 @@ class _HtmlValidator(HTMLParser):
             if stack_tag == "select":
                 return True
             if stack_tag in HTML_SCOPE_BARRIERS:
+                return False
+        return False
+
+    def _in_table(self) -> bool:
+        for stack_tag, mode in reversed(self._tag_stack):
+            if mode != "html":
+                return False
+            if stack_tag == "table":
+                return True
+            if stack_tag in {"html", "template"}:
                 return False
         return False
 
@@ -1698,7 +1712,7 @@ class _HtmlValidator(HTMLParser):
         if (
             self._last_start_in_foreign
             or self._in_foreign()
-            or (self._in_select() and elem.lower() != "script")
+            or (self._classic_select and self._in_select() and elem.lower() != "script")
         ):
             return
         super().set_cdata_mode(elem, *args, **kwargs)
@@ -1729,8 +1743,15 @@ class _HtmlValidator(HTMLParser):
             in_foreign = False
         self._last_start_in_foreign = in_foreign
         if not in_foreign:
-            if self._in_select() and tag_lower in SELECT_CLOSING_TAGS:
-                self._pop_select()
+            if self._classic_select and self._in_select():
+                if tag_lower in SELECT_CLOSING_TAGS or (
+                    self._in_table() and tag_lower in TABLE_STRUCTURE_TAGS
+                ):
+                    self._pop_select()
+                elif tag_lower not in SELECT_INNER_TAGS:
+                    self._sync_cdata_support()
+                    self._inspect_tag(tag_lower, attrs, self_closing=False, in_foreign=False)
+                    return
             if tag_lower in FOREIGN_ROOT_TAGS:
                 self._push_tag(tag_lower, tag_lower)
             elif tag_lower not in VOID_ELEMENTS:
@@ -1765,8 +1786,15 @@ class _HtmlValidator(HTMLParser):
             self._inspect_tag(tag_lower, attrs, self_closing=True, in_foreign=True)
             return
         self._last_start_in_foreign = False
-        if self._in_select() and tag_lower in SELECT_CLOSING_TAGS:
-            self._pop_select()
+        if self._classic_select and self._in_select():
+            if tag_lower in SELECT_CLOSING_TAGS or (
+                self._in_table() and tag_lower in TABLE_STRUCTURE_TAGS
+            ):
+                self._pop_select()
+            elif tag_lower not in SELECT_INNER_TAGS:
+                self._sync_cdata_support()
+                self._inspect_tag(tag_lower, attrs, self_closing=False, in_foreign=False)
+                return
         if tag_lower not in VOID_ELEMENTS:
             self._push_tag(tag_lower, "html")
         self._enter_cdata(tag_lower)
@@ -1800,8 +1828,15 @@ class _HtmlValidator(HTMLParser):
             while self._tag_stack and self._tag_stack[-1][1] in FOREIGN_MODES:
                 self._tag_stack.pop()
         elif tag_lower not in VOID_ELEMENTS and self._tag_stack:
-            top_mode = self._tag_stack[-1][1]
-            if top_mode in FOREIGN_MODES or top_mode in INTEGRATION_MODES:
+            if (
+                self._classic_select
+                and self._in_select()
+                and self._in_table()
+                and tag_lower in TABLE_STRUCTURE_TAGS
+            ):
+                self._pop_select()
+            top_mode = self._tag_stack[-1][1] if self._tag_stack else "html"
+            if self._tag_stack and (top_mode in FOREIGN_MODES or top_mode in INTEGRATION_MODES):
                 matched_idx: int | None = None
                 boundary = len(self._tag_stack)
                 crossed_barrier = False
@@ -1823,7 +1858,7 @@ class _HtmlValidator(HTMLParser):
                     and boundary < len(self._tag_stack)
                 ):
                     self._close_html_tag(tag_lower, boundary)
-            else:
+            elif self._tag_stack:
                 self._close_html_tag(tag_lower, len(self._tag_stack) - 1)
         self._sync_cdata_support()
         if tag_lower == "style":
@@ -2059,20 +2094,29 @@ def validate_html_detailed(
     has_scripts = validator.has_inline_script
     script_sources = list(validator.script_sources)
     external_hosts = set(validator.external_image_hosts)
-    if NOSCRIPT_RE.search(doc):
-        scripted = _HtmlValidator(scripting=True)
-        scripted.feed(doc)
-        scripted.close()
+    extra_passes: list[dict[str, bool]] = []
+    has_noscript = bool(NOSCRIPT_RE.search(doc))
+    has_select = bool(SELECT_RE.search(doc))
+    if has_noscript:
+        extra_passes.append({"scripting": True, "classic_select": False})
+    if has_select:
+        extra_passes.append({"scripting": False, "classic_select": True})
+    if has_noscript and has_select:
+        extra_passes.append({"scripting": True, "classic_select": True})
+    for opts in extra_passes:
+        extra = _HtmlValidator(**opts)
+        extra.feed(doc)
+        extra.close()
         seen_keys = {(i["level"], i["code"], i["message"]) for i in issues.items()}
-        for item in scripted.issues.items():
+        for item in extra.issues.items():
             key = (item["level"], item["code"], item["message"])
             if item["level"] == "error" and key not in seen_keys:
                 issues.merge(item)
                 seen_keys.add(key)
-        too_deep = too_deep or scripted.too_deep
-        has_scripts = has_scripts or scripted.has_inline_script
-        script_sources.extend(scripted.script_sources)
-        external_hosts.update(scripted.external_image_hosts)
+        too_deep = too_deep or extra.too_deep
+        has_scripts = has_scripts or extra.has_inline_script
+        script_sources.extend(extra.script_sources)
+        external_hosts.update(extra.external_image_hosts)
     if _has_raw_meta_refresh(doc) and not any(i["code"] == "meta-refresh" for i in issues.items()):
         issues.error(
             "meta-refresh",

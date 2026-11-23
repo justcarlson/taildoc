@@ -507,6 +507,16 @@ class Postplan006ServerTests(unittest.TestCase):
             '<title>Bad</title><ul><li><ul><svg></li><style><p><iframe src="about:blank"></iframe></style>',
             '<title>Bad</title><select><script>var a = "</select><style>";</script></select><iframe src="about:blank"></iframe></style>',
             '<title>Bad</title><select><script>var a = "</select><style>";</script></select><a href="javascript:alert(1)">x</a></style>',
+            '<title>Bad</title><table><select></table><style><!--</style><iframe src="about:blank"></iframe>--></style>',
+            '<title>Bad</title><table><tr><td><select></td><style><!--</style><iframe src="about:blank"></iframe>--></style>',
+            '<title>Bad</title><table><tr><td><select><tr><style><!--</style><iframe src="about:blank"></iframe>--></style>',
+            '<title>Bad</title><table><tr><td><select></td><style><!--</style><a href="javascript:alert(1)">x</a>--></style>',
+            '<title>Bad</title><select><style><!--</style><iframe src="about:blank"></iframe>--></style>',
+            '<title>Bad</title><select><style><!--</style><a href="javascript:alert(1)">x</a>--></style>',
+            '<title>Bad</title><select><title><!--</title><iframe src="about:blank"></iframe>--></title>',
+            '<title>Bad</title><select><noscript><!--</noscript><iframe src="about:blank"></iframe>--></noscript>',
+            '<title>Bad</title><select><table><style></select><iframe src="about:blank"></iframe></style>',
+            '<title>Bad</title><select><svg><foreignObject><style></select><iframe src="about:blank"></iframe></style>',
         )
         for bad in bypasses:
             status, _, res = self.api("/api/uploads", "POST", {"html": bad})
