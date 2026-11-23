@@ -618,6 +618,10 @@ P_CLOSING_BLOCKS = {
 }
 
 
+class _NestingLimitExceeded(Exception):
+    """Raised to abort offline HTML validation immediately once MAX_DEPTH is exceeded."""
+
+
 class _OfflineHtmlValidator(HTMLParser):
     def __init__(
         self,
@@ -770,8 +774,11 @@ class _OfflineHtmlValidator(HTMLParser):
             inspect_comment_tails=True,
             tail_depth=self._tail_depth + 1,
         )
-        sub.feed(tail)
-        sub.close()
+        try:
+            sub.feed(tail)
+            sub.close()
+        except _NestingLimitExceeded:
+            self.too_deep = True
         for item in sub.issues():
             if item["level"] == "error":
                 self._merge_issue(item)
@@ -853,6 +860,7 @@ class _OfflineHtmlValidator(HTMLParser):
         self._tag_stack.append((low, mode))
         if len(self._tag_stack) > MAX_DEPTH:
             self.too_deep = True
+            raise _NestingLimitExceeded()
 
     def set_cdata_mode(self, elem: str, *args: object, **kwargs: object) -> None:
         low = elem.lower()
@@ -951,6 +959,7 @@ class _OfflineHtmlValidator(HTMLParser):
         if in_foreign or low in FOREIGN_ROOT_TAGS:
             if len(self._tag_stack) + 1 > MAX_DEPTH:
                 self.too_deep = True
+                raise _NestingLimitExceeded()
             self._sync_cdata_support()
             self._inspect(low, attrs, self_closing=True, in_foreign=True)
             return
@@ -1208,33 +1217,40 @@ def validate_upload_offline(pages: list[dict]) -> dict:
             results.append({"path": page_path, "bytes": size, "title": None, "hasScripts": False})
             continue
         validator = _OfflineHtmlValidator()
-        validator.feed(doc)
-        validator.close()
+        try:
+            validator.feed(doc)
+            validator.close()
+        except _NestingLimitExceeded:
+            validator.too_deep = True
         page_issues = validator.issues()
         too_deep = validator.too_deep
         has_scripts = validator.has_scripts
         script_sources = list(validator.script_sources)
         extra_passes: list[dict[str, object]] = []
-        has_noscript = bool(NOSCRIPT_RE.search(doc))
-        has_select = bool(SELECT_RE.search(doc))
-        has_dual = bool(DUAL_MODE_RE.search(doc))
-        if has_noscript:
-            extra_passes.append({"scripting": True, "classic_select": False})
-        if has_select:
-            extra_passes.append({"scripting": False, "classic_select": True})
-        if has_noscript and has_select:
-            extra_passes.append({"scripting": True, "classic_select": True})
-        if has_dual:
-            extra_passes.append({"scripting": has_noscript, "cdata_override": "force_html"})
-            extra_passes.append({
-                "scripting": False,
-                "cdata_override": "disable_nonscript",
-                "inspect_comment_tails": True,
-            })
+        if not too_deep:
+            has_noscript = bool(NOSCRIPT_RE.search(doc))
+            has_select = bool(SELECT_RE.search(doc))
+            has_dual = bool(DUAL_MODE_RE.search(doc))
+            if has_noscript:
+                extra_passes.append({"scripting": True, "classic_select": False})
+            if has_select:
+                extra_passes.append({"scripting": False, "classic_select": True})
+            if has_noscript and has_select:
+                extra_passes.append({"scripting": True, "classic_select": True})
+            if has_dual:
+                extra_passes.append({"scripting": has_noscript, "cdata_override": "force_html"})
+                extra_passes.append({
+                    "scripting": False,
+                    "cdata_override": "disable_nonscript",
+                    "inspect_comment_tails": True,
+                })
         for opts in extra_passes:
             extra = _OfflineHtmlValidator(**opts)
-            extra.feed(doc)
-            extra.close()
+            try:
+                extra.feed(doc)
+                extra.close()
+            except _NestingLimitExceeded:
+                extra.too_deep = True
             seen_keys = {(i["level"], i["code"], i["message"]) for i in page_issues}
             for item in extra.issues():
                 if item["level"] == "error":
@@ -1245,6 +1261,8 @@ def validate_upload_offline(pages: list[dict]) -> dict:
             too_deep = too_deep or extra.too_deep
             has_scripts = has_scripts or extra.has_scripts
             script_sources.extend(extra.script_sources)
+            if too_deep:
+                break
         if _has_raw_meta_refresh_offline(doc) and not any(i["code"] == "meta-refresh" for i in page_issues):
             page_issues.append({
                 "level": "error",
@@ -3365,6 +3383,7 @@ def write_downloaded_source(
     state_dir: Path,
     cwd: Path | None = None,
     save_binding: bool = True,
+    upload_extra_args: list[str] | None = None,
 ) -> dict:
     """Write downloaded draft pages without overwriting existing files."""
     if not isinstance(source, dict):
@@ -3432,7 +3451,16 @@ def write_downloaded_source(
             },
         )
     rel = os.path.relpath(target, base_dir)
-    upload_cmd = f"tailplan upload {shell_quote(rel)}" + ("" if source.get("owned") else " --new")
+    cmd_parts = ["tailplan", "upload", shell_quote(rel)]
+    extra = list(upload_extra_args or [])
+    if not extra and base_url.startswith("ssh://"):
+        ssh_target = base_url.removeprefix("ssh://").rstrip("/")
+        if ssh_target and ssh_target != "tailplan-server":
+            extra = ["--target", ssh_target]
+    cmd_parts.extend(shell_quote(arg) for arg in extra)
+    if not source.get("owned"):
+        cmd_parts.append("--new")
+    upload_cmd = " ".join(cmd_parts)
     return {
         "ok": True,
         "draftId": draft_id,
@@ -3608,7 +3636,17 @@ def management_main(argv: list[str]) -> int:
             if args.print_source:
                 print(json.dumps(source, ensure_ascii=False))
                 return 0
-            receipt = write_downloaded_source(source, base_url=base, state_dir=state)
+            extra_upload_args: list[str] = []
+            if args.base_url:
+                extra_upload_args.extend(["--base-url", base])
+            if args.allow_insecure_http:
+                extra_upload_args.append("--allow-insecure-http")
+            receipt = write_downloaded_source(
+                source,
+                base_url=base,
+                state_dir=state,
+                upload_extra_args=extra_upload_args,
+            )
             if args.json:
                 print(json.dumps(receipt, ensure_ascii=False))
             else:

@@ -328,10 +328,12 @@ def _remote_download(argv: list[str], target: str) -> int:
                 exit_code=completed.returncode or 1,
             )
         source = json.loads(completed.stdout)
+        extra_args = ["--target", target] if target != DEFAULT_TARGET else []
         receipt = library["write_downloaded_source"](
             source,
             base_url=f"ssh://{target}",
             state_dir=Path.home() / ".tailplan",
+            upload_extra_args=extra_args,
         )
         if args.json:
             print(json.dumps(receipt, ensure_ascii=False))

@@ -1566,6 +1566,10 @@ def _has_raw_meta_refresh(doc: str) -> bool:
     return False
 
 
+class _NestingLimitExceeded(Exception):
+    """Raised to abort HTML validation immediately once MAX_DEPTH is exceeded."""
+
+
 class _HtmlValidator(HTMLParser):
     def __init__(
         self,
@@ -1703,8 +1707,11 @@ class _HtmlValidator(HTMLParser):
             inspect_comment_tails=True,
             tail_depth=self._tail_depth + 1,
         )
-        sub.feed(tail)
-        sub.close()
+        try:
+            sub.feed(tail)
+            sub.close()
+        except _NestingLimitExceeded:
+            self.too_deep = True
         for item in sub.issues.items():
             if item["level"] == "error":
                 self.issues.merge(item)
@@ -1787,6 +1794,7 @@ class _HtmlValidator(HTMLParser):
         self._tag_stack.append((tag_lower, mode))
         if len(self._tag_stack) > MAX_DEPTH:
             self.too_deep = True
+            raise _NestingLimitExceeded()
 
     def set_cdata_mode(self, elem: str, *args: object, **kwargs: object) -> None:
         low = elem.lower()
@@ -1885,6 +1893,7 @@ class _HtmlValidator(HTMLParser):
         if in_foreign or tag_lower in FOREIGN_ROOT_TAGS:
             if len(self._tag_stack) + 1 > MAX_DEPTH:
                 self.too_deep = True
+                raise _NestingLimitExceeded()
             self._sync_cdata_support()
             self._inspect_tag(tag_lower, attrs, self_closing=True, in_foreign=True)
             return
@@ -2218,8 +2227,11 @@ def validate_html_detailed(
             f"maximum is {max_bytes} bytes ({format_bytes(max_bytes)}).",
         )
     validator = _HtmlValidator()
-    validator.feed(doc)
-    validator.close()
+    try:
+        validator.feed(doc)
+        validator.close()
+    except _NestingLimitExceeded:
+        validator.too_deep = True
     for item in validator.issues.items():
         issues.merge(item)
     too_deep = validator.too_deep
@@ -2227,27 +2239,31 @@ def validate_html_detailed(
     script_sources = list(validator.script_sources)
     external_hosts = set(validator.external_image_hosts)
     extra_passes: list[dict[str, object]] = []
-    has_noscript = bool(NOSCRIPT_RE.search(doc))
-    has_select = bool(SELECT_RE.search(doc))
-    has_dual = bool(DUAL_MODE_RE.search(doc))
-    if has_noscript:
-        extra_passes.append({"scripting": True, "classic_select": False})
-    if has_select:
-        extra_passes.append({"scripting": False, "classic_select": True})
-    if has_noscript and has_select:
-        extra_passes.append({"scripting": True, "classic_select": True})
-    if has_dual:
-        # Cover both HTML RAWTEXT/RCDATA and non-CDATA interpretations across tree-builder modes.
-        extra_passes.append({"scripting": has_noscript, "cdata_override": "force_html"})
-        extra_passes.append({
-            "scripting": False,
-            "cdata_override": "disable_nonscript",
-            "inspect_comment_tails": True,
-        })
+    if not too_deep:
+        has_noscript = bool(NOSCRIPT_RE.search(doc))
+        has_select = bool(SELECT_RE.search(doc))
+        has_dual = bool(DUAL_MODE_RE.search(doc))
+        if has_noscript:
+            extra_passes.append({"scripting": True, "classic_select": False})
+        if has_select:
+            extra_passes.append({"scripting": False, "classic_select": True})
+        if has_noscript and has_select:
+            extra_passes.append({"scripting": True, "classic_select": True})
+        if has_dual:
+            # Cover both HTML RAWTEXT/RCDATA and non-CDATA interpretations across tree-builder modes.
+            extra_passes.append({"scripting": has_noscript, "cdata_override": "force_html"})
+            extra_passes.append({
+                "scripting": False,
+                "cdata_override": "disable_nonscript",
+                "inspect_comment_tails": True,
+            })
     for opts in extra_passes:
         extra = _HtmlValidator(**opts)
-        extra.feed(doc)
-        extra.close()
+        try:
+            extra.feed(doc)
+            extra.close()
+        except _NestingLimitExceeded:
+            extra.too_deep = True
         seen_keys = {(i["level"], i["code"], i["message"]) for i in issues.items()}
         for item in extra.issues.items():
             key = (item["level"], item["code"], item["message"])
@@ -2258,6 +2274,8 @@ def validate_html_detailed(
         has_scripts = has_scripts or extra.has_inline_script
         script_sources.extend(extra.script_sources)
         external_hosts.update(extra.external_image_hosts)
+        if too_deep:
+            break
     if _has_raw_meta_refresh(doc) and not any(i["code"] == "meta-refresh" for i in issues.items()):
         issues.error(
             "meta-refresh",

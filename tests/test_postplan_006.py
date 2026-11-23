@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.client import HTTPConnection
 from pathlib import Path
@@ -775,6 +776,37 @@ class Postplan006ServerTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             share._write_new_file_nofollow(existing, "overwrite")
         self.assertEqual("keep-me", existing.read_text(encoding="utf-8"))
+
+        # Deep nesting aborts immediately at MAX_DEPTH instead of scanning quadratically.
+        deep_payload = "<title>Deep</title>" + ("<span>" * 6000) + ("</x>" * 6000)
+        start = time.monotonic()
+        srv_deep = server.validate_upload([{"path": "index.html", "html": deep_payload}])
+        off_deep = share.validate_upload_offline([{"path": "index.html", "html": deep_payload}])
+        elapsed = time.monotonic() - start
+        self.assertFalse(srv_deep["ok"])
+        self.assertFalse(off_deep["ok"])
+        self.assertTrue(any(i["code"] == "too-deep" for i in srv_deep["issues"]))
+        self.assertTrue(any(i["code"] == "too-deep" for i in off_deep["issues"]))
+        self.assertLess(elapsed, 1.0, f"deep nesting check took {elapsed:.2f}s")
+
+        # Non-default download endpoints are preserved in uploadCommand.
+        dl_base = run_local_cli("download", "slug-a", "--base-url", self.base, "--json")
+        self.assertEqual(0, dl_base.returncode, dl_base.stderr + dl_base.stdout)
+        dl_base_data = json.loads(dl_base.stdout)
+        self.assertIn(f"--base-url {self.base}", dl_base_data["uploadCommand"])
+        ssh_receipt = share.write_downloaded_source(
+            {
+                "draftId": "abc123456789",
+                "slug": "ssh-plan",
+                "versionNumber": 1,
+                "owned": True,
+                "pages": [{"path": "index.html", "html": "<title>S</title>"}],
+            },
+            base_url="ssh://staging-tailplan",
+            state_dir=cli_home / ".tailplan",
+            cwd=cli_home,
+        )
+        self.assertIn("--target staging-tailplan", ssh_receipt["uploadCommand"])
 
         # Viewer path traversal attempts return 404.
         for bad_route in (
