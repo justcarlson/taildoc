@@ -626,6 +626,7 @@ class _OfflineHtmlValidator(HTMLParser):
         classic_select: bool = False,
         cdata_override: str | None = None,
         inspect_comment_tails: bool = False,
+        tail_depth: int = 0,
     ) -> None:
         try:
             super().__init__(convert_charrefs=True, scripting=scripting)
@@ -637,6 +638,7 @@ class _OfflineHtmlValidator(HTMLParser):
         self._classic_select = classic_select
         self._cdata_override = cdata_override
         self._inspect_comment_tails = inspect_comment_tails
+        self._tail_depth = tail_depth
         self._by_key: dict[tuple[str, str, str], dict] = {}
         self._style_stack: list[tuple[list[str], tuple[int, int]]] = []
         self._tag_stack: list[tuple[str, str]] = []
@@ -737,6 +739,43 @@ class _OfflineHtmlValidator(HTMLParser):
         if hasattr(self, "_set_support_cdata"):
             self._set_support_cdata(self._in_foreign())
 
+    def _merge_issue(self, item: dict) -> None:
+        key = (item["level"], item["code"], item["message"])
+        existing = self._by_key.get(key)
+        if existing is not None:
+            existing["count"] += item.get("count", 1)
+            return
+        pos = (item["line"], item["column"] - 1) if "line" in item else None
+        self._add(item["level"], item["code"], item["message"], fix=item.get("fix"), pos=pos)
+        self._by_key[key]["count"] = item.get("count", 1)
+
+    def _inspect_rawtext_tail(self, text: str) -> None:
+        match = RAWTEXT_CLOSE_IN_COMMENT_RE.search(text)
+        if not match:
+            return
+        tail = text[match.end() :]
+        if "<" not in tail:
+            return
+        if self._tail_depth >= 8:
+            self._add(
+                "error",
+                "unsafe-declaration",
+                "Blocked deeply nested rawtext breakout.",
+                fix="Remove nested closing rawtext tags inside comments or attributes.",
+                pos=self.getpos(),
+            )
+            return
+        sub = _OfflineHtmlValidator(
+            cdata_override="disable_nonscript",
+            inspect_comment_tails=True,
+            tail_depth=self._tail_depth + 1,
+        )
+        sub.feed(tail)
+        sub.close()
+        for item in sub.issues():
+            if item["level"] == "error":
+                self._merge_issue(item)
+
     def handle_comment(self, data: str) -> None:
         if data.lstrip().upper().startswith("[CDATA["):
             self._add(
@@ -747,17 +786,7 @@ class _OfflineHtmlValidator(HTMLParser):
                 pos=self.getpos(),
             )
         if self._inspect_comment_tails:
-            match = RAWTEXT_CLOSE_IN_COMMENT_RE.search(data)
-            if match:
-                tail = data[match.end() :]
-                if "<" in tail:
-                    sub = _OfflineHtmlValidator(cdata_override="disable_nonscript")
-                    sub.feed(tail)
-                    sub.close()
-                    for item in sub.issues():
-                        if item["level"] == "error":
-                            pos = (item["line"], item["column"] - 1) if "line" in item else None
-                            self._add(item["level"], item["code"], item["message"], fix=item.get("fix"), pos=pos)
+            self._inspect_rawtext_tail(data)
 
     def unknown_decl(self, data: str) -> None:
         self._add(
@@ -880,12 +909,18 @@ class _OfflineHtmlValidator(HTMLParser):
                     self._sync_cdata_support()
                     self._inspect(low, attrs, self_closing=False, in_foreign=False)
                     return
+            if low == "table" and self._in_table() and not any(
+                self._in_table_scope(cell) for cell in ("td", "th", "caption")
+            ):
+                self._pop_table_tag("table")
             if low in TABLE_CELL_CLOSERS and self._in_table():
                 self._clear_table_context(low)
                 if low in {"tr", "td", "th"} and not any(
                     self._in_table_scope(group) for group in TABLE_ROW_GROUPS
                 ):
                     self._push_tag("tbody", "html")
+                if low in {"td", "th"} and not self._in_table_scope("tr"):
+                    self._push_tag("tr", "html")
             if low in FOREIGN_ROOT_TAGS:
                 self._push_tag(low, low)
             elif low not in VOID_ELEMENTS:
@@ -934,12 +969,18 @@ class _OfflineHtmlValidator(HTMLParser):
                 self._sync_cdata_support()
                 self._inspect(low, attrs, self_closing=False, in_foreign=False)
                 return
+        if low == "table" and self._in_table() and not any(
+            self._in_table_scope(cell) for cell in ("td", "th", "caption")
+        ):
+            self._pop_table_tag("table")
         if low in TABLE_CELL_CLOSERS and self._in_table():
             self._clear_table_context(low)
             if low in {"tr", "td", "th"} and not any(
                 self._in_table_scope(group) for group in TABLE_ROW_GROUPS
             ):
                 self._push_tag("tbody", "html")
+            if low in {"td", "th"} and not self._in_table_scope("tr"):
+                self._push_tag("tr", "html")
         if low not in VOID_ELEMENTS:
             self._push_tag(low, "html")
         self._enter_cdata(low)
@@ -1034,6 +1075,8 @@ class _OfflineHtmlValidator(HTMLParser):
         attr_values: dict[str, list[str]] = {}
         for name, value in attrs:
             attr_values.setdefault(name.lower(), []).append(value or "")
+            if self._inspect_comment_tails and value:
+                self._inspect_rawtext_tail(value)
         if tag == "style" and not self_closing:
             self._style_stack.append(([], pos))
         if tag == "title" and not self_closing and not in_foreign:

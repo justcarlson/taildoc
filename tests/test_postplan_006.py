@@ -531,6 +531,11 @@ class Postplan006ServerTests(unittest.TestCase):
             '<title>Bad</title><table><tbody><tr><td></tbody><svg><foreignObject></tr></foreignObject><style><!--</style><title>--></style></svg><style><!--</style><iframe src="about:blank"></iframe>--></title>',
             '<title>Bad</title><table><tr><td><svg><td></td><style><!--</style><title>--></style></svg><style><!--</style><iframe src="about:blank"></iframe>--></title>',
             '<title>Bad</title><svg><style><!--</style><title>--></style></svg><table><svg><foreignObject><tr></tr></foreignObject><style><!--</style><iframe src="about:blank"></iframe>--></title>',
+            '<title>Bad</title><svg><style><a title="</style><title>"></style></svg><table><td><svg><foreignObject></tr></foreignObject><style><a title="</style><iframe src=about:blank></iframe>"></style></title>',
+            '<title>Bad</title><svg><style><a title="</style><title>"></style></svg><table><tbody><td><svg><foreignObject></tr></foreignObject><style><a title="</style><iframe src=about:blank></iframe>"></style></title>',
+            '<title>Bad</title><svg><style><a title="</style><title>"></style></svg><table><svg><foreignObject><table></table></foreignObject><style><a title="</style><iframe src=about:blank></iframe>"></style></title>',
+            '<title>Bad</title><svg><style><!--</style><title>--></style></svg><table><td><svg><foreignObject></tr></foreignObject><style><!--</style><style><!--</style><iframe src="about:blank"></iframe>--></style></title>',
+            '<title>Bad</title><svg><style><!--</style><iframe src="about:blank"></iframe><iframe src="about:blank"></iframe>--></style></svg>',
         )
         for bad in bypasses:
             status, _, res = self.api("/api/uploads", "POST", {"html": bad})
