@@ -217,8 +217,10 @@ SELECT_CLOSING_TAGS = {"input", "keygen", "select", "textarea"}
 SELECT_INNER_TAGS = {"hr", "optgroup", "option", "script", "template"}
 TABLE_STRUCTURE_TAGS = {"caption", "table", "tbody", "td", "tfoot", "th", "thead", "tr"}
 TABLE_CELL_CLOSERS = {"caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr"}
+TABLE_ROW_GROUPS = {"tbody", "tfoot", "thead"}
 SELECT_RE = re.compile(r"<select\b", re.IGNORECASE)
 DUAL_MODE_RE = re.compile(r"<(?:svg|math|select|noscript)\b", re.IGNORECASE)
+RAWTEXT_CLOSE_IN_COMMENT_RE = re.compile(r"</(?:style|title|textarea|noscript)\b[^>]*>", re.IGNORECASE)
 FOREIGN_BREAKOUT_TAGS = {
     "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div",
     "dl", "dt", "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head",
@@ -1571,6 +1573,7 @@ class _HtmlValidator(HTMLParser):
         scripting: bool = False,
         classic_select: bool = False,
         cdata_override: str | None = None,
+        inspect_comment_tails: bool = False,
     ) -> None:
         try:
             super().__init__(convert_charrefs=True, scripting=scripting)
@@ -1581,6 +1584,7 @@ class _HtmlValidator(HTMLParser):
             self._set_support_cdata(False)
         self._classic_select = classic_select
         self._cdata_override = cdata_override
+        self._inspect_comment_tails = inspect_comment_tails
         self.issues = _IssueList()
         self._style_stack: list[tuple[list[str], tuple[int, int]]] = []
         self._tag_stack: list[tuple[str, str]] = []
@@ -1629,8 +1633,6 @@ class _HtmlValidator(HTMLParser):
                 continue
             if stack_tag == tag_lower:
                 return True
-            if tag_lower == "tbody" and stack_tag in {"tr", "td", "th"}:
-                return True
             if stack_tag in {"table", "template", "html"}:
                 return False
         return False
@@ -1640,14 +1642,29 @@ class _HtmlValidator(HTMLParser):
             stack_tag, mode = self._tag_stack[idx]
             if mode != "html":
                 continue
-            if stack_tag == tag_lower or (
-                tag_lower == "tbody" and stack_tag in {"tr", "td", "th"}
-            ):
+            if stack_tag == tag_lower:
                 del self._tag_stack[idx:]
                 return True
             if stack_tag in {"table", "template", "html"}:
                 return False
         return False
+
+    def _clear_table_context(self, tag_lower: str) -> None:
+        if tag_lower in {"td", "th"}:
+            targets = {"tr", "tbody", "thead", "tfoot", "table"}
+        elif tag_lower == "tr":
+            targets = {"tbody", "thead", "tfoot", "table"}
+        else:
+            targets = {"table"}
+        for idx in range(len(self._tag_stack) - 1, -1, -1):
+            stack_tag, mode = self._tag_stack[idx]
+            if mode != "html":
+                continue
+            if stack_tag in targets:
+                del self._tag_stack[idx + 1 :]
+                return
+            if stack_tag in {"template", "html"}:
+                return
 
     def _pop_select(self) -> None:
         for idx in range(len(self._tag_stack) - 1, -1, -1):
@@ -1672,6 +1689,17 @@ class _HtmlValidator(HTMLParser):
                 fix="Remove CDATA or non-standard markup declarations.",
                 pos=self.getpos(),
             )
+        if self._inspect_comment_tails:
+            match = RAWTEXT_CLOSE_IN_COMMENT_RE.search(data)
+            if match:
+                tail = data[match.end() :]
+                if "<" in tail:
+                    sub = _HtmlValidator(cdata_override="disable_nonscript")
+                    sub.feed(tail)
+                    sub.close()
+                    for item in sub.issues.items():
+                        if item["level"] == "error":
+                            self.issues.merge(item)
 
     def unknown_decl(self, data: str) -> None:
         self.issues.error(
@@ -1797,9 +1825,11 @@ class _HtmlValidator(HTMLParser):
                     self._inspect_tag(tag_lower, attrs, self_closing=False, in_foreign=False)
                     return
             if tag_lower in TABLE_CELL_CLOSERS and self._in_table():
-                for cell in ("td", "th", "caption"):
-                    if self._pop_table_tag(cell):
-                        break
+                self._clear_table_context(tag_lower)
+                if tag_lower in {"tr", "td", "th"} and not any(
+                    self._in_table_scope(group) for group in TABLE_ROW_GROUPS
+                ):
+                    self._push_tag("tbody", "html")
             if tag_lower in FOREIGN_ROOT_TAGS:
                 self._push_tag(tag_lower, tag_lower)
             elif tag_lower not in VOID_ELEMENTS:
@@ -1849,9 +1879,11 @@ class _HtmlValidator(HTMLParser):
                 self._inspect_tag(tag_lower, attrs, self_closing=False, in_foreign=False)
                 return
         if tag_lower in TABLE_CELL_CLOSERS and self._in_table():
-            for cell in ("td", "th", "caption"):
-                if self._pop_table_tag(cell):
-                    break
+            self._clear_table_context(tag_lower)
+            if tag_lower in {"tr", "td", "th"} and not any(
+                self._in_table_scope(group) for group in TABLE_ROW_GROUPS
+            ):
+                self._push_tag("tbody", "html")
         if tag_lower not in VOID_ELEMENTS:
             self._push_tag(tag_lower, "html")
         self._enter_cdata(tag_lower)
@@ -1885,36 +1917,48 @@ class _HtmlValidator(HTMLParser):
             while self._tag_stack and self._tag_stack[-1][1] in FOREIGN_MODES:
                 self._tag_stack.pop()
         elif tag_lower not in VOID_ELEMENTS and self._tag_stack:
-            if tag_lower in TABLE_STRUCTURE_TAGS and self._in_table_scope(tag_lower):
+            top_mode = self._tag_stack[-1][1]
+            if top_mode in FOREIGN_MODES:
+                matched_idx: int | None = None
+                boundary = len(self._tag_stack)
+                crossed_barrier = False
+                for idx in range(len(self._tag_stack) - 1, -1, -1):
+                    stack_tag, mode = self._tag_stack[idx]
+                    if mode == "html":
+                        boundary = idx
+                        break
+                    if stack_tag == tag_lower:
+                        matched_idx = idx
+                        break
+                    if mode in INTEGRATION_MODES or (stack_tag, mode) == ("annotation-xml", "math"):
+                        crossed_barrier = True
+                if matched_idx is not None:
+                    del self._tag_stack[matched_idx:]
+                elif tag_lower in TABLE_STRUCTURE_TAGS and self._in_table_scope(tag_lower):
+                    self._pop_table_tag(tag_lower)
+                elif (
+                    not crossed_barrier
+                    and tag_lower not in FOREIGN_ROOT_TAGS
+                    and boundary < len(self._tag_stack)
+                ):
+                    self._close_html_tag(tag_lower, boundary)
+            elif tag_lower in TABLE_STRUCTURE_TAGS and self._in_table_scope(tag_lower):
                 if self._classic_select and self._in_select():
                     self._pop_select()
                 self._pop_table_tag(tag_lower)
+            elif top_mode in INTEGRATION_MODES:
+                matched_idx = None
+                for idx in range(len(self._tag_stack) - 1, -1, -1):
+                    stack_tag, mode = self._tag_stack[idx]
+                    if mode == "html":
+                        break
+                    if stack_tag == tag_lower:
+                        matched_idx = idx
+                        break
+                if matched_idx is not None:
+                    del self._tag_stack[matched_idx:]
             else:
-                top_mode = self._tag_stack[-1][1] if self._tag_stack else "html"
-                if self._tag_stack and (top_mode in FOREIGN_MODES or top_mode in INTEGRATION_MODES):
-                    matched_idx: int | None = None
-                    boundary = len(self._tag_stack)
-                    crossed_barrier = False
-                    for idx in range(len(self._tag_stack) - 1, -1, -1):
-                        stack_tag, mode = self._tag_stack[idx]
-                        if mode == "html":
-                            boundary = idx
-                            break
-                        if stack_tag == tag_lower:
-                            matched_idx = idx
-                            break
-                        if mode in INTEGRATION_MODES or (stack_tag, mode) == ("annotation-xml", "math"):
-                            crossed_barrier = True
-                    if matched_idx is not None:
-                        del self._tag_stack[matched_idx:]
-                    elif (
-                        not crossed_barrier
-                        and tag_lower not in FOREIGN_ROOT_TAGS
-                        and boundary < len(self._tag_stack)
-                    ):
-                        self._close_html_tag(tag_lower, boundary)
-                elif self._tag_stack:
-                    self._close_html_tag(tag_lower, len(self._tag_stack) - 1)
+                self._close_html_tag(tag_lower, len(self._tag_stack) - 1)
         self._sync_cdata_support()
         if tag_lower == "style":
             self._flush_style()
@@ -2162,7 +2206,11 @@ def validate_html_detailed(
     if has_dual:
         # Cover both HTML RAWTEXT/RCDATA and non-CDATA interpretations across tree-builder modes.
         extra_passes.append({"scripting": has_noscript, "cdata_override": "force_html"})
-        extra_passes.append({"scripting": False, "cdata_override": "disable_nonscript"})
+        extra_passes.append({
+            "scripting": False,
+            "cdata_override": "disable_nonscript",
+            "inspect_comment_tails": True,
+        })
     for opts in extra_passes:
         extra = _HtmlValidator(**opts)
         extra.feed(doc)

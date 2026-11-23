@@ -527,6 +527,10 @@ class Postplan006ServerTests(unittest.TestCase):
             '<title>Bad</title><table><tr><td><svg><foreignObject></td></foreignObject><style><!--</style><iframe src="about:blank"></iframe>--></style>',
             '<title>Bad</title><table><tr><td><svg><foreignObject><tr></tr></foreignObject><style><!--</style><iframe src="about:blank"></iframe>--></style>',
             '<title>Bad</title><select><select><style><!--</style><iframe src="about:blank"></iframe>--></style>',
+            '<title>Bad</title><table><thead><tr><td><svg><foreignObject></tbody></foreignObject><style><!--</style><title>--></style></svg><style><!--</style><iframe src="about:blank"></iframe>--></title>',
+            '<title>Bad</title><table><tbody><tr><td></tbody><svg><foreignObject></tr></foreignObject><style><!--</style><title>--></style></svg><style><!--</style><iframe src="about:blank"></iframe>--></title>',
+            '<title>Bad</title><table><tr><td><svg><td></td><style><!--</style><title>--></style></svg><style><!--</style><iframe src="about:blank"></iframe>--></title>',
+            '<title>Bad</title><svg><style><!--</style><title>--></style></svg><table><svg><foreignObject><tr></tr></foreignObject><style><!--</style><iframe src="about:blank"></iframe>--></title>',
         )
         for bad in bypasses:
             status, _, res = self.api("/api/uploads", "POST", {"html": bad})
