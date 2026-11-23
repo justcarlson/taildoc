@@ -279,12 +279,24 @@ def _remote_check(argv: list[str], target: str) -> int:
                     report = json.loads(completed.stdout)
                 except ValueError:
                     report = None
+                if isinstance(report, dict) and "error" in report:
+                    return library["_emit_failure"](
+                        report.get("category", "management"),
+                        str(report["error"]),
+                        json_output=args.json,
+                        stdout=sys.stdout,
+                        stderr=sys.stderr,
+                        exit_code=completed.returncode or 1,
+                        code=report.get("code"),
+                    )
                 if isinstance(report, dict) and "ok" in report:
                     report["path"] = str(source)
                     if args.json:
                         print(json.dumps(report, ensure_ascii=False))
                     else:
                         library["_print_check_report"](report)
+                    if completed.stderr:
+                        sys.stderr.write(completed.stderr)
                     return completed.returncode
             if completed.stdout:
                 sys.stdout.write(completed.stdout)

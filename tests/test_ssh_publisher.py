@@ -85,13 +85,18 @@ def test_guard_allows_only_the_scoped_creation_command() -> None:
     assert raised.value.code == 126
 
 
+def _patched_guard_patterns(tmp_path: Path) -> tuple[re.Pattern[str], re.Pattern[str]]:
+    escaped = re.escape(str(tmp_path))
+    return (
+        re.compile(mod.DIRECTORY_RE.pattern.replace("/tmp", escaped, 1)),
+        re.compile(mod.FILE_RE.pattern.replace("/tmp", escaped, 1)),
+    )
+
+
 def test_guard_allows_the_exact_legacy_scp_sink_command(tmp_path: Path) -> None:
     directory = tmp_path / "tailplan-upload.Ab12Cd34"
     directory.mkdir(mode=0o700, exist_ok=False)
-    patched_dir_re = re.compile(rf"{re.escape(str(tmp_path))}/tailplan-upload\.[A-Za-z0-9]{{8}}")
-    patched_file_re = re.compile(
-        rf"({re.escape(str(tmp_path))}/tailplan-upload\.[A-Za-z0-9]{{8}})/([A-Za-z0-9_][A-Za-z0-9_.-]{{0,254}})"
-    )
+    patched_dir_re, patched_file_re = _patched_guard_patterns(tmp_path)
     command = ["scp", "-t", f"{directory}/draft.md"]
     with (
         patch.object(mod, "DIRECTORY_RE", patched_dir_re),
@@ -124,9 +129,7 @@ def test_guard_allows_publish_options_and_rejects_other_options(tmp_path: Path) 
     directory.mkdir(mode=0o700, exist_ok=False)
     source = directory / "draft.md"
     source.write_text("# Draft\n")
-    patched_file_re = re.compile(
-        rf"({re.escape(str(tmp_path))}/tailplan-upload\.[A-Za-z0-9]{{8}})/([A-Za-z0-9_][A-Za-z0-9_.-]{{0,254}})"
-    )
+    _, patched_file_re = _patched_guard_patterns(tmp_path)
     with (
         patch.object(mod, "FILE_RE", patched_file_re),
         patch.object(mod, "configured_share_command", return_value="/publisher"),
@@ -151,7 +154,7 @@ def test_guard_allows_publish_options_and_rejects_other_options(tmp_path: Path) 
 def test_guard_allows_only_scoped_owned_cleanup(tmp_path: Path) -> None:
     directory = tmp_path / "tailplan-upload.Ij90Kl12"
     directory.mkdir(mode=0o700, exist_ok=False)
-    patched_dir_re = re.compile(rf"{re.escape(str(tmp_path))}/tailplan-upload\.[A-Za-z0-9]{{8}}")
+    patched_dir_re, _ = _patched_guard_patterns(tmp_path)
     command = ["rm", "-rf", "--", str(directory)]
     with (
         patch.object(mod, "DIRECTORY_RE", patched_dir_re),

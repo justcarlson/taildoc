@@ -481,12 +481,35 @@ class Postplan006ServerTests(unittest.TestCase):
             '<title>Bad</title><svg><style><![CDATA[a>/*</style>*/body{background:url(javascript:alert(1))}]]></style></svg>',
             '<title>Bad</title><noscript><!--</noscript><meta http-equiv="refresh" content="0;url=https://evil.test">--></noscript>',
             '<title>Bad</title><noscript><style></noscript><meta http-equiv="refresh" content="0;url=https://evil.test"></style>',
+            '<title>Bad</title><svg></br><style/>body{background:url(javascript:alert(1))}</style>',
+            '<title>Bad</title><svg></p><style/>body{background:url(javascript:alert(1))}</style>',
+            '<title>Bad</title><svg></p><style><!--</style><meta http-equiv="refresh" content="0;url=https://evil.test">--></style>',
+            '<title>Bad</title><math><mi><mglyph><style><meta http-equiv="refresh" content="0;url=https://evil.test"></style></mglyph></mi></math>',
+            '<title>Bad</title><math><mtext><mglyph><style><p><meta http-equiv="refresh" content="0;url=https://evil.test"></style></mglyph></mtext></math>',
+            '<title>Bad</title><math><annotation-xml><svg><foreignObject><style/>body{background:url(javascript:alert(1))}</style></foreignObject></svg></annotation-xml></math>',
+            '<title>Bad</title><math><annotation-xml><svg><desc><style><!--</style><iframe src="about:blank"></iframe>--></style></desc></svg></annotation-xml></math>',
+            '<title>Bad</title><math><annotation-xml encoding=" text/html"><style><meta http-equiv="refresh" content="0;url=https://evil.test"></style></annotation-xml></math>',
+            '<title>Bad</title><math><annotation-xml encoding="x" encoding="text/html"><style><meta http-equiv="refresh" content="0;url=https://evil.test"></style></annotation-xml></math>',
+            '<title>Bad</title><svg><foreignObject><span></foreignObject><style/>body{background:url(javascript:alert(1))}</style></svg>',
+            '<title>Bad</title><svg><foreignObject></svg></foreignObject><style><!--</style><iframe src="about:blank"></iframe>--></style>',
+            '<title>Bad</title><svg><g><foreignObject></g><xmp></svg><iframe src="about:blank"></iframe></xmp>',
+            '<title>Bad</title><div><table><tr><td><svg></div><xmp></svg><iframe src="about:blank"></iframe></xmp>',
+            '<title>Bad</title><h1><svg></h2><style><!--</style><iframe src="about:blank"></iframe>--></style>',
+            '<title>Bad</title><select><style></select><meta http-equiv="refresh" content="0;url=https://evil.test"></style>',
+            '<title>Bad</title><script type="text/plain"><!--<script></script><style><!--</script><meta http-equiv="refresh" content="0;url=https://evil.test">--></style>',
+            '<title>Bad</title><style>@import "javascript:alert(1)</style>',
         )
         for bad in bypasses:
             status, _, res = self.api("/api/uploads", "POST", {"html": bad})
             self.assertEqual(422, status, (bad[:80], res))
+            srv = server.validate_upload([{"path": "index.html", "html": bad}])
             off = share.validate_upload_offline([{"path": "index.html", "html": bad}])
             self.assertFalse(off["ok"], bad[:80])
+            self.assertEqual(
+                [(i["code"], i["count"]) for i in srv["issues"] if i["level"] == "error"],
+                [(i["code"], i["count"]) for i in off["issues"] if i["level"] == "error"],
+                bad[:80],
+            )
 
         # Self-closing <style/> inside <svg> must not leak style mode into body text.
         svg_self_close = (
@@ -933,6 +956,46 @@ class PerDraftBindingAndGuardTests(unittest.TestCase):
                 check=True,
             )
             self.assertEqual(str(html_file.resolve()), json.loads(online_chk.stdout)["path"])
+
+            # C3-3 / F3-3: remote check error envelope forwards error text instead of "Not ready.".
+            err_bin = root / "bin3_err"
+            err_bin.mkdir()
+            (err_bin / "scp").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (err_bin / "scp").chmod(0o755)
+            (err_bin / "ssh").write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                "args = sys.argv[2:]\n"
+                "if args[:2] == ['mktemp', '-d']:\n"
+                "    print('/tmp/tailplan-upload.Ef56Gh78')\n"
+                "elif args[:2] == ['tailplan-share', 'check']:\n"
+                "    print(json.dumps({'ok': False, 'category': 'authentication', 'error': 'Token rejected.'}))\n"
+                "    sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            (err_bin / "ssh").chmod(0o755)
+            env3_err = {**os.environ, "PATH": str(err_bin) + os.pathsep + os.environ["PATH"]}
+            err_txt = subprocess.run(
+                [sys.executable, str(ROOT / "bin" / "tailplan-share-remote"), "check", str(html_file)],
+                env=env3_err,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(1, err_txt.returncode)
+            self.assertIn("Token rejected.", err_txt.stderr)
+            self.assertNotIn("Not ready.", err_txt.stdout)
+            err_json = subprocess.run(
+                [sys.executable, str(ROOT / "bin" / "tailplan-share-remote"), "check", str(html_file), "--json"],
+                env=env3_err,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(1, err_json.returncode)
+            err_payload = json.loads(err_json.stdout)
+            self.assertEqual("Token rejected.", err_payload["error"])
+            self.assertNotIn("path", err_payload)
 
             # F2-2: remote CLI retries slug-only on slug_names_other_draft conflict code.
             retry_bin = root / "bin4"

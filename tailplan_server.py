@@ -75,7 +75,11 @@ BLOCKED_TAGS_WITH_FIX = {
     "form": "Forms cannot submit on Tailplan. Use inputs without a form wrapper.",
     "frame": EMBED_FIX,
     "iframe": EMBED_FIX,
+    "noembed": "Remove obsolete noembed tags.",
+    "noframes": "Remove obsolete noframes tags.",
     "object": EMBED_FIX,
+    "plaintext": "Remove obsolete plaintext tags.",
+    "xmp": "Use a pre and code block instead of xmp.",
 }
 BLOCKED_TAGS = set(BLOCKED_TAGS_WITH_FIX)
 EXECUTABLE_SCRIPT_TYPES = {"", "text/javascript", "application/javascript", "module"}
@@ -187,6 +191,15 @@ SMIL_ANIMATION_TAGS = {"animate", "animatemotion", "animatetransform", "set"}
 FOREIGN_ROOT_TAGS = {"svg", "math"}
 SVG_INTEGRATION_TAGS = {"desc", "foreignobject", "title"}
 MATH_TEXT_INTEGRATION_TAGS = {"mi", "mn", "mo", "ms", "mtext"}
+MATH_TEXT_FOREIGN_EXCEPTIONS = {"malignmark", "mglyph"}
+FOREIGN_MODES = {"svg", "math"}
+INTEGRATION_MODES = {"svg_html", "math_html", "math_text"}
+HTML_SCOPE_BARRIERS = {
+    "applet", "caption", "html", "marquee", "object", "select",
+    "table", "td", "template", "th",
+}
+HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+SELECT_CLOSING_TAGS = {"input", "keygen", "select", "textarea"}
 FOREIGN_BREAKOUT_TAGS = {
     "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div",
     "dl", "dt", "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head",
@@ -195,6 +208,11 @@ FOREIGN_BREAKOUT_TAGS = {
     "table", "tt", "u", "ul", "var",
 }
 NOSCRIPT_RE = re.compile(r"<noscript\b", re.IGNORECASE)
+META_TAG_RAW_RE = re.compile(r"<meta\b[^>]*>", re.IGNORECASE | re.DOTALL)
+META_REFRESH_ATTR_RE = re.compile(
+    r"""(?:^|[\s/])http-equiv\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s/>]+))""",
+    re.IGNORECASE | re.DOTALL,
+)
 SECURITY_SENSITIVE_ATTRIBUTES = URL_ATTRIBUTES | {
     "http-equiv", "imagesrcset", "rel", "srcdoc", "srcset", "style", "type",
 }
@@ -204,7 +222,7 @@ CSS_URL_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 CSS_IMPORT_RE = re.compile(
-    r"""@import\s*(?:"([^"]*)"|'([^']*)')""",
+    r"""@import\s*(?:"([^"]*)(?:"|$)|'([^']*)(?:'|$))""",
     re.IGNORECASE | re.DOTALL,
 )
 STORE_LOCK = threading.RLock()
@@ -1455,22 +1473,75 @@ def _is_foreign_breakout(tag_lower: str, attrs: list[tuple[str, str | None]]) ->
     return False
 
 
-def _is_integration_point(
+def _integration_mode(
     parent_mode: str,
     tag_lower: str,
     attrs: list[tuple[str, str | None]],
-) -> bool:
+) -> str | None:
     if parent_mode == "svg":
-        return tag_lower in SVG_INTEGRATION_TAGS
+        return "svg_html" if tag_lower in SVG_INTEGRATION_TAGS else None
     if parent_mode == "math":
         if tag_lower in MATH_TEXT_INTEGRATION_TAGS:
-            return True
+            return "math_text"
         if tag_lower == "annotation-xml":
-            return any(
-                name.lower() == "encoding"
-                and (value or "").strip().lower() in {"text/html", "application/xhtml+xml"}
-                for name, value in attrs
+            first_encoding = next(
+                (value for name, value in attrs if name.lower() == "encoding"),
+                None,
             )
+            if isinstance(first_encoding, str) and first_encoding.lower() in {
+                "text/html",
+                "application/xhtml+xml",
+            }:
+                return "math_html"
+    return None
+
+
+def _script_ends_double_escaped(text: str) -> bool:
+    """Return True when HTML5 script escaping stays double-escaped at </script>."""
+    state = 0
+    lower = text.lower()
+    index = 0
+    length = len(lower)
+    while index < length:
+        if state == 0:
+            if lower.startswith("<!--", index):
+                state = 1
+                index += 4
+                continue
+        elif state == 1:
+            if lower.startswith("-->", index):
+                state = 0
+                index += 3
+                continue
+            if lower.startswith("<script", index) and (
+                index + 7 == length or lower[index + 7] in "\t\n\r\f />"
+            ):
+                state = 2
+                index += 7
+                continue
+        else:
+            if lower.startswith("-->", index):
+                state = 0
+                index += 3
+                continue
+            if lower.startswith("</script", index) and (
+                index + 8 == length or lower[index + 8] in "\t\n\r\f />"
+            ):
+                state = 1
+                index += 8
+                continue
+        index += 1
+    return state == 2
+
+
+def _has_raw_meta_refresh(doc: str) -> bool:
+    """Context-free check for meta refresh regardless of parser state."""
+    for match in META_TAG_RAW_RE.finditer(doc):
+        tag_text = html.unescape(match.group(0))
+        for attr in META_REFRESH_ATTR_RE.finditer(tag_text):
+            value = next(group for group in attr.groups() if group is not None)
+            if value.strip().lower() == "refresh":
+                return True
     return False
 
 
@@ -1505,7 +1576,28 @@ class _HtmlValidator(HTMLParser):
         ]
 
     def _in_foreign(self) -> bool:
-        return bool(self._tag_stack and self._tag_stack[-1][1] in {"svg", "math"})
+        return bool(self._tag_stack and self._tag_stack[-1][1] in FOREIGN_MODES)
+
+    def _in_select(self) -> bool:
+        for stack_tag, mode in reversed(self._tag_stack):
+            if mode != "html":
+                return False
+            if stack_tag == "select":
+                return True
+            if stack_tag in HTML_SCOPE_BARRIERS:
+                return False
+        return False
+
+    def _pop_select(self) -> None:
+        for idx in range(len(self._tag_stack) - 1, -1, -1):
+            stack_tag, mode = self._tag_stack[idx]
+            if mode != "html":
+                return
+            if stack_tag == "select":
+                del self._tag_stack[idx:]
+                return
+            if stack_tag in HTML_SCOPE_BARRIERS:
+                return
 
     def _sync_cdata_support(self) -> None:
         if hasattr(self, "_set_support_cdata"):
@@ -1539,8 +1631,16 @@ class _HtmlValidator(HTMLParser):
         if self._active_script is None:
             return
         executable, parts, pos = self._active_script
+        body = "".join(parts)
+        if _script_ends_double_escaped(body):
+            self.issues.error(
+                "unsafe-script",
+                "Blocked ambiguous nested script comment.",
+                fix="Remove nested script tags inside HTML comments in a script block.",
+                pos=pos,
+            )
         if executable:
-            self.script_sources.append(("".join(parts), pos))
+            self.script_sources.append((body, pos))
         self._active_script = None
 
     def _flush_title(self) -> None:
@@ -1581,7 +1681,7 @@ class _HtmlValidator(HTMLParser):
             self.too_deep = True
 
     def set_cdata_mode(self, elem: str, *args: object, **kwargs: object) -> None:
-        if self._last_start_in_foreign or self._in_foreign():
+        if self._last_start_in_foreign or self._in_foreign() or self._in_select():
             return
         super().set_cdata_mode(elem, *args, **kwargs)
 
@@ -1601,13 +1701,18 @@ class _HtmlValidator(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_lower = tag.lower()
-        in_foreign = self._in_foreign()
+        top_mode = self._tag_stack[-1][1] if self._tag_stack else "html"
+        in_foreign = top_mode in FOREIGN_MODES or (
+            top_mode == "math_text" and tag_lower in MATH_TEXT_FOREIGN_EXCEPTIONS
+        )
         if in_foreign and _is_foreign_breakout(tag_lower, attrs):
-            while self._tag_stack and self._tag_stack[-1][1] in {"svg", "math"}:
+            while self._tag_stack and self._tag_stack[-1][1] in FOREIGN_MODES:
                 self._tag_stack.pop()
             in_foreign = False
         self._last_start_in_foreign = in_foreign
         if not in_foreign:
+            if self._in_select() and tag_lower in SELECT_CLOSING_TAGS:
+                self._pop_select()
             if tag_lower in FOREIGN_ROOT_TAGS:
                 self._push_tag(tag_lower, tag_lower)
             elif tag_lower not in VOID_ELEMENTS:
@@ -1615,19 +1720,24 @@ class _HtmlValidator(HTMLParser):
             if bool(getattr(self, "scripting", False)) and tag_lower == "noscript":
                 self._enter_cdata(tag_lower)
         else:
-            parent_mode = self._tag_stack[-1][1]
-            if _is_integration_point(parent_mode, tag_lower, attrs):
-                self._push_tag(tag_lower, "integration")
+            parent_tag, raw_parent_mode = self._tag_stack[-1]
+            parent_mode = "math" if raw_parent_mode == "math_text" else raw_parent_mode
+            if parent_tag == "annotation-xml" and parent_mode == "math" and tag_lower == "svg":
+                self._push_tag("svg", "svg")
             else:
-                self._push_tag(tag_lower, parent_mode)
+                imode = _integration_mode(parent_mode, tag_lower, attrs)
+                self._push_tag(tag_lower, imode or parent_mode)
         self._sync_cdata_support()
         self._inspect_tag(tag_lower, attrs, self_closing=False, in_foreign=in_foreign)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag_lower = tag.lower()
-        in_foreign = self._in_foreign()
+        top_mode = self._tag_stack[-1][1] if self._tag_stack else "html"
+        in_foreign = top_mode in FOREIGN_MODES or (
+            top_mode == "math_text" and tag_lower in MATH_TEXT_FOREIGN_EXCEPTIONS
+        )
         if in_foreign and _is_foreign_breakout(tag_lower, attrs):
-            while self._tag_stack and self._tag_stack[-1][1] in {"svg", "math"}:
+            while self._tag_stack and self._tag_stack[-1][1] in FOREIGN_MODES:
                 self._tag_stack.pop()
             in_foreign = False
         if in_foreign or tag_lower in FOREIGN_ROOT_TAGS:
@@ -1637,6 +1747,8 @@ class _HtmlValidator(HTMLParser):
             self._inspect_tag(tag_lower, attrs, self_closing=True, in_foreign=True)
             return
         self._last_start_in_foreign = False
+        if self._in_select() and tag_lower in SELECT_CLOSING_TAGS:
+            self._pop_select()
         if tag_lower not in VOID_ELEMENTS:
             self._push_tag(tag_lower, "html")
         self._enter_cdata(tag_lower)
@@ -1645,13 +1757,17 @@ class _HtmlValidator(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag_lower = tag.lower()
-        if tag_lower not in VOID_ELEMENTS and self._tag_stack:
-            if self._in_foreign():
+        if self._in_foreign() and tag_lower in {"br", "p"}:
+            while self._tag_stack and self._tag_stack[-1][1] in FOREIGN_MODES:
+                self._tag_stack.pop()
+        elif tag_lower not in VOID_ELEMENTS and self._tag_stack:
+            top_mode = self._tag_stack[-1][1]
+            if top_mode in FOREIGN_MODES or top_mode in INTEGRATION_MODES:
                 matched_idx: int | None = None
                 boundary = len(self._tag_stack)
                 for idx in range(len(self._tag_stack) - 1, -1, -1):
                     stack_tag, mode = self._tag_stack[idx]
-                    if mode not in {"svg", "math"}:
+                    if mode == "html":
                         boundary = idx
                         break
                     if stack_tag == tag_lower:
@@ -1662,18 +1778,26 @@ class _HtmlValidator(HTMLParser):
                 elif tag_lower not in FOREIGN_ROOT_TAGS and boundary < len(self._tag_stack):
                     for idx in range(boundary, -1, -1):
                         stack_tag, mode = self._tag_stack[idx]
-                        if stack_tag == tag_lower:
+                        if mode != "html":
+                            break
+                        if stack_tag == tag_lower or (
+                            tag_lower in HEADING_TAGS and stack_tag in HEADING_TAGS
+                        ):
                             del self._tag_stack[idx:]
                             break
-                        if mode == "integration":
+                        if stack_tag in HTML_SCOPE_BARRIERS:
                             break
             else:
                 for idx in range(len(self._tag_stack) - 1, -1, -1):
                     stack_tag, mode = self._tag_stack[idx]
-                    if stack_tag == tag_lower:
+                    if mode != "html":
+                        break
+                    if stack_tag == tag_lower or (
+                        tag_lower in HEADING_TAGS and stack_tag in HEADING_TAGS
+                    ):
                         del self._tag_stack[idx:]
                         break
-                    if mode in {"integration", "svg", "math"}:
+                    if stack_tag in HTML_SCOPE_BARRIERS:
                         break
         self._sync_cdata_support()
         if tag_lower == "style":
@@ -1913,13 +2037,22 @@ def validate_html_detailed(
         scripted = _HtmlValidator(scripting=True)
         scripted.feed(doc)
         scripted.close()
+        seen_keys = {(i["level"], i["code"], i["message"]) for i in issues.items()}
         for item in scripted.issues.items():
-            if item["level"] == "error":
+            key = (item["level"], item["code"], item["message"])
+            if item["level"] == "error" and key not in seen_keys:
                 issues.merge(item)
+                seen_keys.add(key)
         too_deep = too_deep or scripted.too_deep
         has_scripts = has_scripts or scripted.has_inline_script
         script_sources.extend(scripted.script_sources)
         external_hosts.update(scripted.external_image_hosts)
+    if _has_raw_meta_refresh(doc) and not any(i["code"] == "meta-refresh" for i in issues.items()):
+        issues.error(
+            "meta-refresh",
+            "Meta refresh redirects are not allowed.",
+            fix="Remove the refresh meta tag.",
+        )
     if too_deep:
         issues.error("too-deep", f"HTML is nested more than {MAX_DEPTH} levels deep.")
     for code, pattern, message, fix in SANDBOX_APIS:
