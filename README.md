@@ -87,6 +87,8 @@ External scripts, unsupported script types, forms, embeds, meta refresh, and uns
 | --- | --- | --- |
 | `TAILPLAN_TRUST_TAILSCALE_IDENTITY` | `0` | Trust identity headers only on the loopback proxy listener. |
 | `TAILPLAN_OWNER_LOGIN` | Empty | Map this Tailscale login to the existing local account. |
+| `TAILPLAN_ALLOWED_LOGINS` | Empty | Comma-separated Tailscale logins that may sign in. Empty allows any login. |
+| `TAILPLAN_VIEWER_404_LIMIT` | `30` | Maximum missing-draft responses per viewer each minute before `429`. |
 | `TAILPLAN_ALLOW_ANONYMOUS_UPLOADS` | `0` | Allow uploads into a separate anonymous account. |
 | `TAILPLAN_UPLOAD_IP_LIMIT` | `60` | Maximum uploads per client address each minute. |
 | `TAILPLAN_UPLOAD_KEY_LIMIT` | `30` | Maximum uploads per API key each minute. |
@@ -289,6 +291,35 @@ docker compose up --build --detach
 
 The Compose file does not include network access controls.
 The Compose file does not include an HTTPS proxy or Tailscale.
+
+### Container image and Tailscale sidecar
+
+The release workflow publishes `ghcr.io/justcarlson/tailplan` for each push to `main` and each `v*` tag.
+Each image has a build provenance attestation.
+Use the `sha-<short>` tag to pin a commit and the `<version>` tag to pin a release.
+
+To use Tailscale identity in a container, run the container in the network namespace of a Tailscale sidecar.
+Set two listeners in that shared namespace.
+The proxy listener must use a loopback address:
+
+```yaml
+services:
+  tailplan:
+    image: ghcr.io/justcarlson/tailplan:0.4.0
+    network_mode: service:ts-tailplan
+    environment:
+      TAILPLAN_HOST: 127.0.0.1
+      TAILPLAN_PORT: 9127
+      TAILPLAN_PROXY_HOST: 127.0.0.1
+      TAILPLAN_PROXY_PORT: 9128
+      TAILPLAN_TRUST_TAILSCALE_IDENTITY: 1
+      TAILPLAN_OWNER_LOGIN: owner@example.test
+      TAILPLAN_ALLOWED_LOGINS: owner@example.test,guest@example.test
+      TAILPLAN_BASE_URL: https://tailplan.example.test
+```
+
+Point Tailscale Serve at `127.0.0.1:9128`.
+The image health check requests `/readyz` on `TAILPLAN_PORT`, so it passes in both modes.
 
 Publish from the Docker host with the local publisher command:
 
@@ -680,10 +711,11 @@ Run the command only after you verify a data backup:
 docker compose down --volumes --remove-orphans
 ```
 
-Remove the version 0.2.1 image separately:
+Remove the old version images separately:
 
 ```sh
 docker image rm tailplan:0.2.1
+docker image rm tailplan:0.3.0
 ```
 
 ### Native service

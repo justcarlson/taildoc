@@ -16,6 +16,22 @@ Only the configured loopback proxy listener accepts those headers.
 The primary listener always ignores identity headers.
 The operator must keep the proxy listener behind Tailscale Serve.
 
+Set `TAILPLAN_ALLOWED_LOGINS` to a comma-separated list of logins to restrict Tailscale sign-in.
+Matching ignores case.
+When the list is not empty, the server returns `403` to any other login that attempts Tailscale sign-in.
+The server does not create an account for that login.
+The server also rejects existing Tailscale sessions for logins that are not in the list.
+The sign-in page does not show "Continue with Tailscale" to those logins.
+Add the owner login to the list, or the owner must sign in with an API key.
+API keys, the bootstrap token, and viewer routes do not use the list.
+When the list is empty, any Tailscale login can sign in.
+
+Viewer routes count each missing draft, version, or slug against the caller.
+The key is the Tailscale login on the proxy listener when identity is trusted, otherwise the client address.
+After `TAILPLAN_VIEWER_404_LIMIT` misses in 60 seconds, the server returns `429` with `Retry-After` for viewer requests from that key.
+This slows guessing of custom slugs.
+Health and readiness routes do not use this limit.
+
 Uploaded HTML is served without rewriting.
 Authenticated HTML drafts may run inline JavaScript, including `type="module"` scripts and standard `on*` handlers, inside an opaque CSP sandbox.
 The sandbox omits `allow-same-origin` and sets `connect-src 'none'`, `worker-src 'none'`, `form-action 'none'`, `frame-src 'none'`, `object-src 'none'`, and `frame-ancestors 'none'`.
