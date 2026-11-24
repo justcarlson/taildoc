@@ -113,15 +113,22 @@ h2 { font-size: 22px; }  /* no underline rule under h2 */
 - Lead with a verdict or summary card.
   Keep default visible prose concise, around 800 to 1,000 words.
   Place deep technical specs, logs, and raw evidence inside `<details>` blocks.
-- Prefer inline SVG charts, diagrams, and embedded screenshots over dense data tables.
-- Link each chart mark or label to its source in a new tab.
+- Prefer responsive visuals and embedded proof screenshots over dense data tables.
+  Do not repeat diagram labels verbatim in adjacent prose.
+- Build architecture diagrams, flows, tier maps, and matrices in semantic HTML and CSS Grid or Flexbox.
+  Do not render structural diagrams, card grids, or text boxes as static images or fixed-aspect `<svg>` blocks.
+  Keep diagram text selectable, wrap text naturally, and use standard `<a>` links.
+  Stack diagram layouts into one column on phones and expand them across wider columns on tablets and desktops.
+- Reserve inline `<svg>` for numeric data charts and small icons or connectors.
+  Size chart SVGs to the container width rather than a fixed narrow strip.
+  Link each chart mark or label to its source in a new tab.
   Show the source title on hover.
   Fit charts inside a 360px phone, keep axis ticks at least 44px apart, and put the unit on the last tick only.
 - Write in plain adult technical terms.
   Link factual claims to primary evidence.
   Avoid emojis and patronizing metaphors.
 - Pass a phone glance check at 390px, not only zero horizontal scroll.
-  Verify readable typography and generous spacing at 390px, 768px, and 1280px.
+  Verify readable typography, generous spacing, and responsive diagram reflow at 390px, 768px, and 1280px.
 
 The server stores resolved HTML and theme metadata in each published version.
 Palette updates do not change stored documents.
