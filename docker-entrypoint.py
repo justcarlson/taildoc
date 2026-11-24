@@ -8,6 +8,23 @@ RUNTIME_UID = 10001
 RUNTIME_GID = 10001
 RUNTIME_DIRECTORY = Path("/run/tailplan")
 RUNTIME_TOKEN = RUNTIME_DIRECTORY / "upload-token"
+# Optional settings. An empty value, such as Compose passes for an unset
+# `${NAME:-}`, means "not set", so the server must not see it.
+OPTIONAL_ENVIRONMENT = (
+    "TAILPLAN_PROXY_HOST",
+    "TAILPLAN_PROXY_PORT",
+    "TAILPLAN_TRUST_TAILSCALE_IDENTITY",
+    "TAILPLAN_OWNER_LOGIN",
+    "TAILPLAN_ALLOWED_LOGINS",
+    "TAILPLAN_VIEWER_404_LIMIT",
+    "TAILPLAN_REDIRECT_VIEW_BASE_URL",
+)
+
+
+def drop_empty_optional_environment(environ: "os._Environ[str] | dict[str, str]") -> None:
+    for name in OPTIONAL_ENVIRONMENT:
+        if name in environ and not environ[name].strip():
+            del environ[name]
 
 
 def main() -> None:
@@ -40,6 +57,7 @@ def main() -> None:
     os.chown(RUNTIME_DIRECTORY, RUNTIME_UID, RUNTIME_GID)
 
     os.environ["TAILPLAN_TOKEN_FILE"] = str(RUNTIME_TOKEN)
+    drop_empty_optional_environment(os.environ)
     os.setgroups([])
     os.setgid(RUNTIME_GID)
     os.setuid(RUNTIME_UID)

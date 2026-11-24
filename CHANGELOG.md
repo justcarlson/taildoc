@@ -26,6 +26,14 @@ The project uses semantic version numbers.
 - Add draft favorites via `POST /api/drafts/<ref>/favorite`, `tailplan favorite`/`unfavorite`, and dashboard star toggles.
 - Store per-draft CLI bindings under `~/.tailplan/drafts/` with read-only fallback to legacy `drafts.json`.
 - Deduplicate identical-content updates via `contentHash` and return `"unchanged": true` without bumping version numbers.
+- Add `TAILPLAN_ALLOWED_LOGINS` (`--allowed-logins`) to restrict Tailscale identity sign-in.
+  When set, other logins get `403` and no account.
+  An empty value keeps the old behavior.
+- Add `TAILPLAN_VIEWER_404_LIMIT` (`--viewer-404-limit`, default `30` each minute) to return `429` after repeated missing-draft requests on viewer routes.
+- Let the container health check follow `TAILPLAN_PORT`, and drop empty optional settings in the entrypoint.
+- Publish `ghcr.io/justcarlson/tailplan` with build provenance on `main` and `v*` tags.
+- Document the dual-listener container setup for a Tailscale sidecar.
+- Bump the version to 0.4.0.
 
 ## 0.3.0 - 2026-09-13
 

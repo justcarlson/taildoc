@@ -23,7 +23,7 @@ import threading
 import time
 import unicodedata
 import zlib
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from datetime import UTC, datetime
 from functools import lru_cache
 from html.parser import HTMLParser
@@ -45,6 +45,7 @@ MAX_PAGE_PATH_SEGMENTS = 6
 MAX_REQUEST_BYTES = MAX_HTML_BYTES * 6 + 64 * 1024
 MAX_VERSION_NUMBER = 999_999_999
 DEFAULT_MAX_HANDLERS = 32
+DEFAULT_VIEWER_404_LIMIT = 30
 DEFAULT_READ_TIMEOUT = 10.0
 DRAFT_ID_ALPHABET = string.ascii_lowercase + string.digits
 DRAFT_ID_RE = re.compile(r"[a-z0-9]{6,32}")
@@ -3482,6 +3483,47 @@ class RateLimiter:
             return max(1, int(window - (now - start)) + 1) if count >= maximum else 0
 
 
+class MissLimiter:
+    """Count recent misses per key in a sliding window, with bounded memory."""
+
+    def __init__(self) -> None:
+        self.entries: OrderedDict = OrderedDict()
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def _recent(hits: deque, now: float, window: int) -> None:
+        while hits and now - hits[0] >= window:
+            hits.popleft()
+
+    def wait(self, key: str, maximum: int, window: int = 60) -> int:
+        """Return the seconds to wait when the key is over its limit, else 0."""
+        with self.lock:
+            hits = self.entries.get(key)
+            if not hits:
+                return 0
+            now = time.monotonic()
+            self._recent(hits, now, window)
+            if len(hits) < maximum:
+                return 0
+            return max(1, int(window - (now - hits[0])) + 1)
+
+    def record(self, key: str, maximum: int, window: int = 60) -> None:
+        with self.lock:
+            now = time.monotonic()
+            hits = self.entries.setdefault(key, deque())
+            self._recent(hits, now, window)
+            if len(hits) < maximum:
+                hits.append(now)
+            self.entries.move_to_end(key)
+            while len(self.entries) > 8192:
+                self.entries.popitem(last=False)
+
+
+def parse_allowed_logins(value: str | None) -> frozenset[str]:
+    """Normalize a comma-separated login list into casefolded, non-empty names."""
+    return frozenset(item.strip().casefold() for item in (value or "").split(",") if item.strip())
+
+
 def signed_value(payload: dict, secret: str) -> str:
     encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
     return encoded + "." + hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).hexdigest()
@@ -3523,8 +3565,11 @@ class TailplanHTTPServer(ThreadingHTTPServer):
             raise ValueError("read_timeout must be positive")
         self.read_timeout = read_timeout
         self.limiter = RateLimiter()
+        self.viewer_limiter = MissLimiter()
+        self.viewer_404_limit = DEFAULT_VIEWER_404_LIMIT
         self.trust_tailscale_identity = False
         self.owner_login = ""
+        self.allowed_logins: frozenset[str] = frozenset()
         self.allow_anonymous_uploads = False
         self.upload_ip_limit = 60
         self.upload_key_limit = 30
@@ -3845,7 +3890,33 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_json(200, source)
 
+    def viewer_miss_key(self) -> str:
+        identity = self.tailscale_login()
+        if identity:
+            return "viewer-404:login:" + identity[0].casefold()
+        return "viewer-404:ip:" + self.source_ip()
+
+    def send_response(self, code, message=None) -> None:
+        self.response_status = int(code)
+        super().send_response(code, message)
+
     def do_GET(self) -> None:
+        if not self.route_path().startswith("/d/"):
+            self.route_get()
+            return
+        key = self.viewer_miss_key()
+        limit = self.server.viewer_404_limit
+        wait = self.server.viewer_limiter.wait(key, limit)
+        if wait:
+            self.send_json(429, {"ok": False, "error": "Too many missing drafts. Try again later."},
+                           {"Retry-After": str(wait)})
+            return
+        self.response_status = 0
+        self.route_get()
+        if self.response_status == 404:
+            self.server.viewer_limiter.record(key, limit)
+
+    def route_get(self) -> None:
         preview = PREVIEW_ROUTE_RE.fullmatch(self.route_path())
         if preview:
             self.serve_preview(preview, head_only=self.command == "HEAD")
@@ -4260,6 +4331,8 @@ class Handler(BaseHTTPRequestHandler):
                 return None
             if value["accountId"] == "local" and value.get("login", "").casefold() != self.server.owner_login.casefold():
                 return None
+            if not self.login_allowed(str(value.get("login", ""))):
+                return None
         elif key_id != "bootstrap":
             keys = self.store.list_keys(value["accountId"])
             if not any(key["id"] == key_id for key in keys):
@@ -4284,10 +4357,16 @@ class Handler(BaseHTTPRequestHandler):
         name = clean_text(unquote(self.headers.get("Tailscale-User-Name", ""))) or login
         return login, name
 
+    def login_allowed(self, login: str) -> bool:
+        allowed = self.server.allowed_logins
+        return not allowed or login.casefold() in allowed
+
     def sign_in_page(self, next_path: str = "/dashboard") -> None:
         state = {"csrf": secrets.token_hex(24), "expires": int(time.time()) + 600}
         cookie = self.cookie_header("tailplan_login", signed_value(state, self.token), 600)
-        body = render_login(self.base_url, state["csrf"], next_path, bool(self.tailscale_login()))
+        identity = self.tailscale_login()
+        offer_tailscale = bool(identity and self.login_allowed(identity[0]))
+        body = render_login(self.base_url, state["csrf"], next_path, offer_tailscale)
         self.send_html(200, body, web=True, cookie=cookie)
 
     def valid_form(self, payload: dict, state: dict | None) -> bool:
@@ -4385,6 +4464,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(403, {"ok": False, "error": "Sign-in expired. Reload and retry."})
                 return
             if payload.get("method") == "tailscale" and (login := self.tailscale_login()):
+                if not self.login_allowed(login[0]):
+                    self.send_json(403, {"ok": False, "error": "Forbidden"})
+                    return
                 identity = {**self.store.identity_account(*login, self.server.owner_login),
                             "apiKeyId": "tailscale", "login": login[0]}
             else:
@@ -4672,6 +4754,7 @@ def create_servers(
         proxy.base_url = configured_base_url
         proxy.redirect_view_base_url = ""
         proxy.limiter = primary.limiter
+        proxy.viewer_limiter = primary.viewer_limiter
     return primary, proxy
 
 
@@ -4749,6 +4832,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--trust-tailscale-identity", action="store_true",
                     default=os.getenv("TAILPLAN_TRUST_TAILSCALE_IDENTITY") == "1")
     ap.add_argument("--owner-login", default=os.getenv("TAILPLAN_OWNER_LOGIN", ""))
+    ap.add_argument("--allowed-logins", type=parse_allowed_logins,
+                    default=os.getenv("TAILPLAN_ALLOWED_LOGINS", ""),
+                    help="comma-separated Tailscale logins allowed to sign in; empty allows any")
+    ap.add_argument("--viewer-404-limit", type=int,
+                    default=os.getenv("TAILPLAN_VIEWER_404_LIMIT", str(DEFAULT_VIEWER_404_LIMIT)),
+                    help="missing-draft responses per key per 60 seconds before 429")
     ap.add_argument("--allow-anonymous-uploads", action="store_true",
                     default=os.getenv("TAILPLAN_ALLOW_ANONYMOUS_UPLOADS") == "1")
     ap.add_argument("--upload-ip-limit", type=int, default=os.getenv("TAILPLAN_UPLOAD_IP_LIMIT", "60"))
@@ -4762,6 +4851,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args.redirect_view_base_url = args.redirect_view_base_url or ""
     if args.upload_ip_limit < 1 or args.upload_key_limit < 1:
         ap.error("upload limits must be positive")
+    if args.viewer_404_limit < 1:
+        ap.error("viewer 404 limit must be positive")
     if args.trust_tailscale_identity and args.proxy_host not in {"127.0.0.1", "::1"}:
         ap.error("Tailscale identity requires a loopback proxy listener")
     if (args.proxy_host is None) != (args.proxy_port is None):
@@ -4802,9 +4893,11 @@ def main() -> int:
             listener.allow_anonymous_uploads = args.allow_anonymous_uploads
             listener.upload_ip_limit = args.upload_ip_limit
             listener.upload_key_limit = args.upload_key_limit
+            listener.viewer_404_limit = args.viewer_404_limit
     if proxy is not None:
         proxy.trust_tailscale_identity = args.trust_tailscale_identity
         proxy.owner_login = args.owner_login
+        proxy.allowed_logins = args.allowed_logins
     primary_host, primary_port = primary.server_address[:2]
     print(f"Tailplan listening on http://{primary_host}:{primary_port}", flush=True)
     if proxy is not None:

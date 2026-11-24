@@ -1545,6 +1545,8 @@ class DualListenerTests(unittest.TestCase):
                 owner_login="",
                 upload_ip_limit=60,
                 upload_key_limit=30,
+                allowed_logins=frozenset({"guest@example.test"}),
+                viewer_404_limit=12,
             )
             primary = Mock(server_address=("100.64.0.1", 9127))
             proxy = Mock(server_address=("127.0.0.1", 9128))
@@ -1570,6 +1572,9 @@ class DualListenerTests(unittest.TestCase):
                 call.kwargs["redirect_view_base_url"],
             )
             run_spy.assert_called_once_with(primary, proxy)
+            for listener in (primary, proxy):
+                self.assertEqual(12, listener.viewer_404_limit)
+            self.assertEqual(frozenset({"guest@example.test"}), proxy.allowed_logins)
 
 
 class ArgumentParserTests(unittest.TestCase):
