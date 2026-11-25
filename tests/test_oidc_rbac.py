@@ -153,8 +153,9 @@ class SignInFlowTests(AuthCase):
         self.assertIn(b"Test User", body)
         principal = self.store.principal(self.idp.issuer, "user-1")
         self.assertEqual({"team": "editor"}, principal["workspaces"])
-        self.assertEqual(["auth.login"], [event["event"] for event in self.events("auth.login")])
-        self.assertEqual("user@example.test", self.events("auth.login")[0]["actor_email"])
+        self.assertEqual(["auth.login"], self.event_names("auth.login"))
+        self.assertNotIn("user@example.test", self.audit_lines.getvalue())
+        self.assertEqual(16, len(self.events("auth.login")[0]["actor_hash"]))
 
     def test_state_mismatch_is_denied(self) -> None:
         status, headers, _body = self.request("/auth/oidc/start")
@@ -163,7 +164,7 @@ class SignInFlowTests(AuthCase):
         self.assertEqual(403, status)
         status, _headers, _body = self.request("/auth/oidc/callback?code=x&state=wrong")
         self.assertEqual(403, status)
-        self.assertEqual("state", self.events("auth.denied")[-1]["detail"]["reason"])
+        self.assertEqual("state", self.events("auth.denied")[-1]["reason"])
 
     def test_wrong_pkce_verifier_is_denied(self) -> None:
         status, headers, _body = self.request("/auth/oidc/start")
@@ -186,8 +187,8 @@ class SignInFlowTests(AuthCase):
         status, body = self.oidc_attempt(groups=["strangers"])
         self.assertEqual(403, status, body)
         denied = self.events("auth.denied")[-1]
-        self.assertEqual("denied", denied["outcome"])
-        self.assertEqual("no_matching_rule", denied["detail"]["reason"])
+        self.assertEqual(("error", "denied"), (denied["outcome"], denied["error_type"]))
+        self.assertEqual("no_matching_rule", denied["reason"])
         self.assertIsNone(self.store.principal(self.idp.issuer, "user-1"))
 
     def test_rule_with_no_roles_signs_in_without_access(self) -> None:
@@ -408,7 +409,7 @@ class BackchannelLogoutTests(AuthCase):
         self.request("/auth/oidc/backchannel-logout", "POST", form={"logout_token": self.idp.logout_token()})
         status, _headers, body = self.request("/dashboard", cookies=[other])
         self.assertIn(b"Sign in", body)
-        self.assertEqual("backchannel", self.events("auth.logout")[-1]["detail"]["method"])
+        self.assertEqual("backchannel", self.events("auth.logout")[-1]["auth_method"])
 
     def test_invalid_logout_token_is_rejected(self) -> None:
         for token in ("", "x.y.z", self.idp.logout_token(events=None)):
@@ -498,7 +499,7 @@ class SessionViewerGateTests(AuthCase):
         self.assertEqual(self.draft["draftId"], self.events("draft.view")[-1]["target_id"])
         status, _headers, source = self.request(f"/api/drafts/{self.draft['draftId']}/source", cookies=[cookie])
         self.assertEqual(200, status)
-        self.assertEqual(["draft.source"], [event["event"] for event in self.events("draft.source")])
+        self.assertEqual(["draft.source"], self.event_names("draft.source"))
 
     def test_view_token_works_without_cookies_and_only_for_reads(self) -> None:
         cookie = self.oidc_login(groups=["readers"])
@@ -612,8 +613,8 @@ class DeviceLoginTests(AuthCase):
         self.assertEqual(server.oidc_account_id(self.idp.issuer, "user-1"), me["accountId"])
         status, again = self.api("/api/auth/cli/poll", "POST", {"deviceCode": started["deviceCode"]})
         self.assertEqual(410, status)
-        self.assertIn("device.approve", [event["event"] for event in self.events()])
-        self.assertIn("device", [event["detail"].get("method") for event in self.events("key.create")])
+        self.assertIn("device.approve", self.event_names())
+        self.assertIn("device", [event.get("auth_method") for event in self.events("key.create")])
 
     def test_denied_and_expired_codes(self) -> None:
         started = self.start()
@@ -645,12 +646,15 @@ class AuditTests(AuthCase):
         draft = self.upload()
         cookie = self.oidc_login(groups=["auditors"])
         for event in self.events():
-            self.assertEqual(["ts", "service", "event", "actor_account_id", "actor_email", "target_type",
-                              "target_id", "outcome", "detail"], list(event))
-            self.assertEqual("tailplan", event["service"])
+            self.assertEqual(server.AUDIT_BASE_KEYS, server.AUDIT_BASE_KEYS & set(event))
+            self.assertLessEqual(set(event) - server.AUDIT_BASE_KEYS, server.AUDIT_DETAIL_KEYS)
+            self.assertEqual(event, server.check_audit_row(event))
+            self.assertEqual(sorted(event), list(event))
+            self.assertNotIn("ts", event)
+            self.assertNotIn("service", event)
         upload = self.events("draft.upload")[0]
         self.assertEqual(("draft", draft["draftId"], "local"),
-                         (upload["target_type"], upload["target_id"], upload["actor_account_id"]))
+                         (upload["target_type"], upload["target_id"], upload["actor_kind"]))
         key = self.create_key(cookie)
         status, listed = self.api("/api/audit?limit=2", token=key)
         self.assertEqual(200, status)
@@ -666,7 +670,7 @@ class AuditTests(AuthCase):
         status, created = self.api("/api/api-keys", "POST", {"name": "ci"}, token=TOKEN)
         self.api(f"/api/api-keys/{created['apiKey']['id']}/revoke", "POST", {}, token=TOKEN)
         self.api(f"/api/drafts/{draft['draftId']}/disable", "POST", {"reason": "x"}, token=TOKEN)
-        names = [event["event"] for event in self.events()]
+        names = self.event_names()
         for name in ("key.create", "key.revoke", "draft.change"):
             self.assertIn(name, names)
 

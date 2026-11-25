@@ -26,6 +26,7 @@ import textwrap
 import threading
 import time
 import unicodedata
+import uuid
 import zlib
 from collections import OrderedDict, deque
 from contextlib import contextmanager
@@ -3103,6 +3104,186 @@ def _fsync_directory(directory: Path) -> None:
         os.close(directory_fd)
 
 
+# -- Audit wide events: the JSON lines that leave the host (docs/security.md, "Audit log") --
+
+AUDIT_EVENT_VERSION = 1
+AUDIT_ACTOR_KINDS = ("owner", "member", "local", "api_key", "anonymous", "system", "other")
+AUDIT_TARGET_TYPES = ("draft", "account", "principal", "api_key", "device_code", "other")
+AUDIT_ERROR_TYPES = ("denied", "failure")
+AUDIT_METHODS = ("oidc", "tailscale", "tailscale_header", "api_key", "device", "backchannel", "sign-out", "bootstrap")
+AUDIT_REASONS = ("state", "provider_error", "token", "no_matching_rule", "invalid_login")
+AUDIT_ACTIONS = ("delete", "disable", "enable", "restore")
+AUDIT_ID_RE = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
+AUDIT_NAME_RE = re.compile(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){0,3}")
+AUDIT_BASE_KEYS = frozenset({
+    "event", "event_version", "run_id", "started_at", "duration_ms", "outcome", "error_type", "release",
+    "actor_hash", "actor_kind", "target_type", "target_id",
+})
+AUDIT_DETAIL_KEYS = frozenset({
+    "client.address", "auth_method", "reason", "action", "created", "draft_version", "visibility",
+    "workspace", "grant_count", "grant_type", "grant_role", "grant_hash", "session_count",
+})
+# The redact rules of the log gateway read these as secrets. See the `logs` standard, section 3.
+AUDIT_SECRET_RE = re.compile(
+    r"sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abeoprs]-[A-Za-z0-9-]{10,}"
+    r"|(?:A3T[A-Z0-9]|AKIA|ASIA)[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    r"|(?i:bearer)\s+[A-Za-z0-9._~+/=-]{8,}")
+AUDIT_VALUE_RE = re.compile(
+    r"(?i)(?:pass|passwd|password|passphrase|pwd|secret|token|key|cookie|authorization)[\"']?\s*[:=]|COMMAND=")
+AUDIT_KEY_NAME_RE = re.compile(
+    r"(?i)(?:pass|passwd|password|passphrase|pwd|secret|token|api[_-]?key|apikey)(?:[_.-]?key|_access_key)?$"
+    r"|(?:cookie|authorization)$")
+_audit_fallback_key = secrets.token_bytes(32)
+
+
+def audit_hmac_key() -> bytes:
+    """Return the key for `actor_hash`. Production sets TAILPLAN_AUDIT_HMAC_KEY; a process without it
+    uses a random key, so hashes then differ after a restart."""
+    configured = (os.getenv("TAILPLAN_AUDIT_HMAC_KEY") or "").strip()
+    return configured.encode() if configured else _audit_fallback_key
+
+
+def audit_hash(value: str) -> str:
+    """Return 16 hex characters of the keyed hash of a value that must not leave the host."""
+    return hmac.new(audit_hmac_key(), value.encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def _audit_actor(actor: dict | None) -> tuple[str, str]:
+    """Return the `actor_hash` and `actor_kind` of an audit actor."""
+    actor = actor or {}
+    account_id, email = actor.get("accountId"), actor.get("email")
+    api_key_id = actor.get("apiKeyId")
+    if isinstance(account_id, str) and account_id:
+        identity = "account:" + account_id
+    elif isinstance(email, str) and email.strip():
+        identity = "email:" + email.strip().casefold()
+    else:
+        return "", "anonymous"
+    if account_id == "local":
+        kind = "local"
+    elif account_id == "anonymous":
+        kind = "anonymous"
+    elif isinstance(api_key_id, str) and api_key_id not in {"oidc", "tailscale", "tailscale_header", "view",
+                                                            "bootstrap", "anonymous"}:
+        kind = "api_key"
+    elif actor.get("instanceRole") == "admin":
+        kind = "owner"
+    else:
+        kind = "member"
+    return audit_hash(identity), kind
+
+
+def _audit_detail(detail: dict) -> dict:
+    """Flatten an audit detail into scalar keys. A key or value outside the lists is dropped."""
+    def choice(value, allowed):
+        return value if value in allowed else None
+
+    def ident(value):
+        return value if isinstance(value, str) and AUDIT_ID_RE.fullmatch(value) else None
+
+    def address(value):
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            return None
+
+    def count(value):
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+    grants = detail.get("grants")
+    grant_value = detail.get("value")
+    flat = {
+        "client.address": address(detail.get("sourceIp")),
+        "auth_method": choice(detail.get("method") or detail.get("authMethod"), AUDIT_METHODS),
+        "reason": choice(detail.get("reason"), AUDIT_REASONS),
+        "action": choice(detail.get("action"), AUDIT_ACTIONS),
+        "created": detail["created"] if isinstance(detail.get("created"), bool) else None,
+        "draft_version": count(detail.get("version")),
+        "visibility": choice(detail.get("visibility"), VISIBILITIES),
+        "workspace": ident(detail.get("workspace")),
+        "grant_count": len(grants) if isinstance(grants, list) else None,
+        "grant_type": choice(detail.get("type"), GRANT_TYPES),
+        "grant_role": choice(detail.get("role"), WORKSPACE_ROLES),
+        "grant_hash": audit_hash("grant:" + grant_value.strip().casefold())
+        if isinstance(grant_value, str) and grant_value.strip() else None,
+        "session_count": count(detail.get("sessions")),
+    }
+    return {key: value for key, value in flat.items() if value is not None}
+
+
+def check_audit_row(row: dict) -> dict:
+    """Check the row before it prints: key set, types, patterns, and secret shapes. Raise ValueError."""
+    keys = set(row)
+    if not AUDIT_BASE_KEYS <= keys or not keys - AUDIT_BASE_KEYS <= AUDIT_DETAIL_KEYS:
+        raise ValueError("audit row: key set")
+    if any(AUDIT_KEY_NAME_RE.search(key) for key in keys):
+        raise ValueError("audit row: secret-shaped key")
+    for key, value in row.items():
+        if isinstance(value, str):
+            if "@" in value or AUDIT_SECRET_RE.search(value) or AUDIT_VALUE_RE.search(value):
+                raise ValueError(f"audit row: {key} value")
+        elif not isinstance(value, (int, bool)):
+            raise ValueError(f"audit row: {key} type")
+    checks = (
+        row["event"].startswith("tailplan.") and AUDIT_NAME_RE.fullmatch(row["event"][9:]) is not None,
+        row["event_version"] == AUDIT_EVENT_VERSION,
+        re.fullmatch(r"[0-9a-f]{32}", row["run_id"]) is not None,
+        re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", row["started_at"]) is not None,
+        isinstance(row["duration_ms"], int) and not isinstance(row["duration_ms"], bool),
+        (row["outcome"], row["error_type"]) == ("success", "") or
+        (row["outcome"] == "error" and row["error_type"] in AUDIT_ERROR_TYPES),
+        re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", row["release"]) is not None,
+        row["actor_hash"] == "" or re.fullmatch(r"[0-9a-f]{16}", row["actor_hash"]) is not None,
+        row["actor_kind"] in AUDIT_ACTOR_KINDS,
+        row["target_type"] in AUDIT_TARGET_TYPES,
+        row["target_id"] == "" or AUDIT_ID_RE.fullmatch(row["target_id"]) is not None
+        or re.fullmatch(r"[0-9a-f]{16}", row["target_id"]) is not None,
+    )
+    if not all(checks):
+        raise ValueError(f"audit row: rule {checks.index(False)}")
+    return row
+
+
+def audit_wide_event(event: str, actor: dict | None, target_type: str | None, target_id: str | None,
+                     outcome: str, detail: dict | None) -> dict:
+    """Build the wide event that leaves the host for one audit event. It has no email address, no
+    free text, and no nested value. The SQLite audit table keeps the full record."""
+    actor_hash, actor_kind = _audit_actor(actor)
+    if outcome == "denied":
+        actor_kind = "anonymous"  # A denied sign-in never became a member.
+    kind = target_type if target_type in AUDIT_TARGET_TYPES else "other"
+    if kind == "principal" and target_id:
+        target = audit_hash("principal:" + target_id.strip().casefold())
+    else:
+        target = target_id if isinstance(target_id, str) and AUDIT_ID_RE.fullmatch(target_id) else ""
+        if target_id and not target:
+            target = "other"
+    failed = outcome != "success"
+    row = {
+        "event": "tailplan." + (event if AUDIT_NAME_RE.fullmatch(event) else "other"),
+        "event_version": AUDIT_EVENT_VERSION,
+        "run_id": uuid.uuid4().hex,
+        "started_at": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "duration_ms": 0,
+        "outcome": "error" if failed else "success",
+        "error_type": ("denied" if outcome == "denied" else "failure") if failed else "",
+        "release": TAILPLAN_VERSION,
+        "actor_hash": actor_hash,
+        "actor_kind": actor_kind,
+        "target_type": kind,
+        "target_id": target,
+        **_audit_detail(detail or {}),
+    }
+    try:
+        return check_audit_row(row)
+    except ValueError:
+        # Never print a row that failed its own check. Print a bare row that records the drop.
+        bare = {key: row[key] for key in AUDIT_BASE_KEYS}
+        bare.update(event="tailplan.audit.invalid", outcome="error", error_type="failure", actor_hash="",
+                    actor_kind="other", target_type="other", target_id="")
+        return check_audit_row(bare)
+
+
 class Store:
     """Keep draft metadata in SQLite and draft pages as files under `drafts/`."""
 
@@ -4569,7 +4750,7 @@ class Store:
 
     # -- Version 2 records: principals, sessions, sharing, devices, audit --
 
-    # The audit log also goes to this stream as JSON lines. None means stdout.
+    # The audit wide events go to this stream as JSON lines. None means stdout, or stderr for a failure.
     audit_stream = None
     _audit_stream_lock = threading.Lock()
 
@@ -4593,7 +4774,7 @@ class Store:
         outcome: str = "success",
         detail: dict | None = None,
     ) -> dict:
-        """Append one audit event to the database and write it to stdout as JSON."""
+        """Append one audit event to the database and print its wide event as one JSON line."""
         actor = actor or {}
         record = {
             "ts": now_iso(),
@@ -4612,9 +4793,11 @@ class Store:
             (record["ts"], event, record["actor_account_id"], record["actor_email"], target_type,
              target_id, outcome, _json_text(record["detail"])),
         ))
-        line = json.dumps(record, separators=(",", ":"), sort_keys=False)
+        row = audit_wide_event(event, actor, target_type, target_id, outcome, detail)
+        line = json.dumps(row, separators=(",", ":"), sort_keys=True)
         with self._audit_stream_lock:
-            stream = self.audit_stream or sys.stdout
+            # A failed event goes to stderr with no prefix: the Docker journald driver sets its priority.
+            stream = self.audit_stream or (sys.stdout if row["outcome"] == "success" else sys.stderr)
             stream.write(line + "\n")
             stream.flush()
         return record
