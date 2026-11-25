@@ -12,8 +12,8 @@ from .brief import BriefError, brief_to_body, plain
 from .markdown import markdown_to_body, title_from_content
 
 ROOT = Path(__file__).resolve().parent
-LAYOUTS = {"reading": {"version": 4, "css": ("reading.css",)},
-           "brief": {"version": 1, "css": ("reading.css", "brief.css")}}
+LAYOUTS = {"reading": {"version": 5, "css": ("reading.css",)},
+           "brief": {"version": 2, "css": ("reading.css", "brief.css")}}
 
 
 class ThemeError(ValueError):
@@ -228,6 +228,7 @@ def render(content, *, format="markdown", filename="document.md", theme="auto",
     metadata = html.escape(json.dumps(frozen, sort_keys=True, separators=(",", ":")), quote=True)
     doc = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+           f'<meta name="theme-color" content="{palette["tokens"]["background"]}">'
            f'<meta name="tailplan-theme" content="{metadata}">'
            f'<title>{html.escape(title)}</title><style>'
            f':root {{ color-scheme: {palette["mode"]}; {variables}; }}\n{css}'
