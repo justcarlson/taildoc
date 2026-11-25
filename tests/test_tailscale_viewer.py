@@ -553,6 +553,30 @@ class UploadGrantTests(ViewerCase):
                                             headers=headers, payload={**base, **extra})
                 self.assertEqual(409, status)
 
+    def test_slug_upload_retry_with_same_key_replays(self) -> None:
+        headers = {"Accept": "application/json", "Idempotency-Key": "slug-retry-1"}
+        payload = {"html": HTML.format("Slug", "Slug"), "slug": "idempotent-slug-plan"}
+        status1, _, raw1 = self.request("/api/uploads", "POST", token="bootstrap-test", headers=headers,
+                                        payload=payload)
+        self.assertEqual(201, status1)
+        first = json.loads(raw1)
+        status2, _, raw2 = self.request("/api/uploads", "POST", token="bootstrap-test", headers=headers,
+                                        payload=payload)
+        self.assertEqual(200, status2)
+        second = json.loads(raw2)
+        self.assertTrue(second.get("replayed"))
+        self.assertEqual(first["draftId"], second["draftId"])
+
+    def test_interactive_tailscale_login_rejects_non_ascii_and_matches_lowercase(self) -> None:
+        status, _, body = self.request("/auth/sign-in", "GET", proxy=True,
+                                       headers={"Tailscale-User-Login": "boß@example.com"})
+        self.assertEqual(200, status)
+        self.assertNotIn(b"Continue with Tailscale", body)
+        self.assertNotEqual(
+            self.store.identity_account("boss@example.com", "Boss", "boss@example.com")["accountId"],
+            self.store.identity_account("boß@example.com", "Fake", "boss@example.com")["accountId"],
+        )
+
     def test_invalid_grants_reject_the_whole_upload(self) -> None:
         for grants in ([{"type": "email", "value": ALICE}], [{"type": "user", "value": "x"}],
                        [{"type": "email", "value": FRIEND, "role": "owner"}], "email:x@y.com",

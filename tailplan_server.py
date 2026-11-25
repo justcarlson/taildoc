@@ -3440,6 +3440,7 @@ class Store:
         slug: str | None = None,
         validation: dict | None = None,
         workspace: str | None = None,
+        default_workspace: str | None = None,
         visibility: str | None = None,
         grants: list[dict] | None = None,
     ) -> dict:
@@ -3460,7 +3461,8 @@ class Store:
                 html_doc, filename, draft_id, base_url, request_key,
                 account_id, description, metadata or {}, audit or {},
                 files=files, slug=slug, page_checks=page_checks,
-                workspace=workspace, visibility=visibility, grants=grants,
+                workspace=workspace, default_workspace=default_workspace,
+                visibility=visibility, grants=grants,
             )
 
     def _upsert_locked(
@@ -3479,6 +3481,7 @@ class Store:
         slug: str | None = None,
         page_checks: dict[str, dict] | None = None,
         workspace: str | None = None,
+        default_workspace: str | None = None,
         visibility: str | None = None,
         grants: list[dict] | None = None,
     ) -> dict:
@@ -3701,6 +3704,7 @@ class Store:
             object_path = self._write_page_object(target_draft_id, version, "index.html", index_html)
             for page in extra_pages:
                 self._write_page_object(target_draft_id, version, page["path"], page["html"])
+            stored_workspace = workspace if workspace is not None else (default_workspace if creating else None)
             data["drafts"][target_draft_id] = {
                 **draft,
                 "draftId": target_draft_id,
@@ -3716,7 +3720,7 @@ class Store:
                 "accountId": account_id,
                 "description": clean_text(description, 1000) or draft.get("description"),
                 "versions": versions,
-                **({"workspace": workspace} if workspace is not None else {}),
+                **({"workspace": stored_workspace} if stored_workspace is not None else {}),
                 **({"visibility": visibility} if visibility is not None else {}),
                 **{
                     field: metadata.get(field) or draft.get(field)
@@ -3992,9 +3996,10 @@ class Store:
 
     def identity_account(self, login: str, name: str, owner_login: str) -> dict:
         with STORE_LOCK:
-            if owner_login and login.casefold() == owner_login.casefold():
+            normalized = login.strip().lower()
+            if owner_login and normalized == owner_login.strip().lower():
                 return self.account("local")
-            account_id = sha256_text("tailscale:" + login.casefold())[:32]
+            account_id = sha256_text("tailscale:" + normalized)[:32]
             data = self.load_meta()
             data.setdefault("accounts", {})[account_id] = {"name": clean_text(name) or login}
             self.save_meta(data)
@@ -6316,14 +6321,18 @@ class Handler(BaseHTTPRequestHandler):
                 slug=slug,
                 validation=validation,
                 workspace=sharing.get("workspace"),
+                default_workspace=sharing.get("defaultWorkspace"),
                 visibility=sharing.get("visibility"),
                 grants=sharing.get("grants"),
             )
             created = result.pop("created")
             status = 201 if created else 200
             stored = self.store.resolve_draft(result["draftId"]) or {}
+            audit_sharing = {k: v for k, v in sharing.items() if k != "defaultWorkspace"}
+            if "workspace" not in audit_sharing and sharing.get("defaultWorkspace") and created:
+                audit_sharing["workspace"] = sharing["defaultWorkspace"]
             self.audit_event("draft.upload", roles, "draft", result["draftId"],
-                             detail={"created": created, "version": result.get("versionNumber"), **sharing})
+                             detail={"created": created, "version": result.get("versionNumber"), **audit_sharing})
             if not result.get("replayed"):
                 for grant in sharing.get("grants") or []:
                     self.audit_event("sharing.grant", roles, "draft", result["draftId"],
@@ -6401,7 +6410,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not workspace_allowed(roles, default_ws):
                     self.send_json(403, {"ok": False, "error": "You cannot publish to that workspace."})
                     return None
-            sharing["workspace"] = default_ws
+            sharing["defaultWorkspace"] = default_ws
         if "grants" in sharing:
             grants = upload_grants(sharing["grants"])
             if isinstance(grants, str):
@@ -6669,8 +6678,12 @@ class Handler(BaseHTTPRequestHandler):
         need the IdP's MFA and back-channel logout.
         """
         owner = self.server.owner_login
-        is_owner = bool(owner) and login.strip().lower() == owner.strip().lower()
         email = login.strip().lower()
+        if TAILSCALE_LOGIN_RE.fullmatch(email) is None:
+            self.audit_event("auth.denied", {"email": email}, "principal", email, outcome="denied",
+                             detail={"method": "tailscale", "reason": "invalid_login"})
+            return None
+        is_owner = bool(owner) and email == owner.strip().lower()
         verified = EMAIL_RE.fullmatch(email) is not None
         policy = self.auth.policy
         roles = policy.resolve(email=email if verified else None, email_verified=verified, groups=[],
@@ -6698,7 +6711,12 @@ class Handler(BaseHTTPRequestHandler):
         state = {"csrf": secrets.token_hex(24), "expires": int(time.time()) + 600}
         cookie = self.cookie_header("tailplan_login", signed_value(state, self.session_secret), 600)
         identity = self.tailscale_login()
-        offer_tailscale = bool(identity and self.login_allowed(identity[0]) and "tailscale" in self.auth.modes)
+        offer_tailscale = bool(
+            identity
+            and TAILSCALE_LOGIN_RE.fullmatch(identity[0].strip().lower())
+            and self.login_allowed(identity[0])
+            and "tailscale" in self.auth.modes
+        )
         body = render_login(self.base_url, state["csrf"], safe_next_path(next_path), offer_tailscale,
                             api_key="api_key" in self.auth.modes,
                             oidc="oidc" in self.auth.modes and self.auth.oidc is not None)

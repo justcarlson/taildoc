@@ -39,7 +39,8 @@ The server does not create an account for that login.
 The server also rejects existing Tailscale sessions for logins that are not in the list.
 The sign-in page does not show "Continue with Tailscale" to those logins.
 Add the owner login to the list, or the owner must sign in with an API key.
-API keys, the bootstrap token, and viewer routes do not use the list.
+API keys, the bootstrap token, and unauthenticated link views do not use the list.
+When `TAILPLAN_TAILSCALE_VIEWER=1`, passive header reads also check the list.
 When the list is empty, any Tailscale login can sign in.
 
 ### Passive Tailscale viewer
@@ -92,13 +93,14 @@ A Tailscale login with a dotted domain also matches email grants and email rules
 A login that matches no policy rule is a guest.
 A guest reads only drafts granted to it and `link` drafts.
 A guest does not read `authenticated` drafts.
-The server checks the policy file on each request.
-When you remove a rule, the user loses its roles at once.
+The server checks the loaded policy on each request.
+After a policy edit and server restart, a removed rule takes its roles away from existing sessions and keys.
 
 Tailscale sign-in always uses its own account, keyed to the `tailscale` issuer.
 It never joins a single sign-on account, even when the email is the same.
-Thus a Tailscale sign-in never gets the roles of a single sign-on account.
-Those roles can need the identity provider's MFA, and back-channel logout revokes them.
+Thus a Tailscale sign-in never inherits roles or groups from a single sign-on account.
+It resolves only against its own Tailscale login and verified-email policy rules.
+Single sign-on roles can need the identity provider's MFA, and back-channel logout revokes them.
 
 An email rule needs a dotted domain.
 The server does not start with an email rule such as `bob@passkey`.

@@ -1132,6 +1132,28 @@ for name, default in (
     if any(ord(character) < 32 for character in value):
         raise SystemExit("Invalid management setting")
     content += f"{name}={quote(value)}\n"
+for name in (
+    "TAILPLAN_ALLOWED_LOGINS",
+    "TAILPLAN_VIEWER_404_LIMIT",
+    "TAILPLAN_SESSION_SECRET_FILE",
+    "TAILPLAN_AUTH_MODES",
+    "TAILPLAN_OIDC_ISSUER",
+    "TAILPLAN_OIDC_CLIENT_ID",
+    "TAILPLAN_OIDC_CLIENT_SECRET_FILE",
+    "TAILPLAN_OIDC_SCOPES",
+    "TAILPLAN_OIDC_GROUPS_CLAIM",
+    "TAILPLAN_OIDC_ALLOW_PRIVATE_ISSUER",
+    "TAILPLAN_OIDC_LINK_EMAILS",
+    "TAILPLAN_SESSION_TTL_SECONDS",
+    "TAILPLAN_RBAC_POLICY_FILE",
+    "TAILPLAN_VIEWER_AUTH_MODE",
+    "TAILPLAN_MAX_VISIBILITY",
+):
+    value = os.environ.get(name, previous.get(name, ""))
+    if any(ord(character) < 32 for character in value):
+        raise SystemExit("Invalid management setting")
+    if value:
+        content += f"{name}={quote(value)}\n"
 Path(destination).write_text(content, encoding="utf-8")
 PY
 chmod 600 "$env_tmp"

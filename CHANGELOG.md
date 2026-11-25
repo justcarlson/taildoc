@@ -26,7 +26,7 @@ The project uses semantic version numbers.
 - Every `404` page is the same, and it shows a "Sign in" link to a reader with no session.
 - `/share` and `/preview.png` reads now write `draft.view` audit events.
   Upload grants now write `sharing.grant` audit events.
-- The server checks the policy file on each request, so a removed rule takes its roles away at once.
+- The server checks the loaded policy on each request. After a policy edit and server restart, a removed rule takes its roles away at once.
 - A reused `Idempotency-Key` with different grants, workspace, or visibility now returns `409`.
 - **Breaking:** an email policy rule with no dotted domain, such as `bob@passkey`, now stops the server at start.
   Change it to a `tailscale_login` rule.
