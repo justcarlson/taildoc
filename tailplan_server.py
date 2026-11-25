@@ -3112,7 +3112,7 @@ AUDIT_TARGET_TYPES = ("draft", "account", "principal", "api_key", "device_code",
 AUDIT_ERROR_TYPES = ("denied", "failure")
 AUDIT_METHODS = ("oidc", "tailscale", "tailscale_header", "api_key", "device", "backchannel", "sign-out", "bootstrap")
 AUDIT_REASONS = ("state", "provider_error", "token", "no_matching_rule", "invalid_login")
-AUDIT_ACTIONS = ("delete", "disable", "enable", "restore")
+AUDIT_ACTIONS = ("delete", "disable", "enable")
 AUDIT_ID_RE = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
 AUDIT_NAME_RE = re.compile(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){0,3}")
 AUDIT_BASE_KEYS = frozenset({
@@ -3129,7 +3129,7 @@ AUDIT_SECRET_RE = re.compile(
     r"|(?:A3T[A-Z0-9]|AKIA|ASIA)[A-Z0-9]{16}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
     r"|(?i:bearer)\s+[A-Za-z0-9._~+/=-]{8,}")
 AUDIT_VALUE_RE = re.compile(
-    r"(?i)(?:pass|passwd|password|passphrase|pwd|secret|token|key|cookie|authorization)[\"']?\s*[:=]|COMMAND=")
+    r"(?i)(?:pass|passwd|password|passphrase|pwd|secret|token|key|cookie|authorization)[\s\"']*[:=]|COMMAND=")
 AUDIT_KEY_NAME_RE = re.compile(
     r"(?i)(?:pass|passwd|password|passphrase|pwd|secret|token|api[_-]?key|apikey)(?:[_.-]?key|_access_key)?$"
     r"|(?:cookie|authorization)$")
@@ -3148,6 +3148,28 @@ def audit_hash(value: str) -> str:
     return hmac.new(audit_hmac_key(), value.encode(), hashlib.sha256).hexdigest()[:16]
 
 
+def _audit_keep(value, rx: re.Pattern = AUDIT_ID_RE) -> str | None:
+    """Return the value when it fits the pattern and holds no secret shape, else None (`keep()` in the standard)."""
+    if isinstance(value, str) and rx.fullmatch(value) and not AUDIT_SECRET_RE.search(value) \
+            and not AUDIT_VALUE_RE.search(value):
+        return value
+    return None
+
+
+def _audit_address(value) -> str | None:
+    """Return a plain IP address. A scope id (`fe80::1%eth0`) is free text, so it fails."""
+    if not isinstance(value, str) or "%" in value:
+        return None
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return None
+
+
+def _audit_count(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
 def _audit_actor(actor: dict | None) -> tuple[str, str]:
     """Return the `actor_hash` and `actor_kind` of an audit actor."""
     actor = actor or {}
@@ -3163,7 +3185,7 @@ def _audit_actor(actor: dict | None) -> tuple[str, str]:
         kind = "local"
     elif account_id == "anonymous":
         kind = "anonymous"
-    elif isinstance(api_key_id, str) and api_key_id not in {"oidc", "tailscale", "tailscale_header", "view",
+    elif isinstance(api_key_id, str) and api_key_id and api_key_id not in {"oidc", "tailscale", "tailscale_header", "view",
                                                             "bootstrap", "anonymous"}:
         kind = "api_key"
     elif actor.get("instanceRole") == "admin":
@@ -3178,37 +3200,42 @@ def _audit_detail(detail: dict) -> dict:
     def choice(value, allowed):
         return value if value in allowed else None
 
-    def ident(value):
-        return value if isinstance(value, str) and AUDIT_ID_RE.fullmatch(value) else None
-
-    def address(value):
-        try:
-            return str(ipaddress.ip_address(value))
-        except ValueError:
-            return None
-
-    def count(value):
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
-
     grants = detail.get("grants")
     grant_value = detail.get("value")
     flat = {
-        "client.address": address(detail.get("sourceIp")),
+        "client.address": _audit_address(detail.get("sourceIp")),
         "auth_method": choice(detail.get("method") or detail.get("authMethod"), AUDIT_METHODS),
         "reason": choice(detail.get("reason"), AUDIT_REASONS),
         "action": choice(detail.get("action"), AUDIT_ACTIONS),
         "created": detail["created"] if isinstance(detail.get("created"), bool) else None,
-        "draft_version": count(detail.get("version")),
+        "draft_version": _audit_count(detail.get("version")),
         "visibility": choice(detail.get("visibility"), VISIBILITIES),
-        "workspace": ident(detail.get("workspace")),
+        "workspace": _audit_keep(detail.get("workspace")),
         "grant_count": len(grants) if isinstance(grants, list) else None,
         "grant_type": choice(detail.get("type"), GRANT_TYPES),
         "grant_role": choice(detail.get("role"), WORKSPACE_ROLES),
         "grant_hash": audit_hash("grant:" + grant_value.strip().casefold())
         if isinstance(grant_value, str) and grant_value.strip() else None,
-        "session_count": count(detail.get("sessions")),
+        "session_count": _audit_count(detail.get("sessions")),
     }
     return {key: value for key, value in flat.items() if value is not None}
+
+
+AUDIT_DETAIL_CHECKS = {
+    "client.address": lambda v: _audit_address(v) == v,
+    "auth_method": lambda v: v in AUDIT_METHODS,
+    "reason": lambda v: v in AUDIT_REASONS,
+    "action": lambda v: v in AUDIT_ACTIONS,
+    "created": lambda v: isinstance(v, bool),
+    "draft_version": lambda v: _audit_count(v) == v and not isinstance(v, bool),
+    "visibility": lambda v: v in VISIBILITIES,
+    "workspace": lambda v: _audit_keep(v) == v,
+    "grant_count": lambda v: _audit_count(v) == v and not isinstance(v, bool),
+    "grant_type": lambda v: v in GRANT_TYPES,
+    "grant_role": lambda v: v in WORKSPACE_ROLES,
+    "grant_hash": lambda v: isinstance(v, str) and re.fullmatch(r"[0-9a-f]{16}", v) is not None,
+    "session_count": lambda v: _audit_count(v) == v and not isinstance(v, bool),
+}
 
 
 def check_audit_row(row: dict) -> dict:
@@ -3224,43 +3251,48 @@ def check_audit_row(row: dict) -> dict:
                 raise ValueError(f"audit row: {key} value")
         elif not isinstance(value, (int, bool)):
             raise ValueError(f"audit row: {key} type")
+    for key in keys & AUDIT_DETAIL_KEYS:
+        if not AUDIT_DETAIL_CHECKS[key](row[key]):
+            raise ValueError(f"audit row: {key} rule")
+    text_keys = ("event", "run_id", "started_at", "outcome", "error_type", "release", "actor_hash", "actor_kind",
+                 "target_type", "target_id")
+    if not all(isinstance(row[key], str) for key in text_keys) or type(row["duration_ms"]) is not int:
+        raise ValueError("audit row: base type")
+    hashed = row["target_type"] == "principal"
     checks = (
         row["event"].startswith("tailplan.") and AUDIT_NAME_RE.fullmatch(row["event"][9:]) is not None,
-        row["event_version"] == AUDIT_EVENT_VERSION,
+        type(row["event_version"]) is int and row["event_version"] == AUDIT_EVENT_VERSION,
         re.fullmatch(r"[0-9a-f]{32}", row["run_id"]) is not None,
         re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", row["started_at"]) is not None,
-        isinstance(row["duration_ms"], int) and not isinstance(row["duration_ms"], bool),
+        row["duration_ms"] >= 0,
         (row["outcome"], row["error_type"]) == ("success", "") or
         (row["outcome"] == "error" and row["error_type"] in AUDIT_ERROR_TYPES),
         re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", row["release"]) is not None,
         row["actor_hash"] == "" or re.fullmatch(r"[0-9a-f]{16}", row["actor_hash"]) is not None,
         row["actor_kind"] in AUDIT_ACTOR_KINDS,
         row["target_type"] in AUDIT_TARGET_TYPES,
-        row["target_id"] == "" or AUDIT_ID_RE.fullmatch(row["target_id"]) is not None
-        or re.fullmatch(r"[0-9a-f]{16}", row["target_id"]) is not None,
+        row["target_id"] == "" or re.fullmatch(r"[0-9a-f]{16}" if hashed else AUDIT_ID_RE.pattern,
+                                               row["target_id"]) is not None,
     )
     if not all(checks):
         raise ValueError(f"audit row: rule {checks.index(False)}")
     return row
 
 
-def audit_wide_event(event: str, actor: dict | None, target_type: str | None, target_id: str | None,
-                     outcome: str, detail: dict | None) -> dict:
-    """Build the wide event that leaves the host for one audit event. It has no email address, no
-    free text, and no nested value. The SQLite audit table keeps the full record."""
+def _audit_row(event, actor, target_type, target_id, outcome, detail) -> dict:
     actor_hash, actor_kind = _audit_actor(actor)
     if outcome == "denied":
         actor_kind = "anonymous"  # A denied sign-in never became a member.
     kind = target_type if target_type in AUDIT_TARGET_TYPES else "other"
-    if kind == "principal" and target_id:
+    if not target_id:
+        target = ""
+    elif kind == "principal" and isinstance(target_id, str):
         target = audit_hash("principal:" + target_id.strip().casefold())
     else:
-        target = target_id if isinstance(target_id, str) and AUDIT_ID_RE.fullmatch(target_id) else ""
-        if target_id and not target:
-            target = "other"
+        target = _audit_keep(target_id) or "other"
     failed = outcome != "success"
-    row = {
-        "event": "tailplan." + (event if AUDIT_NAME_RE.fullmatch(event) else "other"),
+    return {
+        "event": "tailplan." + (event if isinstance(event, str) and AUDIT_NAME_RE.fullmatch(event) else "other"),
         "event_version": AUDIT_EVENT_VERSION,
         "run_id": uuid.uuid4().hex,
         "started_at": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
@@ -3272,16 +3304,24 @@ def audit_wide_event(event: str, actor: dict | None, target_type: str | None, ta
         "actor_kind": actor_kind,
         "target_type": kind,
         "target_id": target,
-        **_audit_detail(detail or {}),
+        **_audit_detail(detail if isinstance(detail, dict) else {}),
     }
+
+
+def audit_wide_event(event: str, actor: dict | None, target_type: str | None, target_id: str | None,
+                     outcome: str, detail: dict | None) -> dict:
+    """Build the wide event that leaves the host for one audit event. It has no email address, no
+    free text, and no nested value. The SQLite audit table keeps the full record. It never raises:
+    a row that fails its own check is replaced by a bare row that records the drop."""
     try:
-        return check_audit_row(row)
-    except ValueError:
-        # Never print a row that failed its own check. Print a bare row that records the drop.
-        bare = {key: row[key] for key in AUDIT_BASE_KEYS}
-        bare.update(event="tailplan.audit.invalid", outcome="error", error_type="failure", actor_hash="",
-                    actor_kind="other", target_type="other", target_id="")
-        return check_audit_row(bare)
+        return check_audit_row(_audit_row(event, actor, target_type, target_id, outcome, detail))
+    except Exception:
+        return check_audit_row({
+            "event": "tailplan.audit.invalid", "event_version": AUDIT_EVENT_VERSION, "run_id": uuid.uuid4().hex,
+            "started_at": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "duration_ms": 0, "outcome": "error", "error_type": "failure", "release": "other", "actor_hash": "",
+            "actor_kind": "other", "target_type": "other", "target_id": "",
+        })
 
 
 class Store:

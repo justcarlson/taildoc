@@ -168,6 +168,56 @@ class RowCheckTests(unittest.TestCase):
         self.assertEqual(server.AUDIT_BASE_KEYS, set(row))
 
 
+class ReviewRegressionTests(unittest.TestCase):
+    def build(self, *args) -> dict:
+        return server.audit_wide_event(*args)
+
+    def test_an_address_with_a_scope_id_or_a_wrong_type_is_dropped(self) -> None:
+        for bad in ("fe80::1%free_text?query=1&secret_note=leaked", "fe80::1%alice@example.test", True, 5, None):
+            with self.subTest(bad=bad):
+                row = self.build("draft.view", None, "draft", "d", "success", {"sourceIp": bad})
+                self.assertNotIn("client.address", row)
+                self.assertEqual("tailplan.draft.view", row["event"])
+        self.assertEqual("fe80::1", self.build("e.x", None, None, None, "success",
+                                               {"sourceIp": "fe80::1"})["client.address"])
+
+    def test_the_check_rejects_a_detail_value_outside_its_rule(self) -> None:
+        base = self.build("auth.login", {"accountId": "a"}, "account", "a", "success", None)
+        for key, value in (("auth_method", 999), ("created", "no"), ("reason", "free text here"),
+                           ("workspace", "/home/jc/file with spaces"), ("draft_version", -1),
+                           ("client.address", "fe80::1%eth0"), ("grant_hash", "zz"), ("visibility", "all")):
+            with self.subTest(key=key):
+                with self.assertRaises(ValueError):
+                    server.check_audit_row({**base, key: value})
+        for key, value in (("event_version", True), ("duration_ms", -1), ("duration_ms", True),
+                           ("event", 5), ("release", 5), ("target_id", "plain"), ):
+            with self.subTest(key=key):
+                row = {**base, key: value}
+                if key == "target_id":
+                    row["target_type"] = "principal"
+                with self.assertRaises(ValueError):
+                    server.check_audit_row(row)
+
+    def test_the_builder_never_raises(self) -> None:
+        with patch.object(server, "TAILPLAN_VERSION", "0.6.0+git123"):
+            row = self.build("auth.login", None, None, None, "success", None)
+        self.assertEqual(("tailplan.audit.invalid", "other"), (row["event"], row["release"]))
+        for args in ((5, None, "principal", 7, "success", None), ("a.b", {"accountId": 5}, "draft", ["x"], None, "bad")):
+            with self.subTest(args=args):
+                server.check_audit_row(self.build(*args))
+
+    def test_a_secret_shaped_name_maps_the_one_field(self) -> None:
+        row = self.build("draft.change", None, "draft", "sk-project-roadmap-v2", "success",
+                         {"workspace": "sk-project-roadmap-v2", "action": "delete"})
+        self.assertEqual(("tailplan.draft.change", "other", "delete"),
+                         (row["event"], row["target_id"], row["action"]))
+        self.assertNotIn("workspace", row)
+        self.assertEqual("other", self.build("e.x", None, "draft", "key:1", "success", None)["target_id"])
+
+    def test_a_space_before_a_quote_still_counts_as_a_secret_shape(self) -> None:
+        self.assertIsNotNone(server.AUDIT_VALUE_RE.search('password ": x'))
+
+
 class StreamTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()

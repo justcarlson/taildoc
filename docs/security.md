@@ -65,7 +65,7 @@ The identity gets the `viewer` role and no more, even when a grant or rule gives
 The dashboard, `/api/*`, `/source`, and every `POST`, `PUT`, or `DELETE` ignore the header.
 `TAILPLAN_ALLOWED_LOGINS` also applies to the header.
 The audit log records each `GET` as `draft.view`, with `auth_method` `tailscale_header`. The actor is the hash of the login.
-The event also records the login as `actorLogin`.
+The database event also records the login as `actorLogin`. The printed line does not.
 This includes `/share` and `/preview.png`.
 
 When a header identity cannot read a draft, the server returns `404`.
