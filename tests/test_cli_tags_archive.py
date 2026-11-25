@@ -153,6 +153,33 @@ class UploadTagTests(CliServerCase):
         self.upload("plan.md", "Plan", env=env, body="changed")
         self.assertEqual(["epic"], self.draft(first["draftId"])["tags"])
 
+    def test_reupload_without_favorite_keeps_the_favorite(self) -> None:
+        first = self.upload("plan.md", "Plan", "--favorite")
+        self.upload("plan.md", "Plan", body="changed")
+        self.assertTrue(self.draft(first["draftId"])["favorite"])
+
+    def test_slug_update_without_a_binding_keeps_edited_tags(self) -> None:
+        env = {"TAILPLAN_PROJECT": "dawn"}
+        first = self.upload("a.md", "A", "--slug", "my-plan", "--tag", "keep")
+        self.cli("tag", first["draftId"], "--set", "edited")
+        second = self.upload("b.md", "B", "--slug", "my-plan", env=env)
+        self.assertEqual(first["draftId"], second["draftId"])
+        self.assertEqual(["edited"], self.draft(first["draftId"])["tags"])
+
+    def test_env_tags_apply_to_a_new_slug(self) -> None:
+        result = self.upload("a.md", "A", "--slug", "fresh-plan", env={"TAILPLAN_PROJECT": "dawn"})
+        self.assertEqual(["dawn"], self.draft(result["draftId"])["tags"])
+
+    def test_slug_that_names_another_draft_keeps_its_tags_on_retry(self) -> None:
+        env = {"TAILPLAN_PROJECT": "dawn"}
+        target = self.upload("target.md", "Target", "--slug", "target-plan", "--tag", "keep")
+        self.cli("tag", target["draftId"], "--set", "edited")
+        bound = self.upload("a.md", "A")
+        self.assertEqual([], self.draft(bound["draftId"])["tags"])
+        moved = self.upload("a.md", "A", "--slug", "target-plan", env=env, body="changed")
+        self.assertEqual(target["draftId"], moved["draftId"])
+        self.assertEqual(["edited"], self.draft(target["draftId"])["tags"])
+
     def test_reupload_with_tag_replaces_the_tags(self) -> None:
         first = self.upload("plan.md", "Plan", "--tag", "dawn")
         self.upload("plan.md", "Plan", "--tag", "epic", body="changed")
@@ -203,6 +230,24 @@ class TagCommandTests(CliServerCase):
             completed = self.cli("tag", ref, bad, ok=False)
             self.assertEqual(1, completed.returncode, bad)
         self.assertEqual(["dawn"], self.draft(ref)["tags"])
+
+    def test_list_tag_must_be_exactly_one_valid_tag(self) -> None:
+        self.upload("plan.md", "Plan", "--tag", "dawn")
+        for bad in ("", " ", ",", "a,b", "-bad", "Bad Tag"):
+            completed = self.cli("list", f"--tag={bad}", ok=False)
+            output = completed.stdout + completed.stderr
+            self.assertEqual(1, completed.returncode, repr(bad))
+            self.assertIn("Invalid tag", output, repr(bad))
+            self.assertNotIn("Traceback", output, repr(bad))
+            self.assertNotIn("Request failed", output, repr(bad))
+            as_json = self.cli("list", f"--tag={bad}", "--json", ok=False)
+            report = json.loads(as_json.stdout)
+            self.assertFalse(report["ok"])
+            self.assertIn("Invalid tag", report["error"])
+
+    def test_list_tag_accepts_one_tag_in_any_case(self) -> None:
+        self.upload("plan.md", "Plan", "--tag", "dawn")
+        self.assertEqual(1, len(self.listed("--tag", " DAWN ")))
 
     def test_tag_for_a_missing_draft_fails(self) -> None:
         self.assertEqual(1, self.cli("tag", "nosuchdraft", "+a", ok=False).returncode)
@@ -338,6 +383,8 @@ with open(os.environ["CLIENT_LOG"], "a") as output:
     output.write(json.dumps([os.path.basename(sys.argv[0])] + args) + "\\n")
 if "mktemp" in args:
     print("/tmp/tailplan-upload.Ab12Cd34")
+elif "check" in args:
+    print(json.dumps({"ok": True, "slug": {"slug": "x", "status": os.environ.get("CHECK_STATUS", "available")}}))
 elif "tailplan-share" in args:
     print(json.dumps({"ok": True, "draftId": "remote123", "versionNumber": 1,
         "publicUrl": "https://tailplan.example.test/d/remote123",
@@ -370,7 +417,7 @@ elif "tailplan-share" in args:
 
     def remote_words(self) -> list[str]:
         """Return the words that the remote shell receives for the last tailplan-share call."""
-        call = [call for call in self.calls() if "tailplan-share" in call][-1]
+        call = [call for call in self.calls() if "tailplan-share" in call and "check" not in call][-1]
         return shlex.split(" ".join(call[call.index("tailplan-share") + 1:]))
 
 
@@ -473,6 +520,82 @@ def test_remote_archive_rejects_unsafe_refs(fake_ssh: FakeSsh, command: str) -> 
     assert fake_ssh.calls() == []
 
 
+@pytest.mark.parametrize("arguments", [
+    ["--base-url=https://attacker.test", "my-plan"], ["my-plan", "--base-url=https://attacker.test"],
+    ["my-plan", "--base-url", "https://attacker.test"], ["my-plan", "extra"], ["-bad"], [], ["--force", "my-plan"],
+    ["my-plan", "--json", "--reason", "x"], ["a", "b"],
+])
+@pytest.mark.parametrize("command", ["archive", "unarchive"])
+def test_remote_archive_accepts_only_a_ref_and_json(fake_ssh: FakeSsh, command: str, arguments: list[str]) -> None:
+    completed = fake_ssh.run(command, *arguments)
+    assert completed.returncode != 0
+    assert fake_ssh.calls() == []
+
+
+def test_remote_slug_update_keeps_edited_tags(tmp_path: Path, fake_ssh: FakeSsh) -> None:
+    source = tmp_path / "plan.md"
+    source.write_text("# Plan\n")
+    env = {"TAILPLAN_PROJECT": "dawn", "CHECK_STATUS": "yours"}
+    assert fake_ssh.run(str(source), "--slug", "my-plan", "--json", env=env).returncode == 0
+    assert "--tag" not in fake_ssh.remote_words()
+    assert any("check" in call for call in fake_ssh.calls())
+
+
+def test_remote_new_slug_gets_env_tags(tmp_path: Path, fake_ssh: FakeSsh) -> None:
+    source = tmp_path / "plan.md"
+    source.write_text("# Plan\n")
+    env = {"TAILPLAN_PROJECT": "dawn", "CHECK_STATUS": "available"}
+    assert fake_ssh.run(str(source), "--slug", "my-plan", "--json", env=env).returncode == 0
+    words = fake_ssh.remote_words()
+    assert [words[i + 1] for i, word in enumerate(words) if word == "--tag"] == ["dawn"]
+
+
+def test_remote_slug_with_unknown_status_keeps_tags_off(tmp_path: Path, fake_ssh: FakeSsh) -> None:
+    source = tmp_path / "plan.md"
+    source.write_text("# Plan\n")
+    env = {"TAILPLAN_PROJECT": "dawn", "CHECK_STATUS": "unchecked"}
+    assert fake_ssh.run(str(source), "--slug", "my-plan", "--json", env=env).returncode == 0
+    assert "--tag" not in fake_ssh.remote_words()
+
+
+def test_remote_slug_without_env_tags_skips_the_check(tmp_path: Path, fake_ssh: FakeSsh) -> None:
+    source = tmp_path / "plan.md"
+    source.write_text("# Plan\n")
+    assert fake_ssh.run(str(source), "--slug", "my-plan", "--json").returncode == 0
+    assert not any("check" in call for call in fake_ssh.calls())
+
+
+@pytest.mark.parametrize("arguments", [
+    ["upload", "{file}", "--new", "--tag", "Bad Tag"],
+    ["tag", "abc123", "+Bad Tag"],
+    ["list", "--tag=a,b"],
+    ["list", "--tag="],
+    ["list", "--view", "bogus"],
+    ["archive", "--base-url=https://attacker.test", "my-plan"],
+    ["unarchive", "a", "b"],
+])
+def test_remote_validation_failures_print_json_with_json_flag(
+    tmp_path: Path, fake_ssh: FakeSsh, arguments: list[str],
+) -> None:
+    source = tmp_path / "plan.md"
+    source.write_text("# Plan\n")
+    words = [word.replace("{file}", str(source)) for word in arguments]
+    completed = fake_ssh.run(*words, "--json")
+    assert completed.returncode == 2
+    report = json.loads(completed.stdout)
+    assert report["ok"] is False
+    assert report["category"] == "usage"
+    assert report["error"]
+    assert fake_ssh.calls() == []
+
+
+def test_remote_validation_failures_stay_plain_without_json(fake_ssh: FakeSsh) -> None:
+    completed = fake_ssh.run("list", "--tag=a,b")
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert "Invalid tag" in completed.stderr
+
+
 def test_remote_list_forwards_each_filter_quoted(fake_ssh: FakeSsh) -> None:
     completed = fake_ssh.run("list", "--tag", "Dawn", "--view", "all", "--q", "is:fav tag:dawn v:>1; $(id)",
                              "--sort", "title", "--dir", "desc", "--repo", "justcarlson/taildoc",
@@ -490,7 +613,8 @@ def test_remote_plain_list_is_unchanged(fake_ssh: FakeSsh) -> None:
 
 
 @pytest.mark.parametrize("arguments", [
-    ["--tag", "Bad Tag"], ["--tag", "a;id"], ["--tag", "-x"], ["--view", "bogus"], ["--sort", "random"],
+    ["--tag", "Bad Tag"], ["--tag", "a;id"], ["--tag", "-x"], ["--tag="], ["--tag= "], ["--tag=,"],
+    ["--tag=a,b"], ["--tag=-bad"], ["--view", "bogus"], ["--sort", "random"],
     ["--dir", "up"], ["--repo", "a b"], ["--repo", "-x"], ["--repo", "a;id"], ["--q", "bad\x01text"],
     ["--q", "x" * 201], ["--q", "-flag"], ["--unknown"], ["extra"], ["--tag", "a", "--base-url", "http://x"],
 ])

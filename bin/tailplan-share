@@ -2544,6 +2544,37 @@ def upload(
     raise AssertionError("unreachable")
 
 
+def slug_may_name_existing_draft(
+    base_url: str,
+    slug: str,
+    *,
+    allow_insecure_http: bool = False,
+    opener=None,
+    timeout: float = 20,
+) -> bool:
+    """Return False only when the server says the slug is free.
+
+    Any other answer, including a failed check, counts as an existing draft.
+    The caller then keeps creation-only defaults, such as env tags, off the upload.
+    """
+    try:
+        token_file = Path(os.getenv("TAILPLAN_TOKEN_FILE", str(Path.home() / ".tailplan" / "token")))
+        token = os.getenv("TAILPLAN_API_KEY") or token_file.read_text(encoding="utf-8").strip()
+        request = urllib.request.Request(
+            validate_base_url(base_url, allow_insecure_http=allow_insecure_http) + "/api/check",
+            data=json.dumps({"slug": slug}).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}",
+                     "User-Agent": "tailplan-share/2.0"},
+        )
+        with (opener or _open_without_redirects)(request, timeout=timeout) as response:
+            report = json.loads(response.read().decode("utf-8"))
+        return not (isinstance(report, dict) and report.get("slug", {}).get("status") == "available")
+    except (ConfigurationFailure, OSError, ValueError, AttributeError, urllib.error.URLError,
+            http.client.HTTPException):
+        return True
+
+
 class VerificationFailure(RuntimeError):
     pass
 
@@ -2892,8 +2923,22 @@ def _publish_locked(
                 stderr=stderr,
             )
 
+    slug_check: list[bool] = []
+
+    def creates_draft(selected_draft_id: str | None) -> bool:
+        """Tell whether this upload makes a new draft, so env default tags may apply."""
+        if selected_draft_id is not None:
+            return False
+        if slug is None or not default_tags or uploader is not None:
+            return True
+        if not slug_check:
+            slug_check.append(slug_may_name_existing_draft(
+                base_url, slug, allow_insecure_http=allow_insecure_http,
+            ))
+        return not slug_check[0]
+
     def upload_once(selected_draft_id: str | None):
-        upload_tags = tags_for_upload(tags, default_tags, new_draft=selected_draft_id is None)
+        upload_tags = tags_for_upload(tags, default_tags, new_draft=creates_draft(selected_draft_id))
         if uploader is None:
             provenance_cwd = resolved_source if resolved_source.is_dir() else resolved_source.parent
             return upload(
@@ -3402,6 +3447,16 @@ def parse_tags(values: list[str]) -> list[str]:
     return tags
 
 
+def single_tag(value: str) -> str:
+    """Return exactly one valid lowercase tag. Raise ValueError on empty text, a list, or a bad tag."""
+    tag = value.strip().lower()
+    if TAG_RE.fullmatch(tag) is None:
+        raise ValueError(
+            f"Invalid tag {value.strip()!r}: give one tag of 1 to 32 letters, digits, dots, underscores, or hyphens."
+        )
+    return tag
+
+
 def clean_env_tag(text: str) -> str | None:
     """Turn free text into one valid tag, or None when nothing usable remains."""
     tag = re.sub(r"[^a-z0-9._-]+", "-", text.strip().lower())[:32].strip("-._")
@@ -3675,8 +3730,11 @@ def draft_list_path(args: argparse.Namespace) -> str:
         ("view", args.view), ("q", args.q), ("sort", args.sort), ("dir", args.dir),
         ("repo", args.repo),
     ) if value]
-    if args.tag:
-        params.append(("tag", parse_tags([args.tag])[0]))
+    if args.tag is not None:
+        try:
+            params.append(("tag", single_tag(args.tag)))
+        except ValueError as error:
+            raise ConfigurationFailure(str(error)) from None
     if args.archived:
         params.append(("archived", "1"))
     return "/api/drafts" + ("?" + urllib.parse.urlencode(params) if params else "")

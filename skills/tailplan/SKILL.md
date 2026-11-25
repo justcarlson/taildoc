@@ -28,8 +28,10 @@ The name Tailplan does not mean a checklist or an agent plan mode.
 7. Publish a new draft, or update an existing draft in place with `--draft <draft-id>`:
 
    ```sh
-   tailplan-share /path/to/artifact.html --new
+   tailplan-share /path/to/artifact.html --new --tag <stream>
    ```
+
+   Replace `<stream>` with the project or topic name. See "Tag drafts for the dashboard" below.
 
 8. Copy the `URL:` value from the command output. It uses the automatic preview
    page at `/d/ID/share` when the server supports it. For JSON output, prefer
@@ -61,9 +63,11 @@ tailplan upload plan.md --new --tag dawn --favorite
 ```
 
 Use `--favorite` to pin the draft when you publish it.
-Without `--tag`, the client reads `TAILPLAN_PROJECT` and `TAILPLAN_TAGS` for a new draft.
+The client also adds `TAILPLAN_PROJECT` and `TAILPLAN_TAGS` to a new draft, next to any `--tag` flags, up to 10 tags in all.
 It never uses the name of the working folder as a tag.
+It skips these env tags when it updates an existing draft.
 A re-upload without `--tag` keeps the tags of the draft.
+A re-upload with `--tag` replaces the tags of the draft.
 
 Change tags later with one command:
 

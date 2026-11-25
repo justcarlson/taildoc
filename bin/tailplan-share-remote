@@ -66,6 +66,36 @@ def parse_tags(values: list[str]) -> list[str]:
     return tags
 
 
+def single_tag(value: str) -> str:
+    """Return exactly one valid lowercase tag. Raise ValueError on empty text, a list, or a bad tag."""
+    tag = value.strip().lower()
+    if TAG_RE.fullmatch(tag) is None:
+        raise ValueError(
+            f"Invalid tag {value.strip()!r}: give one tag of 1 to 32 letters, digits, dots, underscores, or hyphens."
+        )
+    return tag
+
+
+class _CheckedParser(argparse.ArgumentParser):
+    """An argument parser that raises ValueError, so --json callers can report the failure."""
+
+    def error(self, message: str):
+        raise ValueError(message)
+
+
+def _fail(exc: Exception, *, json_output: bool, prefix: str = "tailplan") -> int:
+    """Report a local failure before any SSH call. Print JSON when the caller asked for it."""
+    if json_output:
+        try:
+            return _load_library()["_emit_failure"](
+                "usage", str(exc), json_output=True, stdout=sys.stdout, stderr=sys.stderr, exit_code=2,
+            )
+        except (RuntimeError, OSError, KeyError):
+            pass
+    print(f"{prefix}: {exc}", file=sys.stderr)
+    return 2
+
+
 def default_tags_from_env(environ=None) -> list[str]:
     """Read TAILPLAN_PROJECT and TAILPLAN_TAGS. Skip anything unusable. Never use the working folder."""
     environ = os.environ if environ is None else environ
@@ -440,7 +470,7 @@ def _checked_value(option: str, value: str | None, pattern: re.Pattern[str]) -> 
 
 def _remote_list(argv: list[str], target: str) -> int:
     """List drafts on the remote server. Check every filter before the SSH call."""
-    parser = argparse.ArgumentParser(prog="tailplan list")
+    parser = _CheckedParser(prog="tailplan list")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--tag")
     parser.add_argument("--view", choices=LIST_VIEWS)
@@ -455,7 +485,7 @@ def _remote_list(argv: list[str], target: str) -> int:
     if args.json:
         command.append("--json")
     if args.tag is not None:
-        command.extend(["--tag", shlex.quote(parse_tags([args.tag])[0])])
+        command.extend(["--tag", shlex.quote(single_tag(args.tag))])
     for option, value, pattern in (
         ("--view", args.view, None), ("--sort", args.sort, None), ("--dir", args.dir, None),
         ("--q", args.q, QUERY_ARG_RE), ("--repo", args.repo, REPO_ARG_RE),
@@ -471,7 +501,7 @@ def _remote_list(argv: list[str], target: str) -> int:
 
 def _remote_tag(argv: list[str], target: str) -> int:
     """Add, remove, or replace tags of a draft on the remote server."""
-    parser = argparse.ArgumentParser(prog="tailplan tag")
+    parser = _CheckedParser(prog="tailplan tag")
     parser.add_argument("draft")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--add", action="append", default=[])
@@ -508,6 +538,33 @@ def _remote_tag(argv: list[str], target: str) -> int:
     if args.json:
         command.append("--json")
     return subprocess.run(command, check=False).returncode
+
+
+def _remote_archive(command: str, argv: list[str], target: str) -> int:
+    """Archive or restore one draft. Accept only a draft reference and --json."""
+    parser = _CheckedParser(prog=f"tailplan {command}")
+    parser.add_argument("draft")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    validate_target(target)
+    ref = _load_library()["parse_draft_ref"](args.draft)
+    words = ["ssh", target, "tailplan-share", command, shlex.quote(ref)]
+    if args.json:
+        words.append("--json")
+    return subprocess.run(words, check=False).returncode
+
+
+def _slug_may_name_existing_draft(target: str, slug: str) -> bool:
+    """Return False only when the host says the slug is free. A failed check counts as taken."""
+    try:
+        completed = subprocess.run(
+            ["ssh", target, "tailplan-share", "check", "--slug", shlex.quote(slug), "--json"],
+            capture_output=True, text=True, check=False,
+        )
+        report = json.loads(completed.stdout)
+        return not (isinstance(report, dict) and report.get("slug", {}).get("status") == "available")
+    except (OSError, ValueError, AttributeError):
+        return True
 
 
 def _remote_download(argv: list[str], target: str) -> int:
@@ -563,21 +620,23 @@ def main() -> int:
             return 2
         target = argv[index + 1]
         argv = argv[:index] + argv[index + 2:]
-    if argv and argv[0] in {"list", "tag"}:
+    if argv and argv[0] in {"list", "tag", "archive", "unarchive"}:
         try:
-            handler = _remote_list if argv[0] == "list" else _remote_tag
-            return handler(argv[1:], target)
+            if argv[0] == "list":
+                return _remote_list(argv[1:], target)
+            if argv[0] == "tag":
+                return _remote_tag(argv[1:], target)
+            return _remote_archive(argv[0], argv[1:], target)
         except (ValueError, RuntimeError, OSError) as exc:
-            print(f"tailplan: {exc}", file=sys.stderr)
-            return 2
+            return _fail(exc, json_output="--json" in argv[1:])
     if argv and argv[0] in {
         "whoami", "history", "disable", "enable", "delete",
-        "favorite", "unfavorite", "archive", "unarchive", "keys", "themes", "typography",
+        "favorite", "unfavorite", "keys", "themes", "typography",
     }:
         try:
             validate_target(target)
             forwarded = list(argv)
-            if forwarded[0] in {"history", "disable", "enable", "delete", "favorite", "unfavorite", "archive", "unarchive"}:
+            if forwarded[0] in {"history", "disable", "enable", "delete", "favorite", "unfavorite"}:
                 library = _load_library()
                 idx = 1
                 while idx < len(forwarded):
@@ -674,6 +733,18 @@ def main() -> int:
                 selected = args.draft
             else:
                 selected = binding["draftId"] if binding else None
+            slug_check: list[bool] = []
+
+            def creates_draft(selected_id: str | None) -> bool:
+                """Tell whether this upload makes a new draft, so env default tags may apply."""
+                if selected_id is not None:
+                    return False
+                if slug is None or not default_tags:
+                    return True
+                if not slug_check:
+                    slug_check.append(_slug_may_name_existing_draft(args.target, slug))
+                return not slug_check[0]
+
             provenance_cwd = source if source.is_dir() else source.parent
             metadata_path = Path(temporary) / "provenance.json"
             metadata_path.write_text(json.dumps(library["collect_provenance"](provenance_cwd)), encoding="utf-8")
@@ -694,7 +765,7 @@ def main() -> int:
                     theme=args.theme, document_type=args.document_type, layout=args.layout,
                     typography=args.typography, slug=slug, files_json_path=files_json_path,
                     sharing=upload_sharing, favorite=args.favorite,
-                    tags=tags_for_upload(explicit_tags, default_tags, new_draft=args.new or not selected),
+                    tags=tags_for_upload(explicit_tags, default_tags, new_draft=creates_draft(selected)),
                 )
             except subprocess.CalledProcessError as exc:
                 try:
@@ -719,7 +790,7 @@ def main() -> int:
                     theme=args.theme, document_type=args.document_type, layout=args.layout,
                     typography=args.typography, slug=slug, files_json_path=files_json_path,
                     sharing=upload_sharing, favorite=args.favorite,
-                    tags=tags_for_upload(explicit_tags, default_tags, new_draft=True),
+                    tags=tags_for_upload(explicit_tags, default_tags, new_draft=creates_draft(None)),
                 )
             value = json.loads(result.stdout)
             if not isinstance(value, dict) or value.get("ok") is not True:
@@ -727,8 +798,7 @@ def main() -> int:
             library["save_draft_binding"](state_dir, remote_api_key, source, value)
             return library["_emit_success"](value, json_output=args.json, stdout=sys.stdout, stderr=sys.stderr)
     except (FileNotFoundError, ValueError, RuntimeError, KeyError) as exc:
-        print(f"tailplan-share: {exc}", file=sys.stderr)
-        return 2
+        return _fail(exc, json_output=args.json, prefix="tailplan-share")
     except subprocess.CalledProcessError as exc:
         if exc.stdout:
             print(exc.stdout, end="", file=sys.stdout)
