@@ -23,17 +23,26 @@ MAX_SHARING_ARGS = 64
 # Sharing values. Each pattern refuses a leading "-", so no value reads as an option.
 VISIBILITY_RE = re.compile(r"private|workspace|authenticated|link")
 WORKSPACE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
-EMAIL_ARG_RE = re.compile(r"[A-Za-z0-9_%+'][A-Za-z0-9._%+'-]{0,63}@[A-Za-z0-9][A-Za-z0-9.-]{0,252}")
+# An email needs a dotted domain. A dot-free login such as alice@github is a
+# Tailscale login: use --grant-tailscale for it.
+EMAIL_ARG_RE = re.compile(
+    r"[A-Za-z0-9_%+'][A-Za-z0-9._%+'-]{0,63}"
+    r"@(?=[A-Za-z0-9.-]{3,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+"
+)
+TAILSCALE_LOGIN_ARG_RE = re.compile(
+    r"[A-Za-z0-9_%+'][A-Za-z0-9._%+'-]{0,63}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?"
+)
 GROUP_ARG_RE = re.compile(r"[A-Za-z0-9/_][A-Za-z0-9 _./:@+-]{0,254}")
 ROLE_RE = re.compile(r"viewer|editor")
 SHARING_VALUES = {
     "--visibility": VISIBILITY_RE,
     "--workspace": WORKSPACE_RE,
     "--grant-email": EMAIL_ARG_RE,
-    "--grant-tailscale": EMAIL_ARG_RE,
+    "--grant-tailscale": TAILSCALE_LOGIN_ARG_RE,
     "--grant-group": GROUP_ARG_RE,
     "--revoke-email": EMAIL_ARG_RE,
-    "--revoke-tailscale": EMAIL_ARG_RE,
+    "--revoke-tailscale": TAILSCALE_LOGIN_ARG_RE,
     "--revoke-group": GROUP_ARG_RE,
     "--role": ROLE_RE,
     "--grant-role": ROLE_RE,

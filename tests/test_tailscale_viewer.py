@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import tempfile
 import threading
@@ -9,7 +10,8 @@ import unittest
 from contextlib import closing
 from http.client import HTTPConnection
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from urllib.parse import urlencode
 
 import tailplan_server as server
 
@@ -29,8 +31,6 @@ POLICY = {
         {"match": {"email": ROSTER}, "workspaces": {"collab": "editor"}},
         {"match": {"email": KIN}, "workspaces": {"family": "viewer"}},
         {"match": {"tailscale_login": ALICE}, "workspaces": {"collab": "viewer"}},
-        # An email rule never matches a dot-free login, even with the same text.
-        {"match": {"email": BOB}, "workspaces": {"collab": "viewer"}},
     ],
 }
 
@@ -39,12 +39,15 @@ class ViewerCase(unittest.TestCase):
     """Start a primary listener and a trusted proxy listener with the passive viewer on."""
 
     policy: dict | None = POLICY
+    modes: tuple[str, ...] = ("api_key", "tailscale")
+    oidc_client: object = None
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.store = server.Store(Path(self.temporary.name) / "data")
         auth = server.AuthConfig(
-            policy=server.RBACPolicy(self.policy), viewer_mode="session", modes=("api_key", "tailscale"))
+            policy=server.RBACPolicy(self.policy), viewer_mode="session", modes=self.modes,
+            oidc=self.oidc_client)
         self.primary, self.proxy = server.create_servers(
             ("127.0.0.1", 0), ("127.0.0.1", 0), store=self.store, token="bootstrap-test",
             base_url="", redirect_view_base_url="", auth=auth,
@@ -67,17 +70,22 @@ class ViewerCase(unittest.TestCase):
         self.temporary.cleanup()
 
     def request(self, path, method="GET", *, login=None, payload=None, token=None, proxy=True,
-                headers=None):
+                headers=None, form=None, cookies=None):
         request_headers = {"Accept": "text/html", **(headers or {})}
         if login:
             request_headers["Tailscale-User-Login"] = login
             request_headers["Tailscale-User-Name"] = "Viewer"
         if token:
             request_headers["Authorization"] = "Bearer " + token
+        if cookies:
+            request_headers["Cookie"] = "; ".join(cookies)
         body = None
         if payload is not None:
             body = json.dumps(payload).encode()
             request_headers["Content-Type"] = "application/json"
+        if form is not None:
+            body = urlencode(form).encode()
+            request_headers["Content-Type"] = "application/x-www-form-urlencoded"
         listener = self.proxy if proxy else self.primary
         connection = HTTPConnection("127.0.0.1", listener.server_port, timeout=5)
         try:
@@ -102,6 +110,20 @@ class ViewerCase(unittest.TestCase):
 
     def events(self, event_type: str) -> list[dict]:
         return self.store.list_audit(limit=500, event=event_type)
+
+    def tailscale_sign_in(self, login: str):
+        """Sign in with method=tailscale on the proxy. Return (status, session cookie or None)."""
+        status, headers, body = self.request("/auth/sign-in", login=login)
+        self.assertEqual(200, status)
+        login_cookie = next(value.split(";", 1)[0] for value in headers.get_all("Set-Cookie")
+                            if value.startswith("tailplan_login="))
+        csrf = re.search(r'name="csrf" value="([^"]+)"', body.decode())[1]
+        status, headers, _ = self.request(
+            "/auth/sign-in", "POST", login=login, cookies=[login_cookie],
+            form={"csrf": csrf, "method": "tailscale", "next": "/dashboard"})
+        session = next((value.split(";", 1)[0] for value in headers.get_all("Set-Cookie") or []
+                        if value.startswith("tailplan_session=")), None)
+        return status, session
 
 
 class PassiveReadTests(ViewerCase):
@@ -159,7 +181,7 @@ class PassiveReadTests(ViewerCase):
         self.store.add_grant(email_grant, "email", ALICE, "viewer", "local")
         self.store.add_grant(email_grant, "email", BOB, "viewer", "local")
         self.assertEqual(200, self.request(f"/d/{collab}", login=ALICE)[0])  # tailscale_login rule
-        self.assertEqual(404, self.request(f"/d/{collab}", login=BOB)[0])  # email rule only
+        self.assertEqual(404, self.request(f"/d/{collab}", login=BOB)[0])  # no rule names bob
         self.assertEqual(200, self.request(f"/d/{login_grant}", login=BOB)[0])
         self.assertEqual(404, self.request(f"/d/{email_grant}", login=ALICE)[0])
         self.assertEqual(404, self.request(f"/d/{email_grant}", login=BOB)[0])
@@ -182,7 +204,24 @@ class PassiveReadTests(ViewerCase):
         self.assertIsNone(events[0]["actorAccountId"])
         self.assertEqual(ROSTER, events[0]["actorEmail"])
         self.assertEqual("tailscale_header", events[0]["detail"]["authMethod"])
+        self.assertEqual(ROSTER, events[0]["detail"]["actorLogin"])
         self.assertEqual(draft_id, events[0]["targetId"])
+
+    def test_share_and_preview_reads_are_audited(self) -> None:
+        draft_id = self.draft("Previewed", workspace="collab", visibility="workspace")
+        self.request(f"/d/{draft_id}/share", "HEAD", login=ROSTER)
+        self.request(f"/d/{draft_id}/v/1/preview.png", "HEAD", login=ROSTER)
+        self.assertEqual([], self.events("draft.view"))
+        self.assertEqual(200, self.request(f"/d/{draft_id}/share", login=ROSTER)[0])
+        self.assertEqual(200, self.request(f"/d/{draft_id}/v/1/preview.png", login=ROSTER)[0])
+        events = self.events("draft.view")
+        self.assertEqual({"share", "preview.png"}, {event["detail"]["path"] for event in events})
+        for event in events:
+            self.assertIsNone(event["actorAccountId"])
+            self.assertEqual(ROSTER, event["actorEmail"])
+            self.assertEqual("tailscale_header", event["detail"]["authMethod"])
+            self.assertEqual(ROSTER, event["detail"]["actorLogin"])
+            self.assertEqual(draft_id, event["targetId"])
 
 
 class PassiveBoundaryTests(ViewerCase):
@@ -241,12 +280,44 @@ class PassiveBoundaryTests(ViewerCase):
         self.assertFalse(draft.get("disabledAt"))
         self.assertEqual([], self.events("draft.source"))
 
+    def test_bearer_key_wins_over_an_unmatched_header_on_pages(self) -> None:
+        draft_id = self.draft("Owned", visibility="private")
+        self.assertEqual(404, self.request(f"/d/{draft_id}/", login=FRIEND)[0])
+        status, _, body = self.request(f"/d/{draft_id}/", login=FRIEND, token="bootstrap-test")
+        self.assertEqual(200, status)
+        self.assertIn(b"Owned", body)
+
+    def test_denied_reader_gets_the_same_404_with_a_sign_in_link(self) -> None:
+        draft_id = self.draft("Hidden", visibility="private")
+        denied = self.request(f"/d/{draft_id}/", login=FRIEND)
+        missing = self.request("/d/nosuchdraft/", login=FRIEND)
+        self.assertEqual((404, 404), (denied[0], missing[0]))
+        self.assertEqual(denied[2], missing[2])
+        self.assertRegex(denied[2].decode(), r'href="[^"]*/auth/sign-in">Sign in</a>')
+        self.assertIsNone(denied[1].get("Location"))
+
     def test_session_and_bearer_keep_precedence_and_full_roles(self) -> None:
         draft_id = self.draft("Collab", workspace="collab", visibility="workspace")
         status, _, body = self.request(f"/api/drafts/{draft_id}/source", token="bootstrap-test",
                                        login=FRIEND, headers={"Accept": "application/json"})
         self.assertEqual(200, status)
         self.assertEqual(draft_id, json.loads(body)["draftId"])
+
+
+class ModesDecoupledTests(ViewerCase):
+    """The passive viewer works when TAILPLAN_AUTH_MODES leaves out tailscale."""
+
+    modes = ("oidc", "api_key")
+    oidc_client = Mock()  # Never called: no test here signs in with OIDC.
+
+    def test_passive_viewer_works_while_tailscale_sign_in_stays_off(self) -> None:
+        draft_id = self.draft("Collab", workspace="collab", visibility="workspace")
+        before = self.state()
+        self.assertEqual(200, self.request(f"/d/{draft_id}", login=ROSTER)[0])
+        status, session = self.tailscale_sign_in(ROSTER)
+        self.assertEqual(403, status)
+        self.assertIsNone(session)
+        self.assertEqual(before, self.state())
 
 
 class OpenPolicyTests(ViewerCase):
@@ -291,6 +362,23 @@ class RoleUnitTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             server.RBACPolicy({"rules": [{"match": {"login": "x@y"}}]})
 
+    def test_policy_refuses_dot_free_email_rules_and_odd_logins(self) -> None:
+        with self.assertRaisesRegex(ValueError, "tailscale_login"):
+            server.RBACPolicy({"rules": [{"match": {"email": BOB}}]})
+        for login in ("a\u200b@github", "a@git\u202ehub", "<a>@github", "a@github;id", "a b@github"):
+            with self.subTest(login=login), self.assertRaises(ValueError):
+                server.RBACPolicy({"rules": [{"match": {"tailscale_login": login}}]})
+            self.assertIsNone(server.TAILSCALE_LOGIN_RE.fullmatch(login))
+
+    def test_revoke_accepts_legacy_values_that_grants_refuse(self) -> None:
+        with self.assertRaises(ValueError):
+            server.normalize_grant("email", "Alice@GitHub")
+        self.assertEqual("alice@github", server.revoke_value("email", " Alice@GitHub "))
+        self.assertEqual("family", server.revoke_value("group", "/family"))
+        for principal_type, value in (("user", "x"), ("email", ""), ("email", "a\x00b"), ("email", 1)):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                server.revoke_value(principal_type, value)
+
     def test_unmatched_identity_loses_authenticated_access(self) -> None:
         identity = {"accountId": "acct", "email": FRIEND, "emailVerified": True, "workspaces": {},
                     "policyMatched": False}
@@ -311,24 +399,47 @@ class RoleUnitTests(unittest.TestCase):
         self.assertNotEqual("owner", server.draft_role({**identity, "accountId": None}, owned, [], self.auth))
 
 
-class TailscaleSignInLinkTests(ViewerCase):
+class TailscaleSignInIsolationTests(ViewerCase):
     policy = None
 
-    def test_verified_email_login_joins_the_existing_oidc_account(self) -> None:
+    def test_sign_in_never_joins_an_oidc_admin_with_the_same_email(self) -> None:
         self.store.ensure_account("oidc-account", "Linked")
         self.store.upsert_principal(
             issuer="https://idp.example.com", subject="sub-1", account_id="oidc-account",
-            email="linked@example.com", email_verified=True, display_name="Linked", groups=[],
-            instance_role=None, workspaces={"collab": "editor"}, default_workspace="collab",
+            email="linked@example.com", email_verified=True, display_name="Linked", groups=["admins"],
+            instance_role="admin", workspaces={"collab": "admin"}, default_workspace="collab",
         )
-        handler = server.Handler.__new__(server.Handler)
-        handler.server = self.proxy
-        handler.client_address = ("127.0.0.1", 0)
-        handler.headers = {}
-        account = handler.tailscale_identity("Linked@Example.com", "Linked")
-        self.assertEqual("oidc-account", account["accountId"])
-        self.assertEqual({"oidc-account"}, set(self.store.load_meta().get("accounts", {})))
-        self.assertEqual("https://idp.example.com", self.store.account_principal("oidc-account")["issuer"])
+        admin_draft = self.draft("Admin only", visibility="private", account_id="oidc-account")
+        status, headers, body = self.request("/api/uploads", "POST", token="bootstrap-test",
+                                             headers={"Accept": "application/json"}, payload={
+            "files": [{"path": "index.html", "html": '<title>Pair</title><a href="two.html">Two</a>'},
+                      {"path": "two.html", "html": "<title>Two</title><p>Second page</p>"}],
+            "visibility": "private",
+            "grants": [{"type": "tailscale_login", "value": "linked@example.com"}],
+        })
+        self.assertEqual(201, status, body)
+        granted = json.loads(body)["draftId"]
+
+        status, session = self.tailscale_sign_in("Linked@Example.com")
+        self.assertEqual(303, status)
+        self.assertIsNotNone(session)
+        principal = self.store.principal("tailscale", "linked@example.com")
+        self.assertIsNotNone(principal)
+        self.assertNotEqual("oidc-account", principal["accountId"])
+        self.assertIsNone(principal["instanceRole"])
+        self.assertEqual("https://idp.example.com",
+                         self.store.account_principal("oidc-account")["issuer"])
+        # No admin role: the OIDC account's private draft stays hidden.
+        self.assertEqual(404, self.request(f"/d/{admin_draft}/", cookies=[session])[0])
+
+        status, _, body = self.request(f"/d/{granted}/", cookies=[session])
+        self.assertEqual(200, status)
+        href = re.search(r'href="(two\.html\?tv=[^"]+)"', body.decode())
+        self.assertIsNotNone(href)
+        # The view token keeps the Tailscale login, so the tailscale_login grant still matches.
+        status, _, body = self.request(f"/d/{granted}/{href[1]}")
+        self.assertEqual(200, status)
+        self.assertIn(b"Second page", body)
 
     def test_dot_free_login_gets_its_own_account(self) -> None:
         handler = server.Handler.__new__(server.Handler)
@@ -351,12 +462,18 @@ class MigrationTests(unittest.TestCase):
                 ("draft1", "group", "staff", "editor", None, "2026-01-02T00:00:00Z"),
                 ("draft2", "workspace", "collab", "viewer", "acct", "2026-01-03T00:00:00Z"),
             ]
+            legacy = ("draft3", "email", "alice@github", "viewer", "local", "2026-01-04T00:00:00Z")
             with closing(sqlite3.connect(db_path)) as connection:
                 connection.execute("PRAGMA journal_mode=WAL")
                 for version in (1, 2):
                     for statement in server._SCHEMA_STATEMENTS[version]:
                         connection.execute(statement)
-                connection.executemany("INSERT INTO draft_grants VALUES (?, ?, ?, ?, ?, ?)", rows)
+                connection.executemany("INSERT INTO draft_grants VALUES (?, ?, ?, ?, ?, ?)", [*rows, legacy])
+                principal = ("INSERT INTO principals (issuer, subject, account_id, email, email_verified,"
+                             " created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'now', 'now')")
+                connection.execute(principal, ("tailscale", "bob@passkey", "acct-bob", "bob@passkey"))
+                connection.execute(principal, ("tailscale", "c@example.com", "acct-c", "c@example.com"))
+                connection.execute(principal, ("https://idp.example.com", "s1", "acct-d", "d@corp"))
                 connection.execute("PRAGMA user_version = 2")
                 connection.commit()
                 with self.assertRaises(sqlite3.IntegrityError):
@@ -374,7 +491,12 @@ class MigrationTests(unittest.TestCase):
                     "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'draft_grants'")}
                 tables = {row[0] for row in connection.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table'")}
-            self.assertEqual(sorted(rows), sorted(kept))
+            self.assertEqual(sorted([*rows, ("draft3", "tailscale_login", *legacy[2:])]), sorted(kept))
+            self.assertIsNone(store.principal("tailscale", "bob@passkey")["email"])
+            self.assertFalse(store.principal("tailscale", "bob@passkey")["emailVerified"])
+            self.assertEqual("c@example.com", store.principal("tailscale", "c@example.com")["email"])
+            # Only Tailscale principals change; an IdP's claim stays as it was.
+            self.assertEqual("d@corp", store.principal("https://idp.example.com", "s1")["email"])
             self.assertIn("draft_grants_principal", indexes)
             self.assertNotIn("draft_grants_v3", tables)
             store.add_grant("draft1", "tailscale_login", "alice@github", "viewer", "local")
@@ -405,6 +527,32 @@ class UploadGrantTests(ViewerCase):
                           ("group", "family", "viewer")}, grants)
         self.assertEqual(200, self.request(f"/d/{body['draftId']}", login=ALICE)[0])
 
+    def test_upload_grants_are_audited_once(self) -> None:
+        payload = {"visibility": "private", "grants": [
+            {"type": "email", "value": "zed@example.com"}, {"type": "tailscale_login", "value": ALICE}]}
+        headers = {"Accept": "application/json", "Idempotency-Key": "grant-audit-1"}
+        for expected in (201, 200):
+            status, _, body = self.request("/api/uploads", "POST", token="bootstrap-test", headers=headers,
+                                           payload={"html": HTML.format("Up", "Up"), **payload})
+            self.assertEqual(expected, status, body)
+        events = self.events("sharing.grant")
+        self.assertEqual({("email", "zed@example.com"), ("tailscale_login", ALICE)},
+                         {(event["detail"]["type"], event["detail"]["value"]) for event in events})
+        self.assertEqual(2, len(events))
+
+    def test_reused_key_with_other_sharing_is_a_conflict(self) -> None:
+        headers = {"Accept": "application/json", "Idempotency-Key": "grant-conflict-1"}
+        base = {"html": HTML.format("Up", "Up")}
+        status, _, _ = self.request("/api/uploads", "POST", token="bootstrap-test", headers=headers,
+                                    payload=base)
+        self.assertEqual(201, status)
+        for extra in ({"grants": [{"type": "email", "value": "zed@example.com"}]},
+                      {"workspace": "owner"}, {"visibility": "private"}):
+            with self.subTest(extra=extra):
+                status, _, _ = self.request("/api/uploads", "POST", token="bootstrap-test",
+                                            headers=headers, payload={**base, **extra})
+                self.assertEqual(409, status)
+
     def test_invalid_grants_reject_the_whole_upload(self) -> None:
         for grants in ([{"type": "email", "value": ALICE}], [{"type": "user", "value": "x"}],
                        [{"type": "email", "value": FRIEND, "role": "owner"}], "email:x@y.com",
@@ -422,12 +570,21 @@ class UploadGrantTests(ViewerCase):
 
 
 class ArgumentTests(unittest.TestCase):
+    PROXY = ["--trust-tailscale-identity", "--proxy-host", "127.0.0.1", "--proxy-port", "9128"]
+
     def test_viewer_flag_reads_the_environment(self) -> None:
         with patch.dict("os.environ", {"TAILPLAN_TAILSCALE_VIEWER": "1"}):
-            self.assertTrue(server.parse_args([]).tailscale_viewer)
+            self.assertTrue(server.parse_args(self.PROXY).tailscale_viewer)
         with patch.dict("os.environ", {"TAILPLAN_TAILSCALE_VIEWER": "0"}):
             self.assertFalse(server.parse_args([]).tailscale_viewer)
-            self.assertTrue(server.parse_args(["--tailscale-viewer"]).tailscale_viewer)
+            self.assertTrue(server.parse_args(["--tailscale-viewer", *self.PROXY]).tailscale_viewer)
+
+    def test_viewer_flag_fails_fast_without_trust_and_proxy(self) -> None:
+        with patch.dict("os.environ", {"TAILPLAN_TAILSCALE_VIEWER": "0"}):
+            for argv in (["--tailscale-viewer"],
+                         ["--tailscale-viewer", "--proxy-host", "127.0.0.1", "--proxy-port", "9128"]):
+                with self.subTest(argv=argv), patch("sys.stderr"), self.assertRaises(SystemExit):
+                    server.parse_args(argv)
 
     def test_primary_listener_never_turns_on_the_viewer(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -2900,13 +2900,25 @@ _SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {
             created_at TEXT NOT NULL,
             PRIMARY KEY (draft_id, principal_type, principal_value)
         ) WITHOUT ROWID""",
-        """INSERT INTO draft_grants_v3
+        # A legacy `email` grant with a dot-free domain, such as
+        # `alice@github`, is a Tailscale login. It moves to that type, so it
+        # still matches the same reader and never matches as an email.
+        """INSERT OR IGNORE INTO draft_grants_v3
             (draft_id, principal_type, principal_value, role, granted_by, created_at)
-            SELECT draft_id, principal_type, principal_value, role, granted_by, created_at
+            SELECT draft_id,
+                   CASE WHEN principal_type = 'email'
+                             AND substr(principal_value, instr(principal_value, '@') + 1) NOT LIKE '%.%'
+                        THEN 'tailscale_login' ELSE principal_type END,
+                   principal_value, role, granted_by, created_at
             FROM draft_grants""",
         "DROP TABLE draft_grants",
         "ALTER TABLE draft_grants_v3 RENAME TO draft_grants",
         "CREATE INDEX draft_grants_principal ON draft_grants (principal_type, principal_value)",
+        # A Tailscale principal stored a dot-free login as a verified email.
+        # It is not an email, so clear it.
+        """UPDATE principals SET email = NULL, email_verified = 0
+            WHERE issuer = 'tailscale' AND email IS NOT NULL
+              AND substr(email, instr(email, '@') + 1) NOT LIKE '%.%'""",
     ),
 }
 SCHEMA_VERSION = max(_SCHEMA_STATEMENTS)
@@ -3516,6 +3528,8 @@ class Store:
             "description": description,
             "metadata": metadata,
             **({"grants": grants} if grants else {}),
+            **({"workspace": workspace} if workspace is not None else {}),
+            **({"visibility": visibility} if visibility is not None else {}),
         }
         fingerprint = sha256_text(
             json.dumps(
@@ -3529,8 +3543,12 @@ class Store:
             receipt = data["idempotency"][request_key]
             current_draft = self._owned_draft(data, receipt["result"]["draftId"], account_id)
             legacy_match = False
+            # Older receipts carry no sharing fields, so they match only an
+            # upload that asks for no grants, workspace, or visibility.
+            plain_sharing = not grants and workspace is None and visibility is None
             if (
-                account_id == "local"
+                plain_sharing
+                and account_id == "local"
                 and not extra_pages
                 and slug is None
                 and "versionId" not in receipt["result"]
@@ -3545,7 +3563,7 @@ class Store:
                         separators=(",", ":"),
                     )
                 )
-            if not legacy_match and not extra_pages and slug is None:
+            if not legacy_match and plain_sharing and not extra_pages and slug is None:
                 legacy_match = receipt.get("fingerprint") == sha256_text(
                     json.dumps(
                         {
@@ -4208,20 +4226,6 @@ class Store:
         rows = self._rows("SELECT * FROM principals WHERE issuer = ? AND subject = ?", (issuer, subject))
         return self._principal_from_row(rows[0] if rows else None)
 
-    def account_for_verified_email(self, email: str) -> dict | None:
-        """Return the account of a principal with this verified email, or None.
-
-        Tailscale sign-in uses it to join an existing OIDC account instead of
-        making a second account for the same person.
-        """
-        rows = self._rows(
-            """SELECT account_id FROM principals
-               WHERE email = ? AND email_verified = 1 AND issuer != 'tailscale'
-               ORDER BY last_login_at DESC LIMIT 1""",
-            (email.strip().lower(),),
-        )
-        return self.account(rows[0]["account_id"]) if rows else None
-
     def account_principal(self, account_id: str) -> dict | None:
         """Return the principal that signed in to the account most recently."""
         rows = self._rows(
@@ -4500,8 +4504,8 @@ class MissLimiter:
 
 
 def parse_allowed_logins(value: str | None) -> frozenset[str]:
-    """Normalize a comma-separated login list into casefolded, non-empty names."""
-    return frozenset(item.strip().casefold() for item in (value or "").split(",") if item.strip())
+    """Normalize a comma-separated login list into lowercase, non-empty names."""
+    return frozenset(item.strip().lower() for item in (value or "").split(",") if item.strip())
 
 
 SESSION_SECRET_LABEL = b"tailplan-session-v1"
@@ -4577,7 +4581,11 @@ EMAIL_RE = re.compile(
     r"(?=[^@]{1,64}@)[^@\s.]+(?:\.[^@\s.]+)*"
     r"@(?=[^@]{1,255}$)[^@\s.]+(?:\.[^@\s.]+)+"
 )
-TAILSCALE_LOGIN_RE = re.compile(r"[^@\s]{1,64}@[^@\s]{1,255}")
+# A Tailscale login is printable ASCII: no spaces, zero-width or
+# right-to-left characters, and no HTML or shell punctuation.
+TAILSCALE_LOGIN_RE = re.compile(
+    r"[A-Za-z0-9_%+'][A-Za-z0-9._%+'-]{0,63}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?"
+)
 CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
 
@@ -4636,6 +4644,24 @@ def normalize_grant(principal_type: object, value: object) -> str:
     return normalized
 
 
+def revoke_value(principal_type: object, value: object) -> str:
+    """Return the stored form of a grant to revoke. Raise ValueError when it is invalid.
+
+    Unlike normalize_grant, it skips the email and login patterns, so a
+    legacy grant that the patterns now refuse can still be revoked.
+    """
+    if principal_type not in GRANT_TYPES:
+        raise ValueError("Grant type must be email, group, workspace, or tailscale_login.")
+    if not isinstance(value, str) or not value.strip() or len(value) > 255:
+        raise ValueError("Grant value is required.")
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("Grant value has control characters.")
+    normalized = _normalize_principal_value(value) if principal_type == "group" else value.strip().lower()
+    if not normalized:
+        raise ValueError("Grant value is required.")
+    return normalized
+
+
 class RBACPolicy:
     """Map sign-in claims to an instance role and workspace roles. Deny by default."""
 
@@ -4685,6 +4711,14 @@ class RBACPolicy:
         default = rule.get("default_workspace")
         if default is not None:
             self._workspace(default, f"rule {index + 1} default_workspace")
+        if "email" in match and EMAIL_RE.fullmatch(match["email"].strip().lower()) is None:
+            raise ValueError(
+                f"{where} email {match['email'].strip()!r} is not an email address with a dotted "
+                "domain. For a Tailscale login such as alice@github, use tailscale_login."
+            )
+        if ("tailscale_login" in match
+                and TAILSCALE_LOGIN_RE.fullmatch(match["tailscale_login"].strip().lower()) is None):
+            raise ValueError(f"{where} tailscale_login is not a valid Tailscale login.")
         return {
             "group": _normalize_principal_value(match["group"]) if "group" in match else None,
             "email": match["email"].strip().lower() if "email" in match else None,
@@ -4717,6 +4751,8 @@ class RBACPolicy:
         email rule.
         """
         email_key = email.strip().lower() if email and email_verified else None
+        if email_key is not None and EMAIL_RE.fullmatch(email_key) is None:
+            email_key = None
         login_key = tailscale_login.strip().lower() if tailscale_login else None
         group_keys = {_normalize_principal_value(group) for group in groups if isinstance(group, str)}
         matched = [
@@ -4814,6 +4850,8 @@ def _best_role(*roles: str | None) -> str | None:
 def shared_role(identity: dict, draft: dict, grants: list[dict], auth: AuthConfig) -> str | None:
     """Return the role from grants and workspace membership only."""
     email = identity.get("email") if identity.get("emailVerified") else None
+    if not isinstance(email, str) or EMAIL_RE.fullmatch(email.strip().lower()) is None:
+        email = None
     login = (identity.get("tailscaleLogin") or "").strip().lower() or None
     groups = {_normalize_principal_value(group) for group in identity.get("groups") or []}
     workspaces = identity.get("workspaces") or {}
@@ -5553,7 +5591,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(503, {"ok": False, "error": "Storage unavailable."})
             return
         if not draft or version_num is None:
-            self.send_html(404, not_found())
+            self.send_not_found()
             return
         record = draft.get("versions", {}).get(str(version_num))
         multi_page = bool(record and (record.get("pageCount") or 1) > 1 and record.get("pages"))
@@ -5567,17 +5605,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_draft_redirect(path + "/", query)
             return
         if doc is None:
-            self.send_html(404, not_found())
+            self.send_not_found()
             return
         _gated, identity, source = gate
         cookies, view_token = self.view_credentials(identity, source, draft["draftId"], multi_page)
         if identity is not None and not head_only:
-            detail = {"version": version_num, "path": route["page_path"] or "index.html"}
-            actor = identity
-            if source == "tailscale_header":
-                actor = {"accountId": None, "email": identity["tailscaleLogin"]}
-                detail = {"authMethod": "tailscale_header", **detail}
-            self.audit_event("draft.view", actor, "draft", draft["draftId"], detail=detail)
+            self.audit_view(identity, source, draft["draftId"], version_num,
+                            route["page_path"] or "index.html")
         self.send_document(
             doc,
             head_only=head_only,
@@ -5588,13 +5622,23 @@ class Handler(BaseHTTPRequestHandler):
             view_token=view_token,
         )
 
+    def audit_view(self, identity: dict, source: str, draft_id: str, version: int, path: str) -> None:
+        """Record a `draft.view` event for a reader."""
+        detail: dict = {"version": version, "path": path}
+        actor = identity
+        if source == "tailscale_header":
+            actor = {"accountId": None, "email": identity.get("email") or identity["tailscaleLogin"]}
+            detail = {"authMethod": "tailscale_header", "actorLogin": identity["tailscaleLogin"], **detail}
+        self.audit_event("draft.view", actor, "draft", draft_id, detail=detail)
+
     def serve_preview(self, match: re.Match[str], *, head_only: bool = False) -> None:
         if self.server.redirect_view_base_url:
             self.send_view_redirect(self.route_path(), urlparse(self.path).query)
             return
         version = int(match.group(2)) if match.group(2) else None
         try:
-            if self.gate_draft(match.group(1), api=False) is None:
+            gate = self.gate_draft(match.group(1), api=False)
+            if gate is None:
                 return
             draft, resolved_version, doc, allow_scripts, _redirect = self.store.get_page(
                 match.group(1), version, ""
@@ -5604,9 +5648,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(503, {"ok": False, "error": "Storage unavailable."})
             return
         if not draft or doc is None or resolved_version is None:
-            self.send_html(404, not_found())
+            self.send_not_found()
             return
         version = resolved_version
+        _gated, identity, source = gate
+        if identity is not None and not head_only:
+            self.audit_view(identity, source, draft["draftId"], version, match.group(3))
         record = draft.get("versions", {}).get(str(version), {})
         title = (draft["title"] if version == draft["latestVersionNumber"]
                  else title_from_html(doc, record.get("filename")))
@@ -5681,18 +5728,46 @@ class Handler(BaseHTTPRequestHandler):
         roles: dict = {"instanceRole": None, "workspaces": {}, "defaultWorkspace": policy.default_workspace,
                        "email": None, "emailVerified": False, "groups": []}
         principal = self.store.account_principal(account_id) if account_id != "anonymous" else None
+        ts_login = None
+        if identity.get("apiKeyId") == "tailscale" and isinstance(identity.get("login"), str):
+            ts_login = identity["login"].strip().lower()
+        elif principal and principal["issuer"] == "tailscale":
+            ts_login = principal["subject"].strip().lower()
+        if ts_login:
+            roles["tailscaleLogin"] = ts_login
+        # A stored email counts only when it is a real email address. Older
+        # Tailscale principals stored dot-free logins such as `bob@passkey`.
+        stored_email = principal["email"] if principal else None
+        valid_email = (stored_email.strip().lower() if isinstance(stored_email, str)
+                       and EMAIL_RE.fullmatch(stored_email.strip().lower()) else None)
         if principal:
             roles.update(
                 instanceRole=principal["instanceRole"], workspaces=principal["workspaces"],
                 defaultWorkspace=principal["defaultWorkspace"] or policy.default_workspace,
-                email=principal["email"], emailVerified=principal["emailVerified"], groups=principal["groups"],
+                email=valid_email, emailVerified=valid_email is not None and principal["emailVerified"],
+                groups=principal["groups"],
             )
         elif account_id not in {"local", "anonymous"} and not policy.configured:
             roles.update(policy.open_roles())
-        if identity.get("apiKeyId") == "tailscale" and isinstance(identity.get("login"), str):
-            roles["tailscaleLogin"] = identity["login"].strip().lower()
-        elif principal and principal["issuer"] == "tailscale":
-            roles["tailscaleLogin"] = principal["subject"]
+        if account_id == "anonymous":
+            roles["policyMatched"] = False
+        elif account_id == "local" or not policy.configured:
+            roles["policyMatched"] = True
+        else:
+            # Check the live policy on every request, so a rule removed from
+            # the policy file takes the roles away at once.
+            resolved = policy.resolve(
+                email=valid_email,
+                email_verified=valid_email is not None and bool(principal and principal["emailVerified"]),
+                groups=principal["groups"] if principal else [],
+                tailscale_login=ts_login,
+            )
+            roles["policyMatched"] = resolved is not None
+            if resolved is None:
+                roles.update(instanceRole=None, workspaces={}, defaultWorkspace=policy.default_workspace)
+            else:
+                roles.update(instanceRole=resolved["instanceRole"], workspaces=dict(resolved["workspaces"]),
+                             defaultWorkspace=resolved["defaultWorkspace"])
         merged = {**identity, **roles}
         if account_id == "local":
             merged["instanceRole"] = "admin"
@@ -5731,7 +5806,7 @@ class Handler(BaseHTTPRequestHandler):
         return None, ""
 
     def draft_viewer(self, draft: dict, *, allow_tailscale_header: bool = False) -> tuple[dict | None, str]:
-        """Find the reader: session, view cookie or token, Tailscale header, then Bearer key.
+        """Find the reader: session, view cookie or token, Bearer key, then Tailscale header.
 
         The Tailscale header counts only when the caller allows it, for a
         page read. API and management routes never pass it.
@@ -5742,12 +5817,15 @@ class Handler(BaseHTTPRequestHandler):
         identity, source = self.view_identity(draft["draftId"])
         if identity is not None:
             return identity, source
+        if self.headers.get("Authorization"):
+            # A Bearer key always wins over the passive header.
+            api = self.with_roles(self.api_identity())
+            return (api, "bearer") if api is not None else (None, "")
         if allow_tailscale_header:
             passive = self.passive_tailscale_identity()
             if passive is not None:
                 return passive, "tailscale_header"
-        api = self.with_roles(self.api_identity())
-        return (api, "bearer") if api is not None else (None, "")
+        return None, ""
 
     def passive_tailscale_identity(self) -> dict | None:
         """Return a stateless read-only identity from the Tailscale Serve header.
@@ -5761,14 +5839,14 @@ class Handler(BaseHTTPRequestHandler):
             return None
         if self.client_address[0] not in {"127.0.0.1", "::1"} or self.command not in {"GET", "HEAD"}:
             return None
-        if "tailscale" not in self.auth.modes:
-            return None
+        # TAILPLAN_AUTH_MODES does not gate it: that setting controls
+        # interactive sign-in, and this identity never signs in.
         found = self.tailscale_login()
         if found is None:
             return None
         login, name = found
         login_key = login.strip().lower()
-        if TAILSCALE_LOGIN_RE.fullmatch(login_key) is None or not self.login_allowed(login):
+        if TAILSCALE_LOGIN_RE.fullmatch(login_key) is None or not self.login_allowed(login_key):
             return None
         email = login_key if EMAIL_RE.fullmatch(login_key) else None
         owner = server.owner_login
@@ -5809,7 +5887,7 @@ class Handler(BaseHTTPRequestHandler):
             if api:
                 self.send_json(404, {"ok": False, "error": "Draft not found."})
             else:
-                self.send_html(404, not_found())
+                self.send_not_found()
             return None
         public = draft_role(None, draft, [], self.auth) is not None
         if public and not api:
@@ -5830,7 +5908,7 @@ class Handler(BaseHTTPRequestHandler):
         if api:
             self.send_json(404, {"ok": False, "error": "Draft not found."})
         else:
-            self.send_html(404, not_found())
+            self.send_not_found()
         return None
 
     def view_credentials(self, identity: dict | None, source: str, draft_id: str,
@@ -5860,6 +5938,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def wants_html(self) -> bool:
         return "text/html" in self.headers.get("Accept", "")
+
+    def send_not_found(self) -> None:
+        """Send the 404 page, with a sign-in link for a reader who is not signed in."""
+        signed_in = bool(self.cookie_value("tailplan_session"))
+        self.send_html(404, not_found(None if signed_in else self.base_url.rstrip("/") + "/auth/sign-in"))
 
     def send_sign_in_redirect(self) -> None:
         location = self.base_url.rstrip("/") + "/auth/sign-in?next=" + quote(self.relative_target(), safe="/")
@@ -5959,7 +6042,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/" or path == "":
             self.send_html(200, home(self.base_url))
             return
-        self.send_html(404, not_found())
+        self.send_not_found()
 
     def do_HEAD(self) -> None:
         self.do_GET()
@@ -6241,6 +6324,11 @@ class Handler(BaseHTTPRequestHandler):
             stored = self.store.resolve_draft(result["draftId"]) or {}
             self.audit_event("draft.upload", roles, "draft", result["draftId"],
                              detail={"created": created, "version": result.get("versionNumber"), **sharing})
+            if not result.get("replayed"):
+                for grant in sharing.get("grants") or []:
+                    self.audit_event("sharing.grant", roles, "draft", result["draftId"],
+                                     detail={"type": grant["type"], "value": grant["value"],
+                                             "role": grant["role"]})
             self.send_json(
                 status,
                 {
@@ -6438,17 +6526,17 @@ class Handler(BaseHTTPRequestHandler):
     def oidc_request(self, method: str, path: str) -> None:
         client = self.auth.oidc
         if client is None:
-            self.send_html(404, not_found())
+            self.send_not_found()
         elif method == "POST" and path == "/auth/oidc/backchannel-logout":
             self.oidc_backchannel_logout(client)
         elif "oidc" not in self.auth.modes:
-            self.send_html(404, not_found())
+            self.send_not_found()
         elif method == "GET" and path == "/auth/oidc/start":
             self.oidc_start(client)
         elif method == "GET" and path == "/auth/oidc/callback":
             self.oidc_callback(client)
         else:
-            self.send_html(404, not_found())
+            self.send_not_found()
 
     def oidc_redirect_uri(self) -> str:
         return self.base_url.rstrip("/") + "/auth/oidc/callback"
@@ -6576,11 +6664,12 @@ class Handler(BaseHTTPRequestHandler):
     def tailscale_identity(self, login: str, name: str) -> dict | None:
         """Return the account for a Tailscale login, or None when the RBAC policy denies it.
 
-        A login that is the verified email of an existing account uses that
-        account. An example is an OIDC account with the same email.
+        The account is always keyed to the `tailscale` issuer. It never joins
+        an OIDC account with the same email: that account can hold roles that
+        need the IdP's MFA and back-channel logout.
         """
         owner = self.server.owner_login
-        is_owner = bool(owner) and login.casefold() == owner.casefold()
+        is_owner = bool(owner) and login.strip().lower() == owner.strip().lower()
         email = login.strip().lower()
         verified = EMAIL_RE.fullmatch(email) is not None
         policy = self.auth.policy
@@ -6590,12 +6679,8 @@ class Handler(BaseHTTPRequestHandler):
             self.audit_event("auth.denied", {"email": email}, "principal", email, outcome="denied",
                              detail={"method": "tailscale", "reason": "no_matching_rule"})
             return None
-        linked = None if is_owner or not verified else self.store.account_for_verified_email(email)
-        if linked is not None and linked["accountId"] in {"local", "anonymous"}:
-            linked = None  # Only the owner login signs in to the local account.
-        account = linked or self.store.identity_account(login, name, owner)
-        if not is_owner and linked is None:
-            # A linked account keeps the roles of its own principal.
+        account = self.store.identity_account(login, name, owner)
+        if not is_owner:
             roles = roles or policy.open_roles()
             self.store.upsert_principal(
                 issuer="tailscale", subject=email, account_id=account["accountId"],
@@ -6607,7 +6692,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def login_allowed(self, login: str) -> bool:
         allowed = self.server.allowed_logins
-        return not allowed or login.casefold() in allowed
+        return not allowed or login.strip().lower() in allowed
 
     def sign_in_page(self, next_path: str = "/dashboard") -> None:
         state = {"csrf": secrets.token_hex(24), "expires": int(time.time()) + 600}
@@ -6812,7 +6897,7 @@ class Handler(BaseHTTPRequestHandler):
                              detail={"type": principal_type, "value": value, "role": grant_role})
         else:
             principal_type = payload.get("type")
-            value = normalize_grant(principal_type, payload.get("value"))
+            value = revoke_value(principal_type, payload.get("value"))
             if not self.store.remove_grant(draft_id, principal_type, value):
                 raise KeyError("Grant not found.")
             self.audit_event("sharing.revoke", identity, "draft", draft_id,
@@ -6853,7 +6938,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         key_match = re.fullmatch(r"/cli/auth/keys/([a-z0-9]{6,32})/revoke", path)
         if not known and not draft_match and not key_match:
-            self.send_html(404, not_found())
+            self.send_not_found()
             return
         if method == "GET" and path == "/auth/sign-in":
             query = parse_qs(urlparse(self.path).query)
@@ -6940,10 +7025,10 @@ class Handler(BaseHTTPRequestHandler):
                     target = "/dashboard" if draft_match[2] == "delete" else f"/dashboard/drafts/{draft_match[1]}"
                     self.redirect(target)
             else:
-                self.send_html(404, not_found())
+                self.send_not_found()
             return
         if method != "GET":
-            self.send_html(404, not_found())
+            self.send_not_found()
         elif path == "/dashboard":
             drafts = self.annotate_drafts(self.store.list_drafts(account_id, self.base_url))
             self.send_html(200, render_dashboard(self.base_url, session, drafts,
@@ -6962,7 +7047,7 @@ class Handler(BaseHTTPRequestHandler):
             sharing = self.sharing_payload({**stored, "draftId": detail["draft"]["draftId"]})
             self.send_html(200, render_detail(self.base_url, session, detail, sharing=sharing), web=True)
         else:
-            self.send_html(404, not_found())
+            self.send_not_found()
 
 
 
@@ -6980,8 +7065,11 @@ def home(base_url: str) -> str:
                 f'<p>Health: <a href="{base}/healthz">/healthz</a></p></main>')
 
 
-def not_found() -> str:
-    return page("Draft not found", "<main class=\"home\"><h1>Draft not found</h1><p>The requested Tailplan draft is unavailable.</p></main>")
+def not_found(sign_in_url: str | None = None) -> str:
+    """Return the 404 page. Every 404 is the same, so it never shows that a draft exists."""
+    sign_in = f'<p><a href="{html.escape(sign_in_url, quote=True)}">Sign in</a></p>' if sign_in_url else ""
+    return page("Draft not found", "<main class=\"home\"><h1>Draft not found</h1>"
+                "<p>The requested Tailplan draft is unavailable.</p>" + sign_in + "</main>")
 
 
 WEB_CSS = """
@@ -7447,6 +7535,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("Tailscale identity requires a loopback proxy listener")
     if (args.proxy_host is None) != (args.proxy_port is None):
         ap.error("--proxy-host and --proxy-port must be supplied together")
+    if args.tailscale_viewer and not (args.trust_tailscale_identity and args.proxy_port is not None):
+        ap.error("--tailscale-viewer (TAILPLAN_TAILSCALE_VIEWER) requires --trust-tailscale-identity "
+                 "and --proxy-port: only the loopback proxy behind Tailscale Serve reads the header")
     if args.proxy_host == "":
         ap.error("--proxy-host must not be empty")
     if args.proxy_host is not None and (args.proxy_host, args.proxy_port) == (

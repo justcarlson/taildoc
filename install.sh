@@ -1122,6 +1122,7 @@ if Path(previous_env).exists():
             previous[name] = parts[0] if parts else ""
 for name, default in (
     ("TAILPLAN_TRUST_TAILSCALE_IDENTITY", "0"),
+    ("TAILPLAN_TAILSCALE_VIEWER", "0"),
     ("TAILPLAN_OWNER_LOGIN", ""),
     ("TAILPLAN_ALLOW_ANONYMOUS_UPLOADS", "0"),
     ("TAILPLAN_UPLOAD_IP_LIMIT", "60"),
