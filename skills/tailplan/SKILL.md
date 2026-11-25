@@ -235,6 +235,10 @@ Use `tailplan upload FILE --description TEXT` to attach a stable description.
 Open `/dashboard` under the configured base URL for favorites, repository groups, and version history.
 Open `/cli/auth` to generate or revoke named API keys.
 The direct client accepts those keys through `tailplan auth login`.
+Use `tailplan auth login --device` to approve the CLI in a browser and save a 90-day key.
+Use `tailplan share REF` to show who can read a draft.
+Add `--visibility`, `--grant-email`, `--grant-group`, `--revoke-email`, or `--revoke-group` only when the user asks for that change.
+Use `tailplan upload FILE --workspace NAME --visibility VALUE` to set the audience of a new draft.
 The SSH client uses the existing SSH identity.
 
 Use `tailplan disable REF`, `tailplan enable REF`, or `tailplan delete REF` for requested lifecycle changes.

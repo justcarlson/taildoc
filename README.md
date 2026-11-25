@@ -9,6 +9,7 @@ Read [CHANGELOG.md](CHANGELOG.md) for release changes.
 
 Read [document themes](docs/themes.md) for built-in palettes, CLI/API selection, and extension instructions.
 Read [briefs](docs/briefs.md) for reports on a video, podcast, article, or other source.
+Read [single sign-on, roles, and sharing](#single-sign-on-roles-and-sharing) to control who can read each draft.
 
 ## Features
 
@@ -23,6 +24,9 @@ Read [briefs](docs/briefs.md) for reports on a video, podcast, article, or other
 - The dashboard groups drafts by repository and displays every version.
 - Named API keys identify the account that owns each draft.
 - Draft descriptions and Git metadata remain available through the dashboard and CLI.
+- Optional OpenID Connect sign-in maps identity provider groups to workspace roles.
+- Each draft has a visibility and can be shared with people or groups.
+- An append-only audit log records sign-in, sharing, and draft events.
 
 Read [Postplan compatibility](docs/postplan-parity.md) for the observed API and behavior contracts.
 
@@ -53,6 +57,9 @@ tailplan delete <draft-id>
 tailplan keys create "Build agent"
 tailplan keys list
 tailplan keys revoke <key-id>
+tailplan auth login --device --base-url https://tailplan.example.test
+tailplan upload ./plan.html --workspace team --visibility workspace
+tailplan share migration-plan --visibility authenticated --grant-email reader@example.test
 ```
 
 The `tailplan-share FILE` command remains available.
@@ -113,13 +120,97 @@ The files remain on disk for operator recovery.
 The tailnet is the default viewer security boundary.
 The upload API requires an upload token unless anonymous publication is explicitly enabled.
 Management accounts restrict draft updates, listings, history, and key operations.
-Viewer access remains a tailnet boundary.
-Any tailnet user with a draft URL can view that draft.
+With the default `TAILPLAN_VIEWER_AUTH_MODE=network`, viewer access remains a tailnet boundary.
+In that mode, any tailnet user with a draft URL can view a `link` draft.
+The other viewer modes require sign-in for some or all drafts.
 
 Do not upload credentials or access links.
 Do not upload personal, medical, legal, or financial records.
 Use Tailscale access controls to restrict service access.
 Read [the security policy](SECURITY.md) before a public deployment.
+
+## Single sign-on, roles, and sharing
+
+Tailplan 0.5.0 adds optional OpenID Connect (OIDC) sign-in.
+Install the `oidc` extra to get PyJWT, for example `pip install "tailplan[oidc]"`.
+The container image includes it.
+Without `TAILPLAN_OIDC_ISSUER`, the server does not import PyJWT, and the standard library install works as before.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `TAILPLAN_OIDC_ISSUER` | Empty | Issuer URL. Setting it turns on single sign-on. |
+| `TAILPLAN_OIDC_CLIENT_ID` | Empty | Client ID that the identity provider gave Tailplan. |
+| `TAILPLAN_OIDC_CLIENT_SECRET_FILE` | Empty | File with the client secret. Use mode `0600`. |
+| `TAILPLAN_OIDC_SCOPES` | `openid profile email groups` | Scopes that Tailplan asks for. |
+| `TAILPLAN_OIDC_GROUPS_CLAIM` | `groups` | Claim that holds the group list. |
+| `TAILPLAN_OIDC_ALLOW_PRIVATE_ISSUER` | `0` | Allow an issuer on a private address or plain HTTP. Use it only for tests. |
+| `TAILPLAN_OIDC_LINK_EMAILS` | Empty | Verified emails whose first sign-in may link to an existing account. |
+| `TAILPLAN_AUTH_MODES` | See below | Comma-separated sign-in methods: `oidc`, `api_key`, `tailscale`. |
+| `TAILPLAN_RBAC_POLICY_FILE` | Empty | JSON file that maps groups and emails to roles. |
+| `TAILPLAN_VIEWER_AUTH_MODE` | `network` | `network`, `per-draft`, or `session`. |
+| `TAILPLAN_MAX_VISIBILITY` | `link` | Widest visibility that any draft can have. |
+| `TAILPLAN_SESSION_TTL_SECONDS` | `604800` | Lifetime of a browser session. |
+
+With an issuer, the default sign-in methods are `oidc` and `api_key`.
+Without one, they are `api_key` and `tailscale`.
+Register `<base URL>/auth/oidc/callback` as the redirect URI.
+Register `<base URL>/auth/oidc/backchannel-logout` as the back-channel logout URI.
+Keycloak refuses a scope that the client does not have.
+For Keycloak, set `TAILPLAN_OIDC_SCOPES=openid profile email` and add a group membership mapper to the client.
+
+The policy file assigns roles.
+A sign-in that matches no rule gets `403`, and the audit log records `auth.denied`.
+
+```json
+{
+  "default_workspace": "team",
+  "rules": [
+    {"match": {"group": "staff"}, "workspaces": {"team": "editor"}},
+    {"match": {"group": "readers"}, "workspaces": {"team": "viewer"}},
+    {"match": {"group": "auditors"}, "instance_role": "auditor"},
+    {"match": {"email": "owner@example.test"}, "instance_role": "admin"}
+  ]
+}
+```
+
+Workspace roles are `viewer`, `editor`, and `admin`.
+Instance roles are `admin` and `auditor`.
+The bootstrap upload token has the `admin` role.
+An API key has the roles of its account, and no more.
+
+Each draft has one of four visibilities:
+
+| Visibility | Readers |
+| --- | --- |
+| `private` | The owner, editors, and people or groups with a grant. |
+| `workspace` | Members of the draft's workspace, plus grants. |
+| `authenticated` | Any signed-in user. |
+| `link` | Anyone who can reach the URL, except in `session` mode. |
+
+The viewer mode sets the default visibility and the sign-in rule:
+
+| Viewer mode | Default visibility | Sign-in |
+| --- | --- | --- |
+| `network` | `link` | Only for drafts that are not `link`. |
+| `per-draft` | `workspace` | Only for drafts that are not `link`. |
+| `session` | `workspace` | For every draft. |
+
+Draft pages, `/source`, and the draft API use the same check.
+A signed-out browser goes to the sign-in page.
+A signed-out API call gets `401`.
+A signed-in reader without access gets `404`, so the draft stays hidden.
+
+The dashboard shows a sharing card on each draft, a visibility badge, and a "Shared with me" section.
+The API has `GET` and `POST /api/drafts/<ref>/sharing`, plus `POST` and `DELETE /api/drafts/<ref>/sharing/grants`.
+The `tailplan share` command uses these routes.
+
+`tailplan auth login --device` prints a link and a code.
+Open the link, check the code, and approve.
+The CLI then saves a new API key that expires after 90 days.
+
+Admins and auditors can read the audit log at `GET /api/audit`.
+The server also writes each event to standard output as one JSON line.
+Read [the security model](docs/security.md) for the details.
 
 ## Choose a deployment
 
@@ -310,7 +401,7 @@ The proxy listener must use a loopback address:
 ```yaml
 services:
   tailplan:
-    image: ghcr.io/justcarlson/tailplan:0.4.0
+    image: ghcr.io/justcarlson/tailplan:0.5.0
     network_mode: service:ts-tailplan
     environment:
       TAILPLAN_HOST: 127.0.0.1
@@ -687,6 +778,8 @@ Back up the whole data directory while the server is stopped.
 To roll back to version 0.4.0, stop the server and move `tailplan.db`, `tailplan.db-wal`, and `tailplan.db-shm` out of the data directory.
 Copy `metadata.json.pre-sqlite.bak` to `metadata.json`, then start the older release.
 The older release does not see changes made after the upgrade.
+Version 0.5.0 upgrades the database schema to version 2 at start.
+A release that knows only schema version 1 refuses to open it.
 
 ## Upgrade, rollback, and removal
 
@@ -743,6 +836,7 @@ Remove the old version images separately:
 ```sh
 docker image rm tailplan:0.2.1
 docker image rm tailplan:0.3.0
+docker image rm tailplan:0.4.0
 ```
 
 ### Native service

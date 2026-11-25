@@ -8,12 +8,15 @@ import base64
 import hashlib
 import hmac
 import html
+import http.client
 import ipaddress
 import json
 import os
 import re
 import secrets
+import socket
 import sqlite3
+import ssl
 import stat
 import string
 import struct
@@ -33,7 +36,7 @@ from http import HTTPStatus
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 VIEWPORT_RE = re.compile(r"<meta\b[^>]*\bname\s*=\s*['\"]?viewport\b", re.IGNORECASE)
 TITLE_RE = re.compile(
@@ -908,6 +911,19 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _expired_iso(value: object) -> bool:
+    """Return True when an ISO timestamp is now or in the past. None never expires."""
+    if not isinstance(value, str):
+        return False
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment <= datetime.now(UTC)
+
+
 def new_id() -> str:
     return "".join(secrets.choice(DRAFT_ID_ALPHABET) for _ in range(12))
 
@@ -921,6 +937,7 @@ def title_from_html(doc: str, filename: str | None = None) -> str:
     return (filename or "Tailplan Draft")[:140]
 
 
+SOURCE_ROUTE_RE = re.compile(r"/api/drafts/([a-z0-9][a-z0-9-]{1,39})/source")
 PREVIEW_ROUTE_RE = re.compile(
     r"/d/([a-z0-9][a-z0-9-]{1,39})(?:/v/([1-9][0-9]{0,8}))?/(share|preview\.png)/?"
 )
@@ -2464,6 +2481,14 @@ class ConflictError(RuntimeError):
         self.code = code
 
 
+class AccessDenied(Exception):
+    """The caller is signed in but lacks the role for this action."""
+
+
+class PolicyLimit(Exception):
+    """The request asks for more than the server policy allows."""
+
+
 class ListenerStartupError(RuntimeError):
     """A configured HTTP listener could not be created safely."""
 
@@ -2506,7 +2531,8 @@ def _validate_workspace_schema(data: dict) -> None:
                 or key["accountId"] not in {"local", "anonymous", *accounts}
                 or not isinstance(key.get("name"), str)
                 or not isinstance(key.get("keyHash"), str)
-                or SHA256_RE.fullmatch(key["keyHash"]) is None):
+                or SHA256_RE.fullmatch(key["keyHash"]) is None
+                or not isinstance(key.get("expiresAt"), (str, type(None)))):
             raise StorageError("Account storage has an invalid API key.")
     all_draft_ids = set(data["drafts"])
     seen_slugs: set[str] = set()
@@ -2524,6 +2550,11 @@ def _validate_workspace_schema(data: dict) -> None:
         favorited_at = draft.get("favoritedAt")
         if favorited_at is not None and (not isinstance(favorited_at, str) or not favorited_at):
             raise StorageError("Draft favorite timestamp is invalid.")
+        workspace = draft.get("workspace")
+        if workspace is not None and (not isinstance(workspace, str) or WORKSPACE_RE.fullmatch(workspace) is None):
+            raise StorageError("Draft workspace is invalid.")
+        if draft.get("visibility") is not None and draft["visibility"] not in VISIBILITIES:
+            raise StorageError("Draft visibility is invalid.")
         versions = draft.get("versions", {})
         if not isinstance(versions, dict):
             raise StorageError("Draft history is invalid.")
@@ -2706,6 +2737,25 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 DB_FILENAME = "tailplan.db"
+TAILPLAN_VERSION = "0.5.0"
+VISIBILITIES = ("private", "workspace", "authenticated", "link")
+WORKSPACE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
+DEVICE_CODE_TTL = 600
+DEVICE_KEY_TTL = 90 * 86400
+DEVICE_POLL_INTERVAL = 5
+USER_CODE_ALPHABET = "BCDFGHJKLMNPQRSTVWXZ"
+USER_CODE_RE = re.compile(r"[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}")
+
+
+def normalize_user_code(value: object) -> str | None:
+    """Return a device user code in XXXX-XXXX form, or None."""
+    if not isinstance(value, str) or len(value) > 32:
+        return None
+    raw = re.sub(r"[\s-]", "", value).upper()
+    if len(raw) != 8:
+        return None
+    code = f"{raw[:4]}-{raw[4:]}"
+    return code if USER_CODE_RE.fullmatch(code) else None
 LEGACY_METADATA_FILENAME = "metadata.json"
 LEGACY_BACKUP_FILENAME = "metadata.json.pre-sqlite.bak"
 SQLITE_BUSY_TIMEOUT_MS = 5000
@@ -2761,6 +2811,80 @@ _SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {
             fingerprint TEXT,
             doc TEXT NOT NULL
         )""",
+    ),
+    # Version 2 adds sign-in principals, revocable sessions, draft sharing,
+    # device login, and the audit log. Draft workspace and visibility stay in
+    # the draft document, so version 1 drafts load without a rewrite.
+    2: (
+        """CREATE TABLE principals (
+            issuer TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            email TEXT,
+            email_verified INTEGER NOT NULL DEFAULT 0,
+            display_name TEXT,
+            groups_json TEXT NOT NULL DEFAULT '[]',
+            instance_role TEXT,
+            workspaces_json TEXT NOT NULL DEFAULT '{}',
+            session_epoch INTEGER NOT NULL DEFAULT 0,
+            last_login_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (issuer, subject)
+        ) WITHOUT ROWID""",
+        "CREATE INDEX principals_account ON principals (account_id)",
+        """CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL,
+            principal_issuer TEXT,
+            principal_subject TEXT,
+            idp_session_id TEXT,
+            csrf TEXT NOT NULL,
+            auth_method TEXT NOT NULL,
+            epoch INTEGER NOT NULL DEFAULT 0,
+            expires_at INTEGER NOT NULL,
+            revoked_at TEXT,
+            created_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX sessions_principal ON sessions (principal_issuer, principal_subject)",
+        "CREATE INDEX sessions_idp ON sessions (principal_issuer, idp_session_id)",
+        """CREATE TABLE draft_grants (
+            draft_id TEXT NOT NULL,
+            principal_type TEXT NOT NULL CHECK (principal_type IN ('email', 'group', 'workspace')),
+            principal_value TEXT NOT NULL CHECK (principal_value = lower(principal_value)),
+            role TEXT NOT NULL CHECK (role IN ('viewer', 'editor')),
+            granted_by TEXT,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (draft_id, principal_type, principal_value)
+        ) WITHOUT ROWID""",
+        "CREATE INDEX draft_grants_principal ON draft_grants (principal_type, principal_value)",
+        """CREATE TABLE device_codes (
+            device_code_hash TEXT PRIMARY KEY,
+            user_code TEXT NOT NULL UNIQUE,
+            client_name TEXT,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'consumed')),
+            account_id TEXT,
+            issued_key TEXT,
+            expires_at INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            actor_account_id TEXT,
+            actor_email TEXT,
+            target_type TEXT,
+            target_id TEXT,
+            outcome TEXT NOT NULL,
+            detail_json TEXT NOT NULL DEFAULT '{}'
+        )""",
+        "CREATE INDEX audit_events_type ON audit_events (event_type, id)",
+        # The audit log is append-only. These triggers refuse edits and deletes.
+        """CREATE TRIGGER audit_events_no_update BEFORE UPDATE ON audit_events
+            BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END""",
+        """CREATE TRIGGER audit_events_no_delete BEFORE DELETE ON audit_events
+            BEGIN SELECT RAISE(ABORT, 'audit events are append-only'); END""",
     ),
 }
 SCHEMA_VERSION = max(_SCHEMA_STATEMENTS)
@@ -3715,27 +3839,30 @@ class Store:
             raise KeyError("Draft not found.")
         return draft
 
+    def public_draft(self, draft: dict, base_url: str) -> dict:
+        """Return the list form of one draft record."""
+        draft_id = draft["draftId"]
+        public_url = f"{base_url.rstrip('/')}/d/{draft.get('slug') or draft_id}"
+        return {
+            **{key: draft.get(key) for key in (
+                "draftId", "slug", "title", "description", "repoHost", "repoOrg", "repoName",
+                "latestVersionNumber", "createdAt", "updatedAt", "disabledReason", "favoritedAt",
+                "workspace", "visibility", "accountId",
+            )},
+            "favorite": bool(draft.get("favoritedAt")),
+            "versionCount": len(self._version_records(draft)),
+            "latestVersionAt": draft["updatedAt"], "disabled": bool(draft.get("disabledAt")),
+            "publicUrl": public_url, "rawUrl": public_url + "/raw",
+            "shareUrl": public_url + "/share", "versionBaseUrl": f"{base_url.rstrip('/')}/d/{draft_id}",
+        }
+
     def list_drafts(self, account_id: str, base_url: str) -> list[dict]:
         with STORE_LOCK:
             data = self.load_meta()
-            drafts = []
-            for draft_id, draft in data["drafts"].items():
-                if (draft.get("accountId", "local") != account_id or draft.get("deletedAt")):
-                    continue
-                slug = draft.get("slug")
-                public_url = f"{base_url.rstrip('/')}/d/{slug or draft_id}"
-                version_base_url = f"{base_url.rstrip('/')}/d/{draft_id}"
-                drafts.append({
-                    **{key: draft.get(key) for key in (
-                        "draftId", "slug", "title", "description", "repoHost", "repoOrg", "repoName",
-                        "latestVersionNumber", "createdAt", "updatedAt", "disabledReason", "favoritedAt",
-                    )},
-                    "favorite": bool(draft.get("favoritedAt")),
-                    "versionCount": len(self._version_records(draft)),
-                    "latestVersionAt": draft["updatedAt"], "disabled": bool(draft.get("disabledAt")),
-                    "publicUrl": public_url, "rawUrl": public_url + "/raw",
-                    "shareUrl": public_url + "/share", "versionBaseUrl": version_base_url,
-                })
+            drafts = [
+                self.public_draft(draft, base_url) for draft in data["drafts"].values()
+                if draft.get("accountId", "local") == account_id and not draft.get("deletedAt")
+            ]
             drafts.sort(key=lambda item: item["updatedAt"], reverse=True)
             drafts.sort(key=lambda item: not item["favorite"])
             return drafts
@@ -3813,6 +3940,8 @@ class Store:
             for key_id, key in data.get("apiKeys", {}).items():
                 if key.get("revokedAt") or not hmac.compare_digest(key["keyHash"], digest):
                     continue
+                if _expired_iso(key.get("expiresAt")):
+                    return None
                 last = key.get("lastUsedAt")
                 stamp = now_iso()
                 if not last or last[:16] != stamp[:16]:
@@ -3821,7 +3950,7 @@ class Store:
                 return {**self.account(key["accountId"]), "apiKeyId": key_id, "apiKeyName": key["name"]}
         return None
 
-    def create_key(self, account_id: str, name: str | None) -> dict:
+    def create_key(self, account_id: str, name: str | None, ttl_seconds: int | None = None) -> dict:
         with STORE_LOCK:
             data = self.load_meta()
             if self.account(account_id) is None or account_id == "anonymous":
@@ -3830,16 +3959,22 @@ class Store:
             key_id = new_id()
             key = {"accountId": account_id, "name": clean_text(name) or "CLI API key",
                    "keyHash": sha256_text(token), "createdAt": now_iso(), "lastUsedAt": None}
+            if ttl_seconds:
+                key["expiresAt"] = datetime.fromtimestamp(time.time() + ttl_seconds, UTC).isoformat().replace(
+                    "+00:00", "Z")
             data.setdefault("apiKeys", {})[key_id] = key
             self.save_meta(data)
-            return {"ok": True, "apiKey": {"id": key_id, "name": key["name"]}, "token": token}
+            return {"ok": True, "apiKey": {"id": key_id, "name": key["name"],
+                                           "expiresAt": key.get("expiresAt")}, "token": token}
 
     def list_keys(self, account_id: str) -> list[dict]:
         with STORE_LOCK:
             return sorted([
-                {"id": key_id, **{field: key.get(field) for field in ("name", "createdAt", "lastUsedAt")}}
+                {"id": key_id, **{field: key.get(field)
+                                  for field in ("name", "createdAt", "lastUsedAt", "expiresAt")}}
                 for key_id, key in self.load_meta().get("apiKeys", {}).items()
                 if key["accountId"] == account_id and not key.get("revokedAt")
+                and not _expired_iso(key.get("expiresAt"))
             ], key=lambda key: key["createdAt"], reverse=True)
 
     def revoke_key(self, account_id: str, key_id: str) -> None:
@@ -3879,6 +4014,360 @@ class Store:
                 _atomic_write_text(probe, "ready\n")
             finally:
                 probe.unlink(missing_ok=True)
+
+    # -- Version 2 records: principals, sessions, sharing, devices, audit --
+
+    # The audit log also goes to this stream as JSON lines. None means stdout.
+    audit_stream = None
+    _audit_stream_lock = threading.Lock()
+
+    def _write(self, operation):
+        with STORE_LOCK, self._connection() as connection:
+            with self._write_transaction(connection):
+                return operation(connection)
+
+    def _rows(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        with self._connection() as connection:
+            connection.row_factory = sqlite3.Row
+            return connection.execute(sql, params).fetchall()
+
+    def audit(
+        self,
+        event: str,
+        *,
+        actor: dict | None = None,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        outcome: str = "success",
+        detail: dict | None = None,
+    ) -> dict:
+        """Append one audit event to the database and write it to stdout as JSON."""
+        actor = actor or {}
+        record = {
+            "ts": now_iso(),
+            "service": "tailplan",
+            "event": event,
+            "actor_account_id": actor.get("accountId"),
+            "actor_email": actor.get("email"),
+            "target_type": target_type,
+            "target_id": target_id,
+            "outcome": outcome,
+            "detail": detail or {},
+        }
+        self._write(lambda connection: connection.execute(
+            "INSERT INTO audit_events (ts, event_type, actor_account_id, actor_email, target_type,"
+            " target_id, outcome, detail_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (record["ts"], event, record["actor_account_id"], record["actor_email"], target_type,
+             target_id, outcome, _json_text(record["detail"])),
+        ))
+        line = json.dumps(record, separators=(",", ":"), sort_keys=False)
+        with self._audit_stream_lock:
+            stream = self.audit_stream or sys.stdout
+            stream.write(line + "\n")
+            stream.flush()
+        return record
+
+    def list_audit(self, *, limit: int = 100, before: int | None = None, event: str | None = None) -> list[dict]:
+        clauses, params = [], []
+        if before is not None:
+            clauses.append("id < ?")
+            params.append(before)
+        if event:
+            clauses.append("event_type = ?")
+            params.append(event)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._rows(f"SELECT * FROM audit_events {where} ORDER BY id DESC LIMIT ?", (*params, limit))
+        return [{
+            "id": row["id"], "ts": row["ts"], "event": row["event_type"],
+            "actorAccountId": row["actor_account_id"], "actorEmail": row["actor_email"],
+            "targetType": row["target_type"], "targetId": row["target_id"],
+            "outcome": row["outcome"], "detail": json.loads(row["detail_json"] or "{}"),
+        } for row in rows]
+
+    def ensure_account(self, account_id: str, name: str) -> dict:
+        """Create or rename a non-local account record."""
+        if account_id in {"local", "anonymous"}:
+            return self.account(account_id)
+        with STORE_LOCK:
+            data = self.load_meta()
+            accounts = data.setdefault("accounts", {})
+            if accounts.get(account_id, {}).get("name") != name:
+                accounts[account_id] = {**accounts.get(account_id, {}), "name": name}
+                self.save_meta(data)
+            return self.account(account_id)
+
+    @staticmethod
+    def _principal_from_row(row: sqlite3.Row | None) -> dict | None:
+        if row is None:
+            return None
+        workspaces = json.loads(row["workspaces_json"] or "{}")
+        return {
+            "issuer": row["issuer"], "subject": row["subject"], "accountId": row["account_id"],
+            "email": row["email"], "emailVerified": bool(row["email_verified"]),
+            "displayName": row["display_name"], "groups": json.loads(row["groups_json"] or "[]"),
+            "instanceRole": row["instance_role"], "workspaces": workspaces.get("roles", {}),
+            "defaultWorkspace": workspaces.get("default"),
+            "sessionEpoch": row["session_epoch"], "lastLoginAt": row["last_login_at"],
+        }
+
+    def upsert_principal(
+        self,
+        *,
+        issuer: str,
+        subject: str,
+        account_id: str,
+        email: str | None,
+        email_verified: bool,
+        display_name: str | None,
+        groups: list[str],
+        instance_role: str | None,
+        workspaces: dict[str, str],
+        default_workspace: str | None = None,
+    ) -> dict:
+        stamp = now_iso()
+        roles = {"roles": workspaces, "default": default_workspace}
+
+        def operation(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """INSERT INTO principals (issuer, subject, account_id, email, email_verified,
+                       display_name, groups_json, instance_role, workspaces_json, session_epoch,
+                       last_login_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                   ON CONFLICT (issuer, subject) DO UPDATE SET
+                       account_id = excluded.account_id, email = excluded.email,
+                       email_verified = excluded.email_verified, display_name = excluded.display_name,
+                       groups_json = excluded.groups_json, instance_role = excluded.instance_role,
+                       workspaces_json = excluded.workspaces_json, last_login_at = excluded.last_login_at,
+                       updated_at = excluded.updated_at""",
+                (issuer, subject, account_id, email, int(bool(email_verified)), display_name,
+                 _json_text(sorted(set(groups))), instance_role, _json_text(roles), stamp, stamp, stamp),
+            )
+
+        self._write(operation)
+        return self.principal(issuer, subject)
+
+    def principal(self, issuer: str, subject: str) -> dict | None:
+        rows = self._rows("SELECT * FROM principals WHERE issuer = ? AND subject = ?", (issuer, subject))
+        return self._principal_from_row(rows[0] if rows else None)
+
+    def account_principal(self, account_id: str) -> dict | None:
+        """Return the principal that signed in to the account most recently."""
+        rows = self._rows(
+            "SELECT * FROM principals WHERE account_id = ? ORDER BY last_login_at DESC LIMIT 1",
+            (account_id,),
+        )
+        return self._principal_from_row(rows[0] if rows else None)
+
+    def create_session(
+        self,
+        *,
+        account_id: str,
+        auth_method: str,
+        csrf: str,
+        ttl: int,
+        issuer: str | None = None,
+        subject: str | None = None,
+        idp_session_id: str | None = None,
+        epoch: int = 0,
+    ) -> str:
+        """Store a revocable browser session and return its secret ID."""
+        session_id = secrets.token_urlsafe(32)
+        self._write(lambda connection: connection.execute(
+            """INSERT INTO sessions (session_id, account_id, principal_issuer, principal_subject,
+                   idp_session_id, csrf, auth_method, epoch, expires_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (sha256_text(session_id), account_id, issuer, subject, idp_session_id, csrf, auth_method,
+             epoch, int(time.time()) + ttl, now_iso()),
+        ))
+        return session_id
+
+    def session_record(self, session_id: str) -> dict | None:
+        """Return a live session, or None when it is unknown, revoked, expired, or stale."""
+        if not isinstance(session_id, str) or not 16 <= len(session_id) <= 128:
+            return None
+        return self.session_by_hash(sha256_text(session_id))
+
+    def session_by_hash(self, session_hash: str) -> dict | None:
+        """Return a live session by the stored hash of its ID."""
+        if not isinstance(session_hash, str) or SHA256_RE.fullmatch(session_hash) is None:
+            return None
+        rows = self._rows(
+            """SELECT s.*, p.session_epoch AS principal_epoch FROM sessions s
+               LEFT JOIN principals p ON p.issuer = s.principal_issuer AND p.subject = s.principal_subject
+               WHERE s.session_id = ?""",
+            (session_hash,),
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        if row["revoked_at"] or row["expires_at"] <= time.time():
+            return None
+        if row["principal_issuer"] is not None and row["principal_epoch"] != row["epoch"]:
+            return None
+        return {
+            "sessionHash": row["session_id"], "accountId": row["account_id"], "csrf": row["csrf"],
+            "authMethod": row["auth_method"], "issuer": row["principal_issuer"],
+            "subject": row["principal_subject"], "epoch": row["epoch"], "expiresAt": row["expires_at"],
+        }
+
+    def revoke_session(self, session_id: str) -> None:
+        self._write(lambda connection: connection.execute(
+            "UPDATE sessions SET revoked_at = ? WHERE session_id = ? AND revoked_at IS NULL",
+            (now_iso(), sha256_text(session_id)),
+        ))
+
+    def revoke_principal_sessions(
+        self, issuer: str, *, subject: str | None = None, idp_session_id: str | None = None
+    ) -> int:
+        """Revoke sessions for an IdP subject or IdP session. Return the count."""
+        stamp = now_iso()
+
+        def operation(connection: sqlite3.Connection) -> int:
+            count = 0
+            if subject is not None:
+                connection.execute(
+                    "UPDATE principals SET session_epoch = session_epoch + 1, updated_at = ?"
+                    " WHERE issuer = ? AND subject = ?", (stamp, issuer, subject))
+                count += connection.execute(
+                    "UPDATE sessions SET revoked_at = ? WHERE principal_issuer = ? AND principal_subject = ?"
+                    " AND revoked_at IS NULL", (stamp, issuer, subject)).rowcount
+            if idp_session_id is not None:
+                count += connection.execute(
+                    "UPDATE sessions SET revoked_at = ? WHERE principal_issuer = ? AND idp_session_id = ?"
+                    " AND revoked_at IS NULL", (stamp, issuer, idp_session_id)).rowcount
+            return count
+
+        return self._write(operation)
+
+    # Draft sharing.
+
+    def resolve_draft(self, ref: str) -> dict | None:
+        """Return a live draft by ID or custom URL, or None."""
+        with STORE_LOCK:
+            _draft_id, draft = self._resolve_ref(self.load_meta(), ref)
+        if not draft or draft.get("deletedAt"):
+            return None
+        return draft
+
+    def list_grants(self, draft_id: str) -> list[dict]:
+        rows = self._rows(
+            "SELECT * FROM draft_grants WHERE draft_id = ? ORDER BY principal_type, principal_value",
+            (draft_id,),
+        )
+        return [{"type": row["principal_type"], "value": row["principal_value"], "role": row["role"],
+                 "grantedBy": row["granted_by"], "createdAt": row["created_at"]} for row in rows]
+
+    def add_grant(self, draft_id: str, principal_type: str, value: str, role: str, granted_by: str) -> None:
+        self._write(lambda connection: connection.execute(
+            """INSERT INTO draft_grants (draft_id, principal_type, principal_value, role, granted_by, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT (draft_id, principal_type, principal_value)
+               DO UPDATE SET role = excluded.role, granted_by = excluded.granted_by""",
+            (draft_id, principal_type, value.lower(), role, granted_by, now_iso()),
+        ))
+
+    def remove_grant(self, draft_id: str, principal_type: str, value: str) -> bool:
+        return bool(self._write(lambda connection: connection.execute(
+            "DELETE FROM draft_grants WHERE draft_id = ? AND principal_type = ? AND principal_value = ?",
+            (draft_id, principal_type, value.lower()),
+        ).rowcount))
+
+    def grants_matching(self, pairs: list[tuple[str, str]]) -> dict[str, list[dict]]:
+        """Return grants for any (type, value) pair, keyed by draft ID."""
+        result: dict[str, list[dict]] = {}
+        if not pairs:
+            return result
+        clause = " OR ".join("(principal_type = ? AND principal_value = ?)" for _ in pairs)
+        params = tuple(item for pair in pairs for item in pair)
+        for row in self._rows(f"SELECT * FROM draft_grants WHERE {clause}", params):
+            result.setdefault(row["draft_id"], []).append(
+                {"type": row["principal_type"], "value": row["principal_value"], "role": row["role"]})
+        return result
+
+    def set_sharing(self, draft_id: str, *, workspace: str | None = None, visibility: str | None = None) -> dict:
+        with STORE_LOCK:
+            data = self.load_meta()
+            draft = data["drafts"].get(draft_id)
+            if not draft or draft.get("deletedAt"):
+                raise KeyError("Draft not found.")
+            if workspace is not None:
+                draft["workspace"] = workspace
+            if visibility is not None:
+                draft["visibility"] = visibility
+            self.save_meta(data)
+            return dict(draft)
+
+    def all_live_drafts(self) -> list[dict]:
+        with STORE_LOCK:
+            return [dict(draft) for draft in self.load_meta()["drafts"].values() if not draft.get("deletedAt")]
+
+    # Device login.
+
+    def start_device_login(self, client_name: str | None, ttl: int = DEVICE_CODE_TTL) -> dict:
+        device_code = secrets.token_urlsafe(32)
+        stamp = now_iso()
+        for _attempt in range(8):
+            raw = "".join(secrets.choice(USER_CODE_ALPHABET) for _ in range(8))
+            user_code = f"{raw[:4]}-{raw[4:]}"
+            try:
+                self._write(lambda connection: (
+                    connection.execute("DELETE FROM device_codes WHERE expires_at < ?", (int(time.time()) - 3600,)),
+                    connection.execute(
+                        "INSERT INTO device_codes (device_code_hash, user_code, client_name, status,"
+                        " expires_at, created_at) VALUES (?, ?, ?, 'pending', ?, ?)",
+                        (sha256_text(device_code), user_code, clean_text(client_name, 80), int(time.time()) + ttl,
+                         stamp)),
+                ))
+            except StorageError:
+                continue
+            return {"deviceCode": device_code, "userCode": user_code, "expiresIn": ttl}
+        raise StorageError("Could not allocate a device code.")
+
+    def device_login(self, user_code: str) -> dict | None:
+        code = normalize_user_code(user_code)
+        if code is None:
+            return None
+        rows = self._rows("SELECT * FROM device_codes WHERE user_code = ?", (code,))
+        if not rows or rows[0]["expires_at"] <= time.time() or rows[0]["status"] != "pending":
+            return None
+        return {"userCode": rows[0]["user_code"], "clientName": rows[0]["client_name"],
+                "expiresAt": datetime.fromtimestamp(rows[0]["expires_at"], UTC).isoformat().replace("+00:00", "Z")}
+
+    def decide_device_login(self, user_code: str, account_id: str, approve: bool) -> dict | None:
+        """Approve or deny a pending device login. Return None when the code is not pending."""
+        code = normalize_user_code(user_code)
+        if code is None:
+            return None
+        status = "approved" if approve else "denied"
+        changed = self._write(lambda connection: connection.execute(
+            "UPDATE device_codes SET status = ?, account_id = ? WHERE user_code = ? AND status = 'pending'"
+            " AND expires_at > ?", (status, account_id, code, int(time.time()))).rowcount)
+        return {"status": status} if changed else None
+
+    def poll_device_login(self, device_code: str) -> dict:
+        """Return the device login state. The first approved poll mints the key and consumes the code."""
+        if not isinstance(device_code, str) or not 16 <= len(device_code) <= 128:
+            return {"status": "expired"}
+        code_hash = sha256_text(device_code)
+        with STORE_LOCK:
+            rows = self._rows("SELECT * FROM device_codes WHERE device_code_hash = ?", (code_hash,))
+            if not rows or rows[0]["status"] == "consumed" or rows[0]["expires_at"] <= time.time():
+                return {"status": "expired"}
+            row = rows[0]
+            if row["status"] != "approved":
+                return {"status": row["status"]}
+            consumed = self._write(lambda connection: connection.execute(
+                "UPDATE device_codes SET status = 'consumed' WHERE device_code_hash = ? AND status = 'approved'",
+                (code_hash,)).rowcount)
+            if not consumed:
+                return {"status": "expired"}
+            name = "Device login" + (f": {row['client_name']}" if row["client_name"] else "")
+            created = self.create_key(row["account_id"], name, DEVICE_KEY_TTL)
+            self._write(lambda connection: connection.execute(
+                "UPDATE device_codes SET issued_key = ? WHERE device_code_hash = ?",
+                (created["apiKey"]["id"], code_hash)))
+            return {"status": "approved", "accountId": row["account_id"], "apiKey": created["token"],
+                    "keyId": created["apiKey"]["id"], "expiresAt": created["apiKey"]["expiresAt"]}
 
 
 class RateLimiter:
@@ -3988,6 +4477,665 @@ def read_signed(value: str, secret: str) -> dict | None:
         return None
 
 
+# -- Sign-in modes, roles, sharing, and OpenID Connect ---------------------
+
+VISIBILITY_RANK = {name: rank for rank, name in enumerate(VISIBILITIES)}
+ROLE_RANK = {"viewer": 1, "editor": 2, "admin": 3, "owner": 4}
+INSTANCE_ROLES = ("admin", "auditor")
+WORKSPACE_ROLES = ("viewer", "editor", "admin")
+VIEWER_AUTH_MODES = ("network", "per-draft", "session")
+AUTH_MODES = ("api_key", "tailscale", "oidc")
+GRANT_TYPES = ("email", "group", "workspace")
+GRANT_ROLES = ("viewer", "editor")
+DEFAULT_SESSION_TTL = 7 * 86400
+VIEW_TOKEN_TTL = 3600
+OIDC_FLOW_TTL = 600
+OIDC_ALGORITHMS = ("RS256", "PS256", "ES256", "ES384", "EdDSA")
+OIDC_CLOCK_SKEW = 30
+OIDC_MAX_RESPONSE_BYTES = 512 * 1024
+OIDC_HTTP_TIMEOUT = 5.0
+OIDC_JWKS_TTL = 3600
+OIDC_JWKS_REFRESH_FLOOR = 60
+OIDC_DEFAULT_SCOPES = "openid profile email groups"
+BACKCHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
+EMAIL_RE = re.compile(r"[^@\s]{1,64}@[^@\s]{1,255}")
+CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+
+
+def purpose_secret(secret: str, purpose: str) -> str:
+    """Derive a separate signing key for one cookie or token type."""
+    return hmac.new(secret.encode(), f"tailplan-{purpose}-v1".encode(), hashlib.sha256).hexdigest()
+
+
+def safe_next_path(value: object, default: str = "/dashboard") -> str:
+    """Return a relative path under a known Tailplan root, or the default.
+
+    The check refuses schemes, `//` hosts, backslashes, control characters,
+    encoded separators, and dot segments.
+    """
+    if not isinstance(value, str) or not value.isascii() or len(value) > 512:
+        return default
+    if not value.startswith("/") or value.startswith("//") or "\\" in value or "#" in value:
+        return default
+    if any(ord(character) <= 32 or ord(character) == 127 for character in value):
+        return default
+    path, _separator, query = value.partition("?")
+    lowered = path.lower()
+    if "%2f" in lowered or "%5c" in lowered or "%00" in lowered:
+        return default
+    if any(segment in {".", ".."} for segment in unquote(path).split("/")):
+        return default
+    if not (path in {"/dashboard", "/cli/auth", "/cli/activate"}
+            or path.startswith(("/dashboard/", "/cli/auth/", "/d/"))):
+        return default
+    if query and not SAFE_QUERY_RE.fullmatch(query):
+        return default
+    return value
+
+
+def _normalize_principal_value(value: str) -> str:
+    return value.strip().lstrip("/").lower()
+
+
+def normalize_grant(principal_type: object, value: object) -> str:
+    """Return the stored form of a grant value. Raise ValueError when it is invalid."""
+    if principal_type not in GRANT_TYPES:
+        raise ValueError("Grant type must be email, group, or workspace.")
+    if not isinstance(value, str) or not value.strip() or len(value) > 255:
+        raise ValueError("Grant value is required.")
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("Grant value has control characters.")
+    normalized = _normalize_principal_value(value) if principal_type == "group" else value.strip().lower()
+    if principal_type == "email" and EMAIL_RE.fullmatch(normalized) is None:
+        raise ValueError("Grant email is invalid.")
+    if principal_type == "workspace" and WORKSPACE_RE.fullmatch(normalized) is None:
+        raise ValueError("Grant workspace is invalid.")
+    if not normalized:
+        raise ValueError("Grant value is required.")
+    return normalized
+
+
+class RBACPolicy:
+    """Map sign-in claims to an instance role and workspace roles. Deny by default."""
+
+    RULE_FIELDS = {"match", "instance_role", "workspaces", "default_workspace"}
+
+    def __init__(self, data: object = None) -> None:
+        self.configured = data is not None
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            raise ValueError("RBAC policy must be a JSON object.")
+        unknown = set(data) - {"legacy_workspace", "default_workspace", "rules"}
+        if unknown:
+            raise ValueError(f"RBAC policy has unknown fields: {', '.join(sorted(unknown))}.")
+        self.legacy_workspace = self._workspace(data.get("legacy_workspace", "owner"), "legacy_workspace")
+        self.default_workspace = self._workspace(
+            data.get("default_workspace", self.legacy_workspace), "default_workspace")
+        rules = data.get("rules", [])
+        if not isinstance(rules, list):
+            raise ValueError("RBAC policy rules must be a list.")
+        self.rules = [self._rule(index, rule) for index, rule in enumerate(rules)]
+
+    @staticmethod
+    def _workspace(value: object, field: str) -> str:
+        if not isinstance(value, str) or WORKSPACE_RE.fullmatch(value) is None:
+            raise ValueError(f"RBAC policy {field} must be a lowercase workspace name.")
+        return value
+
+    def _rule(self, index: int, rule: object) -> dict:
+        where = f"RBAC policy rule {index + 1}"
+        if not isinstance(rule, dict) or set(rule) - self.RULE_FIELDS:
+            raise ValueError(f"{where} must be an object with known fields.")
+        match = rule.get("match")
+        if (not isinstance(match, dict) or not match or set(match) - {"group", "email"}
+                or not all(isinstance(value, str) and value.strip() for value in match.values())):
+            raise ValueError(f"{where} needs a match with a group or an email.")
+        instance_role = rule.get("instance_role")
+        if instance_role is not None and instance_role not in INSTANCE_ROLES:
+            raise ValueError(f"{where} instance_role must be admin, auditor, or null.")
+        workspaces = rule.get("workspaces", {})
+        if not isinstance(workspaces, dict):
+            raise ValueError(f"{where} workspaces must be an object.")
+        for name, level in workspaces.items():
+            self._workspace(name, f"rule {index + 1} workspace")
+            if level not in WORKSPACE_ROLES:
+                raise ValueError(f"{where} workspace roles must be admin, editor, or viewer.")
+        default = rule.get("default_workspace")
+        if default is not None:
+            self._workspace(default, f"rule {index + 1} default_workspace")
+        return {
+            "group": _normalize_principal_value(match["group"]) if "group" in match else None,
+            "email": match["email"].strip().lower() if "email" in match else None,
+            "instanceRole": instance_role,
+            "workspaces": dict(workspaces),
+            "defaultWorkspace": default,
+        }
+
+    @classmethod
+    def load(cls, path: str | None) -> RBACPolicy:
+        if not path:
+            return cls(None)
+        try:
+            data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"cannot read RBAC policy file: {exc}") from exc
+        try:
+            return cls(data)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+
+    def resolve(self, *, email: str | None, email_verified: bool, groups: list[str]) -> dict | None:
+        """Return roles for the claims, or None when no rule matches."""
+        email_key = email.strip().lower() if email and email_verified else None
+        group_keys = {_normalize_principal_value(group) for group in groups if isinstance(group, str)}
+        matched = [
+            rule for rule in self.rules
+            if (rule["group"] is None or rule["group"] in group_keys)
+            and (rule["email"] is None or rule["email"] == email_key)
+        ]
+        if not matched:
+            return None
+        instance_role = None
+        workspaces: dict[str, str] = {}
+        default = None
+        for rule in matched:
+            if rule["instanceRole"] == "admin" or (rule["instanceRole"] == "auditor" and instance_role is None):
+                instance_role = rule["instanceRole"]
+            for name, level in rule["workspaces"].items():
+                if ROLE_RANK[level] > ROLE_RANK.get(workspaces.get(name, ""), 0):
+                    workspaces[name] = level
+            default = default or rule["defaultWorkspace"]
+        return {"instanceRole": instance_role, "workspaces": workspaces,
+                "defaultWorkspace": default or self.default_workspace}
+
+    def open_roles(self) -> dict:
+        """Return roles for a signed-in user when no policy file is set."""
+        return {"instanceRole": None, "workspaces": {self.default_workspace: "viewer"},
+                "defaultWorkspace": self.default_workspace}
+
+
+class AuthConfig:
+    """Hold the sign-in, role, and sharing settings that both listeners share."""
+
+    def __init__(
+        self,
+        *,
+        modes: tuple[str, ...] = ("api_key", "tailscale"),
+        policy: RBACPolicy | None = None,
+        viewer_mode: str = "network",
+        max_visibility: str = "link",
+        session_ttl: int = DEFAULT_SESSION_TTL,
+        oidc: OIDCClient | None = None,
+        link_emails: frozenset[str] = frozenset(),
+    ) -> None:
+        if viewer_mode not in VIEWER_AUTH_MODES:
+            raise ValueError("viewer auth mode must be network, per-draft, or session")
+        if max_visibility not in VISIBILITY_RANK:
+            raise ValueError("max visibility must be link, authenticated, workspace, or private")
+        if any(mode not in AUTH_MODES for mode in modes):
+            raise ValueError("auth modes must be api_key, tailscale, or oidc")
+        if "oidc" in modes and oidc is None:
+            raise ValueError("the oidc auth mode needs TAILPLAN_OIDC_ISSUER")
+        self.modes = tuple(modes)
+        self.policy = policy or RBACPolicy(None)
+        self.viewer_mode = viewer_mode
+        self.max_visibility = max_visibility
+        self.session_ttl = session_ttl
+        self.oidc = oidc
+        self.link_emails = frozenset(email.lower() for email in link_emails)
+
+    @property
+    def default_visibility(self) -> str:
+        return "link" if self.viewer_mode == "network" else "workspace"
+
+    def allowed_visibilities(self) -> list[str]:
+        return [name for name in VISIBILITIES if VISIBILITY_RANK[name] <= VISIBILITY_RANK[self.max_visibility]]
+
+
+def parse_auth_modes(value: str | None, *, oidc: bool) -> tuple[str, ...]:
+    if not value or not value.strip():
+        return ("oidc", "api_key") if oidc else ("api_key", "tailscale")
+    modes = tuple(dict.fromkeys(item.strip().lower() for item in value.split(",") if item.strip()))
+    unknown = [mode for mode in modes if mode not in AUTH_MODES]
+    if unknown:
+        raise ValueError(f"unknown auth modes: {', '.join(unknown)}")
+    return modes
+
+
+def effective_visibility(draft: dict, auth: AuthConfig) -> str:
+    """Return the draft visibility, capped by the server maximum."""
+    value = draft.get("visibility") or auth.default_visibility
+    if value not in VISIBILITY_RANK:
+        value = "private"
+    return min(value, auth.max_visibility, key=VISIBILITY_RANK.__getitem__)
+
+
+def draft_workspace(draft: dict, auth: AuthConfig) -> str:
+    return draft.get("workspace") or auth.policy.legacy_workspace
+
+
+def _best_role(*roles: str | None) -> str | None:
+    ranked = [role for role in roles if role]
+    return max(ranked, key=ROLE_RANK.__getitem__) if ranked else None
+
+
+def shared_role(identity: dict, draft: dict, grants: list[dict], auth: AuthConfig) -> str | None:
+    """Return the role from grants and workspace membership only."""
+    email = identity.get("email") if identity.get("emailVerified") else None
+    groups = {_normalize_principal_value(group) for group in identity.get("groups") or []}
+    workspaces = identity.get("workspaces") or {}
+    roles: list[str | None] = []
+    for grant in grants:
+        value = grant["value"]
+        if ((grant["type"] == "email" and email and value == email.lower())
+                or (grant["type"] == "group" and value in groups)
+                or (grant["type"] == "workspace" and value in workspaces)):
+            roles.append(grant["role"])
+    member = workspaces.get(draft_workspace(draft, auth))
+    if member == "admin":
+        roles.append("editor")
+    elif member and VISIBILITY_RANK[effective_visibility(draft, auth)] >= VISIBILITY_RANK["workspace"]:
+        roles.append(member)
+    return _best_role(*roles)
+
+
+def draft_role(identity: dict | None, draft: dict, grants: list[dict], auth: AuthConfig) -> str | None:
+    """Return viewer, editor, admin, or owner for the identity, or None for no access."""
+    visibility = effective_visibility(draft, auth)
+    if identity is None:
+        return "viewer" if visibility == "link" and auth.viewer_mode != "session" else None
+    account_id = identity.get("accountId")
+    if account_id != "anonymous" and draft.get("accountId", "local") == account_id:
+        return "owner"
+    if identity.get("instanceRole") == "admin":
+        return "admin"
+    open_role = "viewer" if VISIBILITY_RANK[visibility] >= VISIBILITY_RANK["authenticated"] else None
+    return _best_role(shared_role(identity, draft, grants, auth), open_role)
+
+
+def workspace_allowed(identity: dict, workspace: str) -> bool:
+    """Return True when the identity may place drafts in the workspace by name.
+
+    Uploads without a workspace still land in the default workspace.
+    """
+    if identity.get("instanceRole") == "admin":
+        return True
+    return ROLE_RANK.get((identity.get("workspaces") or {}).get(workspace, ""), 0) >= ROLE_RANK["editor"]
+
+
+def claim_path(claims: dict, path: str) -> object:
+    """Return a claim by dotted path, such as `realm_access.roles`."""
+    value: object = claims
+    for part in path.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
+
+
+def groups_from_claim(value: object) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)][:256]
+    return []
+
+
+class OIDCError(Exception):
+    """The identity provider sent an unsafe, invalid, or failed answer."""
+
+
+def _public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    if isinstance(address, ipaddress.IPv4Address) and address in CGNAT_NETWORK:
+        return False
+    return address.is_global and not address.is_multicast
+
+
+def resolve_public_addresses(host: str, port: int, allow_private: bool) -> list[str]:
+    """Resolve a host. Refuse loopback, private, link-local, and CGNAT addresses unless allowed."""
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError) as exc:
+        raise OIDCError("cannot resolve the identity provider host") from exc
+    addresses: list[str] = []
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+        if not allow_private and not _public_address(address):
+            raise OIDCError("the identity provider resolves to a private or reserved address")
+        addresses.append(str(address))
+    if not addresses:
+        raise OIDCError("cannot resolve the identity provider host")
+    return addresses
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host: str, port: int, address: str, timeout: float) -> None:
+        super().__init__(host, port, timeout=timeout)
+        self._pinned_address = address
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection((self._pinned_address, self.port), self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host: str, port: int, address: str, timeout: float, context: ssl.SSLContext) -> None:
+        super().__init__(host, port, timeout=timeout, context=context)
+        self._pinned_address = address
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self._pinned_address, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def url_origin(url: str) -> str:
+    parsed = urlparse(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return f"{parsed.scheme}://{(parsed.hostname or '').lower()}:{port}"
+
+
+class OIDCClient:
+    """OpenID Connect relying party with lazy discovery and strict token checks.
+
+    Discovery and key fetches run at the first sign-in, not at startup.
+    Each fetch stays on the issuer origin, never follows a redirect, and has
+    size and time limits.
+    """
+
+    def __init__(
+        self,
+        *,
+        issuer: str,
+        client_id: str,
+        client_secret: str,
+        scopes: str = OIDC_DEFAULT_SCOPES,
+        groups_claim: str = "groups",
+        allow_private: bool = False,
+        timeout: float = OIDC_HTTP_TIMEOUT,
+        max_bytes: int = OIDC_MAX_RESPONSE_BYTES,
+        ssl_context: ssl.SSLContext | None = None,
+    ) -> None:
+        import jwt  # The `oidc` extra installs PyJWT. Import it only when OIDC is on.
+
+        self.jwt = jwt
+        parsed = urlparse(issuer)
+        if (parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username
+                or parsed.password or parsed.query or parsed.fragment):
+            raise ValueError("TAILPLAN_OIDC_ISSUER must be an absolute URL without credentials or query")
+        if parsed.scheme == "http" and not allow_private:
+            raise ValueError("TAILPLAN_OIDC_ISSUER must use HTTPS")
+        if not client_id or not client_secret:
+            raise ValueError("OIDC needs a client ID and a client secret")
+        self.issuer = issuer
+        self.origin = url_origin(issuer)
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.scopes = " ".join(scopes.split()) or OIDC_DEFAULT_SCOPES
+        if "openid" not in self.scopes.split():
+            self.scopes = "openid " + self.scopes
+        self.groups_claim = groups_claim or "groups"
+        self.allow_private = allow_private
+        self.timeout = timeout
+        self.max_bytes = max_bytes
+        self.ssl_context = ssl_context or ssl.create_default_context()
+        self.lock = threading.Lock()
+        self._metadata: dict | None = None
+        self._metadata_at = 0.0
+        self._jwks: list[dict] = []
+        self._jwks_at = 0.0
+
+    def fetch(self, url: str, *, method: str = "GET", body: bytes | None = None,
+              headers: dict | None = None) -> tuple[int, bytes]:
+        parsed = urlparse(url)
+        if (parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username
+                or parsed.password or parsed.fragment):
+            raise OIDCError("the identity provider sent an invalid endpoint URL")
+        if parsed.scheme == "http" and not self.allow_private:
+            raise OIDCError("identity provider endpoints must use HTTPS")
+        if url_origin(url) != self.origin:
+            raise OIDCError("identity provider endpoints must share the issuer origin")
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        address = resolve_public_addresses(parsed.hostname, port, self.allow_private)[0]
+        if parsed.scheme == "https":
+            connection: http.client.HTTPConnection = _PinnedHTTPSConnection(
+                parsed.hostname, port, address, self.timeout, self.ssl_context)
+        else:
+            connection = _PinnedHTTPConnection(parsed.hostname, port, address, self.timeout)
+        target = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
+        deadline = time.monotonic() + self.timeout
+        try:
+            connection.request(method, target, body=body, headers={
+                "Accept": "application/json", "User-Agent": f"tailplan/{TAILPLAN_VERSION}", **(headers or {})})
+            response = connection.getresponse()
+            if 300 <= response.status < 400:
+                raise OIDCError("the identity provider sent a redirect; Tailplan does not follow redirects")
+            declared = response.getheader("Content-Length")
+            if declared and declared.isdigit() and int(declared) > self.max_bytes:
+                raise OIDCError("the identity provider response is too large")
+            chunks: list[bytes] = []
+            size = 0
+            while True:
+                if time.monotonic() > deadline:
+                    raise OIDCError("the identity provider did not answer in time")
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > self.max_bytes:
+                    raise OIDCError("the identity provider response is too large")
+                chunks.append(chunk)
+            return response.status, b"".join(chunks)
+        except (OSError, http.client.HTTPException) as exc:
+            raise OIDCError(f"the identity provider request failed: {exc.__class__.__name__}") from exc
+        finally:
+            connection.close()
+
+    def fetch_json(self, url: str, **options) -> dict:
+        status, body = self.fetch(url, **options)
+        if status != 200:
+            raise OIDCError(f"the identity provider answered HTTP {status}")
+        try:
+            value = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise OIDCError("the identity provider sent invalid JSON") from exc
+        if not isinstance(value, dict):
+            raise OIDCError("the identity provider sent a JSON value that is not an object")
+        return value
+
+    def metadata(self) -> dict:
+        with self.lock:
+            if self._metadata and time.monotonic() - self._metadata_at < OIDC_JWKS_TTL:
+                return self._metadata
+        document = self.fetch_json(self.issuer.rstrip("/") + "/.well-known/openid-configuration")
+        if document.get("issuer") != self.issuer:
+            raise OIDCError("the discovery issuer does not match TAILPLAN_OIDC_ISSUER exactly")
+        for field in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
+            if not isinstance(document.get(field), str):
+                raise OIDCError(f"the discovery document has no {field}")
+        for field in ("authorization_endpoint", "token_endpoint", "jwks_uri", "userinfo_endpoint"):
+            value = document.get(field)
+            if value is not None and (not isinstance(value, str) or url_origin(value) != self.origin):
+                raise OIDCError(f"the discovery {field} must share the issuer origin")
+        with self.lock:
+            self._metadata, self._metadata_at = document, time.monotonic()
+        return document
+
+    def _load_jwks(self) -> list[dict]:
+        document = self.fetch_json(self.metadata()["jwks_uri"])
+        keys = document.get("keys")
+        if not isinstance(keys, list):
+            raise OIDCError("the key set has no keys")
+        usable = [key for key in keys if isinstance(key, dict) and key.get("kty") in {"RSA", "EC", "OKP"}
+                  and key.get("use", "sig") == "sig"]
+        with self.lock:
+            self._jwks, self._jwks_at = usable, time.monotonic()
+        return usable
+
+    def signing_key(self, kid: object, algorithm: str) -> dict:
+        def find(keys: list[dict]) -> dict | None:
+            candidates = [key for key in keys if key.get("alg") in {None, algorithm}]
+            if kid is not None:
+                candidates = [key for key in candidates if key.get("kid") == kid]
+            return candidates[0] if len(candidates) == 1 or (kid is not None and candidates) else None
+
+        with self.lock:
+            keys, loaded_at = self._jwks, self._jwks_at
+        age = time.monotonic() - loaded_at
+        if not keys or age >= OIDC_JWKS_TTL:
+            keys = self._load_jwks()
+            age = 0.0
+        key = find(keys)
+        if key is None and loaded_at and age >= OIDC_JWKS_REFRESH_FLOOR:
+            key = find(self._load_jwks())
+        if key is None:
+            raise OIDCError("the token signing key is unknown")
+        return key
+
+    def verify(self, token: object, *, require: list[str], audience: str | None = None) -> dict:
+        if not isinstance(token, str) or len(token) > 16384:
+            raise OIDCError("the token is missing or too large")
+        jwt = self.jwt
+        try:
+            header = jwt.get_unverified_header(token)
+        except jwt.PyJWTError as exc:
+            raise OIDCError("the token header is invalid") from exc
+        algorithm = header.get("alg")
+        if algorithm not in OIDC_ALGORITHMS:
+            raise OIDCError("the token algorithm is not allowed")
+        jwk = self.signing_key(header.get("kid"), algorithm)
+        try:
+            key = jwt.PyJWK(jwk, algorithm=algorithm).key
+            claims = jwt.decode(
+                token, key=key, algorithms=[algorithm], audience=audience or self.client_id,
+                issuer=self.issuer, leeway=OIDC_CLOCK_SKEW, options={"require": require},
+            )
+        except (jwt.PyJWTError, ValueError, TypeError) as exc:
+            raise OIDCError(f"the token is invalid: {exc.__class__.__name__}") from exc
+        if not isinstance(claims, dict):
+            raise OIDCError("the token claims are invalid")
+        audiences = claims["aud"] if isinstance(claims.get("aud"), list) else [claims.get("aud")]
+        azp = claims.get("azp")
+        if (azp is not None or len(audiences) > 1) and azp != self.client_id:
+            raise OIDCError("the token authorized party is not this client")
+        return claims
+
+    def verify_id_token(self, token: object, *, nonce: str) -> dict:
+        claims = self.verify(token, require=["exp", "iat", "iss", "aud", "sub"])
+        if not isinstance(claims.get("nonce"), str) or not hmac.compare_digest(claims["nonce"], nonce):
+            raise OIDCError("the token nonce does not match")
+        subject = claims.get("sub")
+        if not isinstance(subject, str) or not subject or len(subject) > 255:
+            raise OIDCError("the token subject is invalid")
+        return claims
+
+    def verify_logout_token(self, token: object) -> dict:
+        claims = self.verify(token, require=["iat", "iss", "aud", "jti"])
+        events = claims.get("events")
+        if not isinstance(events, dict) or BACKCHANNEL_LOGOUT_EVENT not in events:
+            raise OIDCError("the logout token has no back-channel logout event")
+        if "nonce" in claims:
+            raise OIDCError("a logout token must not have a nonce")
+        if not isinstance(claims.get("sub"), str) and not isinstance(claims.get("sid"), str):
+            raise OIDCError("the logout token needs sub or sid")
+        return claims
+
+    def authorization_url(self, *, state: str, nonce: str, challenge: str, redirect_uri: str) -> str:
+        endpoint = self.metadata()["authorization_endpoint"]
+        query = urlencode({
+            "response_type": "code", "client_id": self.client_id, "redirect_uri": redirect_uri,
+            "scope": self.scopes, "state": state, "nonce": nonce,
+            "code_challenge": challenge, "code_challenge_method": "S256",
+        })
+        return endpoint + ("&" if "?" in endpoint else "?") + query
+
+    def exchange(self, code: str, verifier: str, redirect_uri: str) -> dict:
+        body = urlencode({"grant_type": "authorization_code", "code": code,
+                          "redirect_uri": redirect_uri, "code_verifier": verifier}).encode()
+        credentials = f"{quote(self.client_id, safe='')}:{quote(self.client_secret, safe='')}"
+        tokens = self.fetch_json(self.metadata()["token_endpoint"], method="POST", body=body, headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": "Basic " + base64.b64encode(credentials.encode()).decode(),
+        })
+        if not isinstance(tokens.get("id_token"), str):
+            raise OIDCError("the token endpoint sent no ID token")
+        return tokens
+
+    def userinfo(self, access_token: str, subject: str) -> dict:
+        endpoint = self.metadata().get("userinfo_endpoint")
+        if not endpoint:
+            return {}
+        info = self.fetch_json(endpoint, headers={"Authorization": f"Bearer {access_token}"})
+        if info.get("sub") != subject:
+            raise OIDCError("the userinfo subject does not match the ID token")
+        return info
+
+
+def oidc_account_id(issuer: str, subject: str) -> str:
+    """Return the stable account ID for one (issuer, subject) pair."""
+    return sha256_text(f"oidc:{issuer}\n{subject}")[:32]
+
+
+def pkce_challenge(verifier: str) -> str:
+    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+
+
+def add_view_token(href: str, token: str) -> str | None:
+    """Add a view token to a relative sibling link. Return None for other links."""
+    value = href.strip()
+    if not value or value.startswith(("/", "#", "?")) or "\\" in value:
+        return None
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", value):
+        return None
+    path, hash_mark, fragment = value.partition("#")
+    separator = "&" if "?" in path else "?"
+    return f"{path}{separator}tv={token}" + (f"#{fragment}" if hash_mark else "")
+
+
+class _ViewLinkRewriter(HTMLParser):
+    def __init__(self, doc: str, token: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.token = token
+        self.edits: list[tuple[int, int, str]] = []
+        self._line_offsets = [0]
+        self._line_offsets.extend(index + 1 for index, character in enumerate(doc) if character == "\n")
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "a":
+            return
+        href = next((value for name, value in attrs if name.lower() == "href"), None)
+        raw = self.get_starttag_text()
+        if href is None or raw is None:
+            return
+        updated = add_view_token(href, self.token)
+        if updated is None:
+            return
+        spans, _close_at = _start_tag_attributes(raw)
+        span = next(((start, end) for name, start, end in spans if name == "href"), None)
+        if span is None:
+            return
+        line, column = self.getpos()
+        offset = self._line_offsets[line - 1] + column
+        self.edits.append((offset + span[0], offset + span[1], f'href="{html.escape(updated, quote=True)}"'))
+
+
+def add_view_tokens(doc: str, token: str) -> str:
+    """Carry a view token on relative links, for browsers that block third-party cookies."""
+    rewriter = _ViewLinkRewriter(doc, token)
+    rewriter.feed(doc)
+    rewriter.close()
+    pieces: list[str] = []
+    previous = 0
+    for start, end, replacement in sorted(rewriter.edits):
+        pieces.extend((doc[previous:start], replacement))
+        previous = end
+    pieces.append(doc[previous:])
+    return "".join(pieces)
+
+
 class TailplanHTTPServer(ThreadingHTTPServer):
     """Threaded HTTP server with bounded admission and finite socket reads."""
 
@@ -3995,6 +5143,7 @@ class TailplanHTTPServer(ThreadingHTTPServer):
     token: str
     base_url: str
     redirect_view_base_url: str
+    auth: AuthConfig
 
     def __init__(
         self,
@@ -4019,6 +5168,7 @@ class TailplanHTTPServer(ThreadingHTTPServer):
         self.allow_anonymous_uploads = False
         self.upload_ip_limit = 60
         self.upload_key_limit = 30
+        self.auth = AuthConfig()
         self._handler_slots = threading.BoundedSemaphore(max_handlers)
         super().__init__(server_address, request_handler_class)
 
@@ -4062,6 +5212,13 @@ class Handler(BaseHTTPRequestHandler):
         return configured or derive_session_secret(self.token)
 
     @property
+    def auth(self) -> AuthConfig:
+        return self.server.auth  # type: ignore[attr-defined]
+
+    def purpose_key(self, purpose: str) -> str:
+        return purpose_secret(self.session_secret, purpose)
+
+    @property
     def base_url(self) -> str:
         configured = self.server.base_url  # type: ignore[attr-defined]
         if configured:
@@ -4085,7 +5242,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def send_html(self, status: int, body: str, *, web: bool = False, cookie: str | None = None) -> None:
+    def send_html(self, status: int, body: str, *, web: bool = False, cookie: str | list[str] | None = None) -> None:
         raw = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -4097,8 +5254,8 @@ class Handler(BaseHTTPRequestHandler):
                          f"frame-ancestors 'none'; form-action {form_policy}")
         self.send_header("Referrer-Policy", "same-origin" if web else "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
-        if cookie:
-            self.send_header("Set-Cookie", cookie)
+        for value in [cookie] if isinstance(cookie, str) else cookie or []:
+            self.send_header("Set-Cookie", value)
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         if self.command != "HEAD":
@@ -4112,8 +5269,11 @@ class Handler(BaseHTTPRequestHandler):
         draft_id: str = "",
         version: int = 1,
         allow_inline_scripts: bool = False,
+        cookies: list[str] | None = None,
+        view_token: str | None = None,
     ) -> None:
-        raw = body.encode("utf-8")
+        served = add_view_tokens(body, view_token) if view_token else body
+        raw = served.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -4129,6 +5289,8 @@ class Handler(BaseHTTPRequestHandler):
             "Content-Security-Policy",
             draft_content_security_policy(allow_inline_scripts=allow_inline_scripts),
         )
+        for cookie in cookies or []:
+            self.send_header("Set-Cookie", cookie)
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         if not head_only:
@@ -4238,6 +5400,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_view_redirect(path, query)
             return
         try:
+            gate = self.gate_draft(route["ref"], api=False)
+            if gate is None:
+                return
             draft, version_num, doc, allow_scripts, redirect_kind = self.store.get_page(
                 route["ref"], route["version"], route["page_path"]
             )
@@ -4262,12 +5427,19 @@ class Handler(BaseHTTPRequestHandler):
         if doc is None:
             self.send_html(404, not_found())
             return
+        _gated, identity, source = gate
+        cookies, view_token = self.view_credentials(identity, source, draft["draftId"], multi_page)
+        if identity is not None and not head_only:
+            self.audit_event("draft.view", identity, "draft", draft["draftId"],
+                             detail={"version": version_num, "path": route["page_path"] or "index.html"})
         self.send_document(
             doc,
             head_only=head_only,
             draft_id=draft["draftId"],
             version=version_num,
             allow_inline_scripts=allow_scripts,
+            cookies=cookies,
+            view_token=view_token,
         )
 
     def serve_preview(self, match: re.Match[str], *, head_only: bool = False) -> None:
@@ -4276,6 +5448,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         version = int(match.group(2)) if match.group(2) else None
         try:
+            if self.gate_draft(match.group(1), api=False) is None:
+                return
             draft, resolved_version, doc, allow_scripts, _redirect = self.store.get_page(
                 match.group(1), version, ""
             )
@@ -4321,13 +5495,16 @@ class Handler(BaseHTTPRequestHandler):
         if not self.rate_allowed("source-ip:" + self.source_ip(), self.server.upload_ip_limit):
             return
         try:
-            identity = self.api_identity()
+            if self.headers.get("Authorization") and self.api_identity() is None:
+                self.unauthorized()
+                return
+            gate = self.gate_draft(ref, api=True)
         except (StorageError, OSError):
             self.send_json(503, {"ok": False, "error": "Storage unavailable."})
             return
-        if self.headers.get("Authorization") and identity is None:
-            self.unauthorized()
+        if gate is None:
             return
+        _draft, identity, _source = gate
         try:
             source = self.store.get_source(
                 ref,
@@ -4340,7 +5517,149 @@ class Handler(BaseHTTPRequestHandler):
         if source is None:
             self.send_json(404, {"ok": False, "error": "Draft not found."})
             return
+        if identity is not None:
+            self.audit_event("draft.source", identity, "draft", source["draftId"])
         self.send_json(200, source)
+
+    def method_enabled(self, method: str | None) -> bool:
+        mode = {"bootstrap": "api_key", "api_key": "api_key", "tailscale": "tailscale", "oidc": "oidc"}.get(
+            method or "", "api_key")
+        return mode in self.auth.modes
+
+    def with_roles(self, identity: dict | None) -> dict | None:
+        """Add the instance role, workspace roles, and verified email to an identity."""
+        if identity is None:
+            return None
+        policy = self.auth.policy
+        account_id = identity.get("accountId")
+        roles: dict = {"instanceRole": None, "workspaces": {}, "defaultWorkspace": policy.default_workspace,
+                       "email": None, "emailVerified": False, "groups": []}
+        principal = self.store.account_principal(account_id) if account_id != "anonymous" else None
+        if principal:
+            roles.update(
+                instanceRole=principal["instanceRole"], workspaces=principal["workspaces"],
+                defaultWorkspace=principal["defaultWorkspace"] or policy.default_workspace,
+                email=principal["email"], emailVerified=principal["emailVerified"], groups=principal["groups"],
+            )
+        elif account_id not in {"local", "anonymous"} and not policy.configured:
+            roles.update(policy.open_roles())
+        merged = {**identity, **roles}
+        if account_id == "local":
+            merged["instanceRole"] = "admin"
+            merged["workspaces"] = {**merged["workspaces"], policy.legacy_workspace: "admin"}
+        return merged
+
+    def view_identity(self, draft_id: str) -> tuple[dict | None, str]:
+        """Return the identity from the view cookie or the `tv` view token."""
+        key = self.purpose_key("view")
+        candidates: list[tuple[str, dict]] = []
+        cookie = read_signed(self.cookie_value("tailplan_view"), key)
+        if cookie and cookie.get("t") == "cookie":
+            candidates.append(("cookie", cookie))
+        if self.command in {"GET", "HEAD"}:
+            tokens = parse_qs(urlparse(self.path).query).get("tv", [])
+            token = read_signed(tokens[0], key) if len(tokens) == 1 else None
+            if token and token.get("t") == "tv" and token.get("d") == draft_id:
+                candidates.append(("token", token))
+        for source, payload in candidates:
+            record = self.store.session_by_hash(payload.get("h"))
+            if record is None or not self.method_enabled(record["authMethod"]):
+                continue
+            account = self.store.account(record["accountId"])
+            if account is None:
+                continue
+            return self.with_roles({**account, "apiKeyId": "view", "csrf": "",
+                                    "sessionHash": record["sessionHash"]}), source
+        return None, ""
+
+    def draft_viewer(self, draft: dict) -> tuple[dict | None, str]:
+        """Find the reader: session cookie, view cookie, view token, then Bearer key."""
+        session = self.session()
+        if session is not None:
+            return session, "session"
+        identity, source = self.view_identity(draft["draftId"])
+        if identity is not None:
+            return identity, source
+        api = self.with_roles(self.api_identity())
+        return (api, "bearer") if api is not None else (None, "")
+
+    def gate_draft(self, ref: str, *, api: bool) -> tuple[dict, dict | None, str] | None:
+        """Check read access to a draft. Send the refusal and return None when access fails.
+
+        A signed-out browser goes to sign-in, and a signed-out API call gets 401.
+        A signed-in reader without access gets 404, so the draft stays hidden.
+        """
+        draft = self.store.resolve_draft(ref)
+        if draft is None or draft.get("disabledAt"):
+            if api:
+                self.send_json(404, {"ok": False, "error": "Draft not found."})
+            else:
+                self.send_html(404, not_found())
+            return None
+        public = draft_role(None, draft, [], self.auth) is not None
+        if public and not api:
+            return draft, None, ""
+        identity, source = self.draft_viewer(draft)
+        if public:
+            return draft, identity, source
+        grants = self.store.list_grants(draft["draftId"]) if identity else []
+        if draft_role(identity, draft, grants, self.auth) is not None:
+            return draft, identity, source
+        if identity is None:
+            if self.wants_html() and not self.headers.get("Authorization"):
+                self.send_sign_in_redirect()
+            else:
+                self.send_json(401, {"ok": False, "error": "Sign in to read this draft."})
+            return None
+        if api:
+            self.send_json(404, {"ok": False, "error": "Draft not found."})
+        else:
+            self.send_html(404, not_found())
+        return None
+
+    def view_credentials(self, identity: dict | None, source: str, draft_id: str,
+                         multi_page: bool) -> tuple[list[str], str | None]:
+        """Return the view cookie and the link token for a signed-in reader."""
+        session_hash = (identity or {}).get("sessionHash")
+        if not session_hash:
+            return [], None
+        key = self.purpose_key("view")
+        expires = int(time.time()) + VIEW_TOKEN_TTL
+        cookies = []
+        if source != "cookie":
+            cookies.append(self.view_cookie_header(
+                signed_value({"t": "cookie", "h": session_hash, "expires": expires}, key), VIEW_TOKEN_TTL))
+        token = signed_value({"t": "tv", "d": draft_id, "h": session_hash, "expires": expires}, key)
+        return cookies, token if multi_page else None
+
+    def view_cookie_header(self, value: str, age: int) -> str:
+        prefix = urlparse(self.base_url).path.rstrip("/")
+        return f"tailplan_view={value}; Path={prefix}/d/; Max-Age={age}; HttpOnly; Secure; SameSite=None"
+
+    def relative_target(self) -> str:
+        """Return this request path and query, without a view token, for a sign-in return."""
+        query = "&".join(part for part in urlparse(self.path).query.split("&")
+                         if part and not part.startswith("tv="))
+        return self.route_path() + (f"?{query}" if query else "")
+
+    def wants_html(self) -> bool:
+        return "text/html" in self.headers.get("Accept", "")
+
+    def send_sign_in_redirect(self) -> None:
+        location = self.base_url.rstrip("/") + "/auth/sign-in?next=" + quote(self.relative_target(), safe="/")
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def audit_event(self, event: str, actor: dict | None, target_type: str | None = None,
+                    target_id: str | None = None, *, outcome: str = "success", detail: dict | None = None) -> None:
+        try:
+            self.store.audit(event, actor=actor, target_type=target_type, target_id=target_id,
+                             outcome=outcome, detail={"sourceIp": self.source_ip(), **(detail or {})})
+        except (StorageError, OSError) as exc:
+            self.log_message("audit error: %r", exc)
 
     def viewer_miss_key(self) -> str:
         identity = self.tailscale_login()
@@ -4353,7 +5672,8 @@ class Handler(BaseHTTPRequestHandler):
         super().send_response(code, message)
 
     def do_GET(self) -> None:
-        if not self.route_path().startswith("/d/"):
+        route = self.route_path()
+        if not route.startswith("/d/") and not SOURCE_ROUTE_RE.fullmatch(route):
             self.route_get()
             return
         key = self.viewer_miss_key()
@@ -4375,7 +5695,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         parsed_target = urlparse(self.path)
         path = self.route_path()
-        source_match = re.fullmatch(r"/api/drafts/([a-z0-9][a-z0-9-]{1,39})/source", path)
+        source_match = SOURCE_ROUTE_RE.fullmatch(path)
         if source_match:
             self.serve_source(source_match.group(1))
             return
@@ -4408,7 +5728,7 @@ class Handler(BaseHTTPRequestHandler):
                 {"ok": True, "service": "tailplan", "build": BUILD_ID},
             )
             return
-        if path.startswith(("/api/", "/dashboard", "/cli/auth", "/auth/")):
+        if path.startswith(("/api/", "/dashboard", "/cli/auth", "/auth/")) or path == "/cli/activate":
             self.management_request("GET", path)
             return
         route = self.parse_draft_route(path)
@@ -4649,6 +5969,9 @@ class Handler(BaseHTTPRequestHandler):
                 if problem is not None:
                     self.send_json(422, {"ok": False, "error": problem})
                     return
+            sharing = self.upload_sharing(identity, payload)
+            if sharing is None:
+                return
             filename = payload.get("filename")
             draft_id = payload.get("draftId")
             if filename is not None and not isinstance(filename, str):
@@ -4694,11 +6017,20 @@ class Handler(BaseHTTPRequestHandler):
             )
             created = result.pop("created")
             status = 201 if created else 200
+            roles = self.with_roles(identity) or {}
+            if created and "workspace" not in sharing:
+                sharing["workspace"] = roles.get("defaultWorkspace") or self.auth.policy.default_workspace
+            stored = self.store.set_sharing(result["draftId"], **sharing) if sharing else (
+                self.store.resolve_draft(result["draftId"]) or {})
+            self.audit_event("draft.upload", roles, "draft", result["draftId"],
+                             detail={"created": created, "version": result.get("versionNumber"), **sharing})
             self.send_json(
                 status,
                 {
                     "ok": True,
                     **result,
+                    "workspace": draft_workspace(stored, self.auth),
+                    "visibility": effective_visibility(stored, self.auth),
                     "warnings": validation["warnings"],
                     "shareUrl": result["publicUrl"] + "/share",
                 },
@@ -4722,6 +6054,34 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001 - The request handler returns JSON for unexpected upload errors.
             self.log_message("unexpected upload error: %r", e)
             self.send_json(500, {"ok": False, "error": "Internal server error."})
+
+    def upload_sharing(self, identity: dict, payload: dict) -> dict | None:
+        """Check the upload workspace and visibility. Send the error and return None when they fail."""
+        sharing: dict = {}
+        for field in ("workspace", "visibility"):
+            if payload.get(field) is None:
+                continue
+            if identity["accountId"] == "anonymous":
+                self.send_json(403, {"ok": False, "error": "Sharing options require an authenticated account."})
+                return None
+            sharing[field] = payload[field]
+        visibility = sharing.get("visibility")
+        if visibility is not None:
+            if visibility not in VISIBILITY_RANK:
+                self.send_json(422, {"ok": False, "error": "visibility must be private, workspace, authenticated, or link."})
+                return None
+            if VISIBILITY_RANK[visibility] > VISIBILITY_RANK[self.auth.max_visibility]:
+                self.send_json(422, {"ok": False, "error": f"visibility exceeds the server maximum ({self.auth.max_visibility})."})
+                return None
+        workspace = sharing.get("workspace")
+        if workspace is not None:
+            if not isinstance(workspace, str) or WORKSPACE_RE.fullmatch(workspace) is None:
+                self.send_json(422, {"ok": False, "error": "workspace must be a lowercase workspace name."})
+                return None
+            if not workspace_allowed(self.with_roles(identity) or {}, workspace):
+                self.send_json(403, {"ok": False, "error": "You cannot publish to that workspace."})
+                return None
+        return sharing
 
     def rate_allowed(self, key: str, maximum: int, window: int = 60) -> bool:
         wait = self.server.limiter.allow(key, maximum, window)
@@ -4776,6 +6136,18 @@ class Handler(BaseHTTPRequestHandler):
         if not account:
             return None
         key_id = value["apiKeyId"]
+        if "sid" in value or key_id == "oidc":
+            record = self.store.session_record(value.get("sid"))
+            if (record is None or record["accountId"] != value["accountId"]
+                    or record["epoch"] != value.get("epoch")
+                    or not hmac.compare_digest(record["csrf"].encode(), value["csrf"].encode())):
+                return None
+            value = {**value, "sessionHash": record["sessionHash"]}
+        method = key_id if key_id in {"bootstrap", "tailscale", "oidc"} else "api_key"
+        if not self.method_enabled(method):
+            return None
+        if key_id == "oidc":
+            return self.with_roles({**value, **account})
         if key_id == "bootstrap" and value["accountId"] != "local":
             return None
         if key_id == "tailscale":
@@ -4789,16 +6161,168 @@ class Handler(BaseHTTPRequestHandler):
             keys = self.store.list_keys(value["accountId"])
             if not any(key["id"] == key_id for key in keys):
                 return None
-        return {**value, **account}
+        return self.with_roles({**value, **account})
 
-    def redirect(self, path: str, cookie: str | None = None) -> None:
+    def redirect(self, path: str, cookie: str | list[str] | None = None) -> None:
         self.send_response(303)
         self.send_header("Location", self.base_url.rstrip("/") + path)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", "0")
-        if cookie:
-            self.send_header("Set-Cookie", cookie)
+        for value in [cookie] if isinstance(cookie, str) else cookie or []:
+            self.send_header("Set-Cookie", value)
         self.end_headers()
+
+    def start_session(self, identity: dict, method: str, next_path: str, *, extra_cookies: list[str] | None = None,
+                      issuer: str | None = None, subject: str | None = None,
+                      idp_session_id: str | None = None, epoch: int = 0) -> None:
+        """Store a revocable session, set its cookie, and send the browser to `next_path`."""
+        ttl = self.auth.session_ttl
+        csrf = secrets.token_hex(24)
+        session_id = self.store.create_session(
+            account_id=identity["accountId"], auth_method=method, csrf=csrf, ttl=ttl,
+            issuer=issuer, subject=subject, idp_session_id=idp_session_id, epoch=epoch)
+        cookie_fields = {key: identity[key] for key in ("accountId", "apiKeyId", "login") if key in identity}
+        session = {**cookie_fields, "csrf": csrf, "sid": session_id, "epoch": epoch, "expires": int(time.time()) + ttl}
+        self.audit_event("auth.login", self.with_roles(identity), "account", identity["accountId"],
+                         detail={"method": method})
+        self.redirect(safe_next_path(next_path), [
+            self.cookie_header("tailplan_session", signed_value(session, self.session_secret), ttl),
+            *(extra_cookies or []),
+        ])
+
+    def oidc_cookie_header(self, value: str, age: int) -> str:
+        prefix = urlparse(self.base_url).path.rstrip("/")
+        secure = "; Secure" if urlparse(self.base_url).scheme == "https" else ""
+        return f"tailplan_oidc={value}; Path={prefix}/auth/oidc/; Max-Age={age}; HttpOnly; SameSite=Lax{secure}"
+
+    def oidc_request(self, method: str, path: str) -> None:
+        client = self.auth.oidc
+        if client is None:
+            self.send_html(404, not_found())
+        elif method == "POST" and path == "/auth/oidc/backchannel-logout":
+            self.oidc_backchannel_logout(client)
+        elif "oidc" not in self.auth.modes:
+            self.send_html(404, not_found())
+        elif method == "GET" and path == "/auth/oidc/start":
+            self.oidc_start(client)
+        elif method == "GET" and path == "/auth/oidc/callback":
+            self.oidc_callback(client)
+        else:
+            self.send_html(404, not_found())
+
+    def oidc_redirect_uri(self) -> str:
+        return self.base_url.rstrip("/") + "/auth/oidc/callback"
+
+    def oidc_start(self, client: OIDCClient) -> None:
+        if not self.rate_allowed("login:" + self.source_ip(), 20):
+            return
+        query = parse_qs(urlparse(self.path).query)
+        flow = {
+            "state": secrets.token_urlsafe(24), "nonce": secrets.token_urlsafe(24),
+            "verifier": secrets.token_urlsafe(48),
+            "next": safe_next_path((query.get("next") or [""])[0]),
+            "expires": int(time.time()) + OIDC_FLOW_TTL,
+        }
+        try:
+            location = client.authorization_url(state=flow["state"], nonce=flow["nonce"],
+                                                challenge=pkce_challenge(flow["verifier"]),
+                                                redirect_uri=self.oidc_redirect_uri())
+        except OIDCError as exc:
+            self.log_message("oidc discovery error: %s", exc)
+            self.send_html(502, web_page("Sign-in unavailable", "<h1>Sign-in is unavailable</h1>"
+                                         "<p>Tailplan cannot reach the identity provider. Try again later.</p>",
+                                         self.base_url), web=True)
+            return
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Set-Cookie", self.oidc_cookie_header(
+            signed_value(flow, self.purpose_key("oidc-flow")), OIDC_FLOW_TTL))
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def oidc_denied(self, reason: str, *, email: str | None = None, subject: str | None = None) -> None:
+        self.audit_event("auth.denied", {"email": email}, "principal", subject, outcome="denied",
+                         detail={"method": "oidc", "reason": reason})
+        body = ("<h1>Sign-in failed</h1><p>Tailplan cannot sign you in with this account.</p>"
+                f'<p><a href="{esc(self.base_url.rstrip("/"))}/auth/sign-in">Back to sign-in</a></p>')
+        self.send_html(403, web_page("Sign-in failed", body, self.base_url), web=True,
+                       cookie=self.oidc_cookie_header("", 0))
+
+    def oidc_callback(self, client: OIDCClient) -> None:
+        if not self.rate_allowed("login:" + self.source_ip(), 20):
+            return
+        query = {key: values[-1] for key, values in parse_qs(urlparse(self.path).query).items()}
+        flow = read_signed(self.cookie_value("tailplan_oidc"), self.purpose_key("oidc-flow"))
+        state = query.get("state", "")
+        if (not flow or not all(isinstance(flow.get(key), str) for key in ("state", "nonce", "verifier", "next"))
+                or not hmac.compare_digest(state.encode(), flow["state"].encode())):
+            self.oidc_denied("state")
+            return
+        code = query.get("code", "")
+        if "error" in query or not code or len(code) > 4096:
+            self.oidc_denied("provider_error")
+            return
+        try:
+            tokens = client.exchange(code, flow["verifier"], self.oidc_redirect_uri())
+            claims = client.verify_id_token(tokens["id_token"], nonce=flow["nonce"])
+            info: dict = {}
+            access_token = tokens.get("access_token")
+            if (claim_path(claims, client.groups_claim) is None or "email" not in claims) and isinstance(
+                    access_token, str):
+                info = client.userinfo(access_token, claims["sub"])
+        except OIDCError as exc:
+            self.log_message("oidc callback error: %s", exc)
+            self.oidc_denied("token")
+            return
+        groups = groups_from_claim(claim_path(claims, client.groups_claim))
+        if groups is None:
+            groups = groups_from_claim(claim_path(info, client.groups_claim)) or []
+        merged = {**info, **claims}
+        email = merged.get("email") if isinstance(merged.get("email"), str) else None
+        email = email.strip().lower() if email and EMAIL_RE.fullmatch(email.strip()) else None
+        verified = bool(email) and merged.get("email_verified") is True
+        subject = claims["sub"]
+        roles = self.auth.policy.resolve(email=email, email_verified=verified, groups=groups)
+        linked = bool(verified and email in self.auth.link_emails)
+        if roles is None and not linked:
+            self.oidc_denied("no_matching_rule", email=email, subject=subject)
+            return
+        roles = roles or {"instanceRole": None, "workspaces": {},
+                          "defaultWorkspace": self.auth.policy.default_workspace}
+        display = clean_text(merged.get("name") or merged.get("preferred_username") or email or subject) or subject
+        if linked:
+            account = self.store.account("local")
+            instance_role = "admin"
+        else:
+            account = self.store.ensure_account(oidc_account_id(client.issuer, subject), display)
+            instance_role = roles["instanceRole"]
+        principal = self.store.upsert_principal(
+            issuer=client.issuer, subject=subject, account_id=account["accountId"], email=email,
+            email_verified=verified, display_name=display, groups=groups, instance_role=instance_role,
+            workspaces=roles["workspaces"], default_workspace=roles["defaultWorkspace"],
+        )
+        idp_session = claims.get("sid") if isinstance(claims.get("sid"), str) else None
+        self.start_session({**account, "apiKeyId": "oidc"}, "oidc", flow["next"],
+                           extra_cookies=[self.oidc_cookie_header("", 0)], issuer=client.issuer,
+                           subject=subject, idp_session_id=idp_session, epoch=principal["sessionEpoch"])
+
+    def oidc_backchannel_logout(self, client: OIDCClient) -> None:
+        if not self.rate_allowed("backchannel:" + self.source_ip(), 60):
+            return
+        try:
+            payload = self.read_control_body()
+            claims = client.verify_logout_token(payload.get("logout_token"))
+        except (ValueError, TypeError, UnicodeError, OIDCError) as exc:
+            self.log_message("back-channel logout rejected: %s", exc)
+            self.send_json(400, {"error": "invalid_request"})
+            return
+        subject = claims.get("sub") if isinstance(claims.get("sub"), str) else None
+        idp_session = claims.get("sid") if isinstance(claims.get("sid"), str) else None
+        count = self.store.revoke_principal_sessions(client.issuer, subject=subject, idp_session_id=idp_session)
+        self.audit_event("auth.logout", None, "principal", subject,
+                         detail={"method": "backchannel", "sessions": count})
+        self.send_json(200, {"ok": True})
 
     def tailscale_login(self) -> tuple[str, str] | None:
         if not self.server.trust_tailscale_identity or self.client_address[0] not in {"127.0.0.1", "::1"}:
@@ -4809,6 +6333,29 @@ class Handler(BaseHTTPRequestHandler):
         name = clean_text(unquote(self.headers.get("Tailscale-User-Name", ""))) or login
         return login, name
 
+    def tailscale_identity(self, login: str, name: str) -> dict | None:
+        """Return the account for a Tailscale login, or None when the RBAC policy denies it."""
+        owner = self.server.owner_login
+        is_owner = bool(owner) and login.casefold() == owner.casefold()
+        email = login.strip().lower()
+        verified = EMAIL_RE.fullmatch(email) is not None
+        policy = self.auth.policy
+        roles = policy.resolve(email=email, email_verified=verified, groups=[])
+        if roles is None and policy.configured and not is_owner:
+            self.audit_event("auth.denied", {"email": email}, "principal", email, outcome="denied",
+                             detail={"method": "tailscale", "reason": "no_matching_rule"})
+            return None
+        account = self.store.identity_account(login, name, owner)
+        if not is_owner:
+            roles = roles or policy.open_roles()
+            self.store.upsert_principal(
+                issuer="tailscale", subject=email, account_id=account["accountId"],
+                email=email if verified else None, email_verified=verified, display_name=name, groups=[],
+                instance_role=roles["instanceRole"], workspaces=roles["workspaces"],
+                default_workspace=roles["defaultWorkspace"],
+            )
+        return {**account, "apiKeyId": "tailscale", "login": login}
+
     def login_allowed(self, login: str) -> bool:
         allowed = self.server.allowed_logins
         return not allowed or login.casefold() in allowed
@@ -4817,8 +6364,10 @@ class Handler(BaseHTTPRequestHandler):
         state = {"csrf": secrets.token_hex(24), "expires": int(time.time()) + 600}
         cookie = self.cookie_header("tailplan_login", signed_value(state, self.session_secret), 600)
         identity = self.tailscale_login()
-        offer_tailscale = bool(identity and self.login_allowed(identity[0]))
-        body = render_login(self.base_url, state["csrf"], next_path, offer_tailscale)
+        offer_tailscale = bool(identity and self.login_allowed(identity[0]) and "tailscale" in self.auth.modes)
+        body = render_login(self.base_url, state["csrf"], safe_next_path(next_path), offer_tailscale,
+                            api_key="api_key" in self.auth.modes,
+                            oidc="oidc" in self.auth.modes and self.auth.oidc is not None)
         self.send_html(200, body, web=True, cookie=cookie)
 
     def valid_form(self, payload: dict, state: dict | None) -> bool:
@@ -4836,10 +6385,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def management_request(self, method: str, path: str) -> None:
         try:
-            if path.startswith("/api/"):
+            if path.startswith("/auth/oidc/"):
+                self.oidc_request(method, path)
+            elif path.startswith("/api/"):
                 self.management_api(method, path)
             else:
                 self.management_web(method, path)
+        except AccessDenied as exc:
+            self.send_json(403, {"ok": False, "error": str(exc) or "Forbidden"})
+        except PolicyLimit as exc:
+            self.send_json(422, {"ok": False, "error": str(exc)})
         except (ValueError, TypeError, UnicodeError):
             self.send_json(400, {"ok": False, "error": "Request fields or body are invalid."})
         except KeyError as exc:
@@ -4849,13 +6404,39 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(503, {"ok": False, "error": "Storage unavailable."})
 
     def management_api(self, method: str, path: str) -> None:
-        identity = self.api_identity()
+        if method == "POST" and path in {"/api/auth/cli/start", "/api/auth/cli/poll"}:
+            self.device_api(path)
+            return
+        identity = self.with_roles(self.api_identity())
         if identity is None:
             self.unauthorized()
             return
         account_id = identity["accountId"]
+        sharing = re.fullmatch(r"/api/drafts/([a-z0-9][a-z0-9-]{1,39})/sharing(/grants)?", path)
         if method == "GET" and path == "/api/me":
-            self.send_json(200, {"ok": True, **identity, "scope": "tailnet"})
+            self.send_json(200, {"ok": True, **{key: identity.get(key) for key in (
+                "accountId", "accountName", "apiKeyId", "apiKeyName", "instanceRole", "workspaces",
+                "defaultWorkspace", "email")}, "scope": "tailnet"})
+        elif method == "GET" and path == "/api/audit":
+            if identity.get("instanceRole") not in INSTANCE_ROLES:
+                raise AccessDenied("Admin or auditor role required.")
+            query = {key: values[-1] for key, values in parse_qs(urlparse(self.path).query).items()}
+            limit = min(max(int(query.get("limit", "100")), 1), 500)
+            before = int(query["before"]) if query.get("before") else None
+            event = query.get("event") or None
+            self.send_json(200, {"ok": True, "events": self.store.list_audit(limit=limit, before=before, event=event)})
+        elif sharing:
+            ref, grants = sharing.groups()
+            if method == "GET" and not grants:
+                draft, _role = self.sharing_target(identity, ref)
+                self.send_json(200, self.sharing_payload(draft))
+            elif method == "POST":
+                self.send_json(200, self.change_sharing(identity, ref, "grant" if grants else "update",
+                                                        self.read_control_body()))
+            elif method == "DELETE" and grants:
+                self.send_json(200, self.change_sharing(identity, ref, "revoke", self.read_control_body()))
+            else:
+                self.send_json(404, {"ok": False, "error": "Not found."})
         elif method == "GET" and path == "/api/drafts":
             self.send_json(200, {"ok": True, "drafts": self.store.list_drafts(account_id, self.base_url)})
         elif method == "GET" and path == "/api/api-keys":
@@ -4863,9 +6444,12 @@ class Handler(BaseHTTPRequestHandler):
         elif method == "POST" and path == "/api/api-keys":
             if self.rate_allowed("keys:" + account_id, 10, 3600):
                 payload = self.read_control_body()
-                self.send_json(201, self.store.create_key(account_id, payload.get("name")))
+                created = self.store.create_key(account_id, payload.get("name"))
+                self.audit_event("key.create", identity, "api_key", created["apiKey"]["id"])
+                self.send_json(201, created)
         elif (match := re.fullmatch(r"/api/api-keys/([a-z0-9]{6,32})/revoke", path)) and method == "POST":
             self.store.revoke_key(account_id, match[1])
+            self.audit_event("key.revoke", identity, "api_key", match[1])
             self.send_json(200, {"ok": True})
         elif match := re.fullmatch(
             r"/api/drafts/([a-z0-9][a-z0-9-]{1,39})(?:/(versions|disable|enable|favorite))?",
@@ -4876,10 +6460,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, self.store.draft_detail(account_id, draft_ref, self.base_url))
             elif method == "DELETE" and action is None:
                 self.store.change_draft(account_id, draft_ref, "delete", None)
+                self.audit_event("draft.change", identity, "draft", draft_ref, detail={"action": "delete"})
                 self.send_json(200, {"ok": True})
             elif method == "POST" and action in {"disable", "enable"}:
                 payload = self.read_control_body()
                 self.store.change_draft(account_id, draft_ref, action, payload.get("reason"))
+                self.audit_event("draft.change", identity, "draft", draft_ref, detail={"action": action})
                 self.send_json(200, {"ok": True})
             elif method == "POST" and action == "favorite":
                 payload = self.read_control_body()
@@ -4894,10 +6480,124 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_json(404, {"ok": False, "error": "Not found."})
 
+    def device_api(self, path: str) -> None:
+        """Start or poll a CLI device login. These calls need no credentials."""
+        start = path.endswith("/start")
+        if not self.rate_allowed(("device-start:" if start else "device-poll:") + self.source_ip(),
+                                 10 if start else 60):
+            return
+        payload = self.read_control_body()
+        if start:
+            started = self.store.start_device_login(payload.get("clientName"))
+            uri = self.base_url.rstrip("/") + "/cli/activate"
+            self.send_json(200, {"ok": True, **started, "verificationUri": uri,
+                                 "verificationUriComplete": f"{uri}?code={started['userCode']}",
+                                 "interval": DEVICE_POLL_INTERVAL})
+            return
+        result = self.store.poll_device_login(payload.get("deviceCode"))
+        status = result["status"]
+        if status == "approved":
+            account = self.store.account(result["accountId"]) or {"accountId": result["accountId"]}
+            self.audit_event("key.create", self.with_roles(account), "api_key", result["keyId"],
+                             detail={"method": "device"})
+            self.send_json(200, {"ok": True, "status": "approved", "apiKey": result["apiKey"],
+                                 "keyId": result["keyId"], "expiresAt": result["expiresAt"]})
+        elif status == "pending":
+            self.send_json(200, {"ok": False, "status": "pending", "interval": DEVICE_POLL_INTERVAL})
+        elif status == "denied":
+            self.send_json(403, {"ok": False, "status": "denied", "error": "The device login was denied."})
+        else:
+            self.send_json(410, {"ok": False, "status": "expired", "error": "The device code expired."})
+
+    def sharing_target(self, identity: dict, ref: str) -> tuple[dict, str]:
+        """Return a draft and the caller role. Sharing changes need editor or higher."""
+        draft = self.store.resolve_draft(ref)
+        role = draft_role(identity, draft, self.store.list_grants(draft["draftId"]), self.auth) if draft else None
+        if role is None:
+            raise KeyError("Draft not found.")
+        if ROLE_RANK[role] < ROLE_RANK["editor"]:
+            raise AccessDenied("Editor role required.")
+        return draft, role
+
+    def sharing_payload(self, draft: dict) -> dict:
+        public_url = f"{self.base_url.rstrip('/')}/d/{draft.get('slug') or draft['draftId']}"
+        return {
+            "ok": True, "draftId": draft["draftId"], "workspace": draft_workspace(draft, self.auth),
+            "visibility": effective_visibility(draft, self.auth), "maxVisibility": self.auth.max_visibility,
+            "allowedVisibilities": self.auth.allowed_visibilities(), "viewerAuthMode": self.auth.viewer_mode,
+            "shareUrl": public_url + "/share", "publicUrl": public_url,
+            "grants": self.store.list_grants(draft["draftId"]),
+        }
+
+    def change_sharing(self, identity: dict, ref: str, action: str, payload: dict) -> dict:
+        draft, role = self.sharing_target(identity, ref)
+        draft_id = draft["draftId"]
+        if action == "update":
+            visibility = payload.get("visibility") or None
+            workspace = payload.get("workspace") or None
+            if visibility is None and workspace is None:
+                raise ValueError("Send visibility or workspace.")
+            if visibility is not None:
+                if visibility not in VISIBILITY_RANK:
+                    raise ValueError("visibility is invalid.")
+                if VISIBILITY_RANK[visibility] > VISIBILITY_RANK[self.auth.max_visibility]:
+                    raise PolicyLimit(f"visibility exceeds the server maximum ({self.auth.max_visibility}).")
+            if workspace is not None:
+                if not isinstance(workspace, str) or WORKSPACE_RE.fullmatch(workspace) is None:
+                    raise ValueError("workspace is invalid.")
+                if workspace == draft_workspace(draft, self.auth):
+                    workspace = None
+                elif role not in {"owner", "admin"} or not workspace_allowed(identity, workspace):
+                    raise AccessDenied("You cannot move this draft to that workspace.")
+            draft = self.store.set_sharing(draft_id, workspace=workspace, visibility=visibility)
+            self.audit_event("sharing.update", identity, "draft", draft_id,
+                             detail={"visibility": visibility, "workspace": workspace})
+        elif action == "grant":
+            principal_type = payload.get("type")
+            value = normalize_grant(principal_type, payload.get("value"))
+            grant_role = payload.get("role") or "viewer"
+            if grant_role not in GRANT_ROLES:
+                raise ValueError("role must be viewer or editor.")
+            self.store.add_grant(draft_id, principal_type, value, grant_role, identity["accountId"])
+            self.audit_event("sharing.grant", identity, "draft", draft_id,
+                             detail={"type": principal_type, "value": value, "role": grant_role})
+        else:
+            principal_type = payload.get("type")
+            value = normalize_grant(principal_type, payload.get("value"))
+            if not self.store.remove_grant(draft_id, principal_type, value):
+                raise KeyError("Grant not found.")
+            self.audit_event("sharing.revoke", identity, "draft", draft_id,
+                             detail={"type": principal_type, "value": value})
+        return self.sharing_payload(draft)
+
+    def annotate_drafts(self, drafts: list[dict]) -> list[dict]:
+        for draft in drafts:
+            draft["workspace"] = draft_workspace(draft, self.auth)
+            draft["visibility"] = effective_visibility(draft, self.auth)
+        return drafts
+
+    def shared_drafts(self, session: dict) -> list[dict]:
+        """Return drafts that other accounts shared with this session."""
+        pairs: list[tuple[str, str]] = []
+        if session.get("emailVerified") and session.get("email"):
+            pairs.append(("email", session["email"].lower()))
+        pairs += [("group", _normalize_principal_value(group)) for group in session.get("groups") or []]
+        pairs += [("workspace", name) for name in session.get("workspaces") or {}]
+        grants = self.store.grants_matching(pairs[:500])
+        shared = [
+            self.store.public_draft(draft, self.base_url) for draft in self.store.all_live_drafts()
+            if draft.get("accountId", "local") != session["accountId"] and not draft.get("disabledAt")
+            and shared_role(session, draft, grants.get(draft["draftId"], []), self.auth)
+        ]
+        shared.sort(key=lambda item: item["updatedAt"], reverse=True)
+        return self.annotate_drafts(shared)
+
     def management_web(self, method: str, path: str) -> None:
-        known = path in {"/dashboard", "/cli/auth", "/cli/auth/keys", "/auth/sign-in", "/auth/sign-out"}
+        known = path in {"/dashboard", "/cli/auth", "/cli/auth/keys", "/cli/activate", "/auth/sign-in",
+                         "/auth/sign-out"}
         draft_match = re.fullmatch(
-            r"/dashboard/drafts/([a-z0-9]{6,32})(?:/(disable|enable|delete|favorite|unfavorite))?",
+            r"/dashboard/drafts/([a-z0-9]{6,32})"
+            r"(?:/(disable|enable|delete|favorite|unfavorite|sharing|sharing/grants|sharing/revoke))?",
             path,
         )
         key_match = re.fullmatch(r"/cli/auth/keys/([a-z0-9]{6,32})/revoke", path)
@@ -4905,7 +6605,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_html(404, not_found())
             return
         if method == "GET" and path == "/auth/sign-in":
-            self.sign_in_page()
+            query = parse_qs(urlparse(self.path).query)
+            self.sign_in_page(safe_next_path((query.get("next") or [""])[0]))
             return
         if method == "POST" and path == "/auth/sign-in":
             if not self.rate_allowed("login:" + self.source_ip(), 20):
@@ -4916,27 +6617,31 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(403, {"ok": False, "error": "Sign-in expired. Reload and retry."})
                 return
             if payload.get("method") == "tailscale" and (login := self.tailscale_login()):
-                if not self.login_allowed(login[0]):
+                if not self.login_allowed(login[0]) or "tailscale" not in self.auth.modes:
                     self.send_json(403, {"ok": False, "error": "Forbidden"})
                     return
-                identity = {**self.store.identity_account(*login, self.server.owner_login),
-                            "apiKeyId": "tailscale", "login": login[0]}
+                identity = self.tailscale_identity(*login)
+                if identity is None:
+                    self.send_json(403, {"ok": False, "error": "Forbidden"})
+                    return
+                method_name = "tailscale"
             else:
+                if "api_key" not in self.auth.modes:
+                    self.send_json(403, {"ok": False, "error": "API key sign-in is off."})
+                    return
                 token = payload.get("token")
                 identity = self.store.authenticate(token, self.token) if isinstance(token, str) else None
+                method_name = "bootstrap" if identity and identity["apiKeyId"] == "bootstrap" else "api_key"
             if identity is None:
+                self.audit_event("auth.denied", None, outcome="denied", detail={"method": "api_key"})
                 self.unauthorized()
                 return
-            session = {**identity, "csrf": secrets.token_hex(24), "expires": int(time.time()) + 30 * 86400}
-            next_path = payload.get("next")
-            if next_path != "/cli/auth" and not re.fullmatch(r"/dashboard(?:/drafts/[a-z0-9]{6,32})?", str(next_path)):
-                next_path = "/dashboard"
-            self.redirect(next_path, self.cookie_header("tailplan_session", signed_value(session, self.session_secret), 30 * 86400))
+            self.start_session(identity, method_name, payload.get("next"))
             return
         session = self.session()
         if session is None:
             if method == "GET":
-                self.sign_in_page(path)
+                self.sign_in_page(self.relative_target())
             else:
                 self.unauthorized()
             return
@@ -4947,20 +6652,40 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(403, {"ok": False, "error": "Invalid form token. Reload and retry."})
                 return
             if path == "/auth/sign-out":
-                self.redirect("/", self.cookie_header("tailplan_session", "", 0))
+                if session.get("sid"):
+                    self.store.revoke_session(session["sid"])
+                self.audit_event("auth.logout", session, "account", account_id, detail={"method": "sign-out"})
+                self.redirect("/", [self.cookie_header("tailplan_session", "", 0),
+                                    self.view_cookie_header("", 0)])
+            elif path == "/cli/activate":
+                approve = payload.get("decision") == "approve"
+                result = self.store.decide_device_login(str(payload.get("code", "")), account_id, approve)
+                if result is not None:
+                    self.audit_event("device.approve" if approve else "device.deny", session, "device_code",
+                                     normalize_user_code(payload.get("code")))
+                self.send_html(200 if result else 404, render_activate(
+                    self.base_url, session, None, None, result=result["status"] if result else "missing"), web=True)
             elif path == "/cli/auth/keys":
                 if self.rate_allowed("keys:" + account_id, 10, 3600):
                     result = self.store.create_key(account_id, payload.get("name"))
+                    self.audit_event("key.create", session, "api_key", result["apiKey"]["id"])
                     self.send_html(200, render_key(self.base_url, session, result), web=True)
             elif key_match:
                 self.store.revoke_key(account_id, key_match[1])
+                self.audit_event("key.revoke", session, "api_key", key_match[1])
                 self.redirect("/cli/auth")
+            elif draft_match and draft_match[2] and draft_match[2].startswith("sharing"):
+                action = {"sharing": "update", "sharing/grants": "grant", "sharing/revoke": "revoke"}[draft_match[2]]
+                self.change_sharing(session, draft_match[1], action, payload)
+                self.redirect(f"/dashboard/drafts/{draft_match[1]}")
             elif draft_match and draft_match[2]:
                 if draft_match[2] in {"favorite", "unfavorite"}:
                     self.store.set_favorite(account_id, draft_match[1], draft_match[2] == "favorite")
                     self.redirect("/dashboard")
                 else:
                     self.store.change_draft(account_id, draft_match[1], draft_match[2], payload.get("reason"))
+                    self.audit_event("draft.change", session, "draft", draft_match[1],
+                                     detail={"action": draft_match[2]})
                     target = "/dashboard" if draft_match[2] == "delete" else f"/dashboard/drafts/{draft_match[1]}"
                     self.redirect(target)
             else:
@@ -4969,14 +6694,22 @@ class Handler(BaseHTTPRequestHandler):
         if method != "GET":
             self.send_html(404, not_found())
         elif path == "/dashboard":
-            self.send_html(200, render_dashboard(self.base_url, session,
-                           self.store.list_drafts(account_id, self.base_url)), web=True)
+            drafts = self.annotate_drafts(self.store.list_drafts(account_id, self.base_url))
+            self.send_html(200, render_dashboard(self.base_url, session, drafts,
+                                                 shared=self.shared_drafts(session)), web=True)
+        elif path == "/cli/activate":
+            code = (parse_qs(urlparse(self.path).query).get("code") or [""])[0]
+            info = self.store.device_login(code) if code else None
+            self.send_html(200, render_activate(self.base_url, session, normalize_user_code(code), info), web=True)
         elif path == "/cli/auth":
             self.send_html(200, render_keys(self.base_url, session,
                            self.store.list_keys(account_id)), web=True)
         elif draft_match and draft_match[2] is None:
             detail = self.store.draft_detail(account_id, draft_match[1], self.base_url)
-            self.send_html(200, render_detail(self.base_url, session, detail), web=True)
+            self.annotate_drafts([detail["draft"]])
+            stored = self.store.resolve_draft(draft_match[1]) or {}
+            sharing = self.sharing_payload({**stored, "draftId": detail["draft"]["draftId"]})
+            self.send_html(200, render_detail(self.base_url, session, detail, sharing=sharing), web=True)
         else:
             self.send_html(404, not_found())
 
@@ -5007,7 +6740,8 @@ nav{display:flex;gap:20px;align-items:center}main{margin:36px auto 80px}h1{font-
 a{color:#245bc0;text-underline-offset:3px;overflow-wrap:anywhere}p{overflow-wrap:anywhere}.muted,small{color:#59687d}.row{padding:18px 20px;background:white;border:1px solid #dce3ec;border-radius:10px;margin:10px 0}
 .row h3{margin:0;font-size:18px}.row p{margin:5px 0}.meta{font-size:14px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}.meta form{margin:0;display:inline}.badge{font-size:12px;background:#fef3c7;border-radius:4px;padding:2px 6px}
 button,.button{font:inherit;background:#172033;color:white;border:0;border-radius:7px;padding:9px 14px;cursor:pointer;text-decoration:none}button.secondary{background:#e5ebf4;color:#172033}button.star{background:none;color:#59687d;border:1px solid #dce3ec;border-radius:6px;padding:2px 8px;line-height:1.2}button.star.on{color:#b45309;border-color:#f59e0b;background:#fffbeb}
-input{font:inherit;padding:10px;border:1px solid #b6c3d5;border-radius:6px;width:100%;max-width:600px}label{display:block;margin:12px 0 4px}form{margin:12px 0}header form{margin:0}header button{padding:4px 10px}
+input,select{font:inherit;padding:10px;border:1px solid #b6c3d5;border-radius:6px;width:100%;max-width:600px;background:white;color:#172033}
+.badge.scope{background:#e0ecff}.badge.ws{background:#e8f5e9}.card{padding:18px 20px;background:white;border:1px solid #dce3ec;border-radius:10px;margin:20px 0}.inline{display:flex;gap:10px;flex-wrap:wrap;align-items:end}.inline label{margin:0}.inline>*{flex:1 1 160px}.inline button{flex:0 0 auto}label{display:block;margin:12px 0 4px}form{margin:12px 0}header form{margin:0}header button{padding:4px 10px}
 .actions{display:flex;gap:12px;flex-wrap:wrap}.actions form{margin:0}code{background:#eaf0f8;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:white;padding:16px;border:1px solid #dce3ec;border-radius:8px}
 .table-wrap{width:100%;overflow-x:auto}table{width:100%;border-collapse:collapse;background:white}th,td{text-align:left;padding:12px;border-bottom:1px solid #dce3ec;vertical-align:top}th{font-size:13px;color:#59687d}td{min-width:110px;max-width:430px;overflow-wrap:anywhere}
 .narrow{max-width:620px}details{margin:10px 0}summary{cursor:pointer}dl{display:grid;grid-template-columns:minmax(90px,1fr) 3fr;gap:6px}dt{color:#59687d}dd{margin:0;overflow-wrap:anywhere}
@@ -5036,15 +6770,21 @@ def web_page(title: str, body: str, base_url: str, session: dict | None = None) 
             f'<body>{header}<main>{body}</main></body></html>')
 
 
-def render_login(base_url: str, csrf: str, next_path: str, tailscale: bool) -> str:
+def render_login(base_url: str, csrf: str, next_path: str, tailscale: bool, *,
+                 api_key: bool = True, oidc: bool = False) -> str:
     fields = csrf_field(csrf) + f'<input type="hidden" name="next" value="{esc(next_path)}">'
-    action = esc(base_url.rstrip("/")) + "/auth/sign-in"
+    base = esc(base_url.rstrip("/"))
+    action = base + "/auth/sign-in"
     body = '<div class="narrow"><h1>Your drafts, in one place</h1><p>Sign in to manage drafts and connect your agents.</p>'
+    if oidc:
+        body += f'<p><a class="button" href="{base}/auth/oidc/start?next={esc(quote(next_path, safe="/"))}">Continue with single sign-on</a></p>'
     if tailscale:
         body += f'<form method="post" action="{action}">{fields}<input type="hidden" name="method" value="tailscale"><button>Continue with Tailscale</button></form>'
-    body += f'<form method="post" action="{action}">{fields}<label for="token">API key</label>'
-    body += '<input id="token" name="token" type="password" autocomplete="current-password" required maxlength="512"><p><button>Sign in with API key</button></p></form>'
-    body += '<p class="muted">Use your installed Tailplan token or a named API key.</p></div>'
+    if api_key:
+        body += f'<form method="post" action="{action}">{fields}<label for="token">API key</label>'
+        body += '<input id="token" name="token" type="password" autocomplete="current-password" required maxlength="512"><p><button>Sign in with API key</button></p></form>'
+        body += '<p class="muted">Use your installed Tailplan token or a named API key.</p>'
+    body += '</div>'
     return web_page("Sign in", body, base_url)
 
 
@@ -5061,7 +6801,8 @@ def external_link(url: object, label: str) -> str:
 def _render_dashboard_row(base_url: str, session: dict, draft: dict, *, show_repo: bool = False) -> str:
     badge = ' <span class="badge">disabled</span>' if draft["disabled"] else ""
     slug_badge = f' <span class="badge">{esc(draft["slug"])}</span>' if draft.get("slug") else ""
-    row = f'<article class="row"><h3>{external_link(draft["shareUrl"], draft["title"])}{slug_badge}{badge}</h3>'
+    scope_badges = sharing_badges(draft)
+    row = f'<article class="row"><h3>{external_link(draft["shareUrl"], draft["title"])}{slug_badge}{badge}{scope_badges}</h3>'
     if draft["description"]:
         row += f'<p>{esc(draft["description"])}</p>'
     details = esc(base_url.rstrip("/")) + "/dashboard/drafts/" + draft["draftId"]
@@ -5084,7 +6825,25 @@ def _render_dashboard_row(base_url: str, session: dict, draft: dict, *, show_rep
     return row
 
 
-def render_dashboard(base_url: str, session: dict, drafts: list[dict]) -> str:
+def sharing_badges(draft: dict) -> str:
+    badges = ""
+    if draft.get("workspace"):
+        badges += f' <span class="badge ws" title="Workspace">{esc(draft["workspace"])}</span>'
+    if draft.get("visibility"):
+        badges += f' <span class="badge scope" title="Visibility">{esc(draft["visibility"])}</span>'
+    return badges
+
+
+def _render_shared_row(draft: dict) -> str:
+    row = f'<article class="row"><h3>{external_link(draft["shareUrl"], draft["title"])}{sharing_badges(draft)}</h3>'
+    if draft.get("description"):
+        row += f'<p>{esc(draft["description"])}</p>'
+    row += (f'<div class="meta"><span>v{draft["latestVersionNumber"]}</span>'
+            f'<time>{esc(draft["updatedAt"][:16].replace("T", " "))} UTC</time></div></article>')
+    return row
+
+
+def render_dashboard(base_url: str, session: dict, drafts: list[dict], *, shared: list[dict] | None = None) -> str:
     favorites = [draft for draft in drafts if draft.get("favorite")]
     non_favorites = [draft for draft in drafts if not draft.get("favorite")]
     groups: dict[tuple, list] = {}
@@ -5110,10 +6869,94 @@ def render_dashboard(base_url: str, session: dict, drafts: list[dict]) -> str:
         for draft in members:
             body += _render_dashboard_row(base_url, session, draft)
         body += '</section>'
+    if shared:
+        body += f'<section><h2>Shared with me <small>{len(shared)}</small></h2>'
+        for draft in shared:
+            body += _render_shared_row(draft)
+        body += '</section>'
     return web_page("My drafts", body, base_url, session)
 
 
-def render_detail(base_url: str, session: dict, detail: dict) -> str:
+VISIBILITY_LABELS = {
+    "private": "Private: only you and people you add",
+    "workspace": "Workspace: members of this workspace",
+    "authenticated": "Signed in: any signed-in account",
+    "link": "Link: anyone with the URL",
+}
+
+
+def render_sharing(base_url: str, session: dict, sharing: dict) -> str:
+    action_base = esc(base_url.rstrip("/")) + "/dashboard/drafts/" + sharing["draftId"] + "/sharing"
+    csrf = csrf_field(session["csrf"])
+    body = '<section class="card" aria-labelledby="sharing-title"><h2 id="sharing-title">Sharing</h2>'
+    body += (f'<p>Workspace <span class="badge ws">{esc(sharing["workspace"])}</span> · '
+             f'Visibility <span class="badge scope">{esc(sharing["visibility"])}</span></p>')
+    body += f'<form method="post" action="{action_base}" class="inline">{csrf}<div><label for="visibility">Who can read</label><select id="visibility" name="visibility">'
+    for value in sharing["allowedVisibilities"]:
+        selected = " selected" if value == sharing["visibility"] else ""
+        body += f'<option value="{esc(value)}"{selected}>{esc(VISIBILITY_LABELS[value])}</option>'
+    body += '</select></div><button class="secondary">Save visibility</button></form>'
+    body += (f'<dl><dt>Share URL</dt><dd>{external_link(sharing["shareUrl"], sharing["shareUrl"])}</dd>'
+             f'<dt>Direct URL</dt><dd>{external_link(sharing["publicUrl"], sharing["publicUrl"])}</dd></dl>')
+    body += '<h3>People and groups</h3>'
+    if sharing["grants"]:
+        body += '<div class="table-wrap"><table><thead><tr><th>Type</th><th>Who</th><th>Role</th><th>Action</th></tr></thead><tbody>'
+        for grant in sharing["grants"]:
+            body += (f'<tr><td data-label="Type">{esc(grant["type"])}</td><td data-label="Who">{esc(grant["value"])}</td>'
+                     f'<td data-label="Role">{esc(grant["role"])}</td><td data-label="Action">'
+                     f'<form method="post" action="{action_base}/revoke">{csrf}'
+                     f'<input type="hidden" name="type" value="{esc(grant["type"])}">'
+                     f'<input type="hidden" name="value" value="{esc(grant["value"])}">'
+                     f'<button class="secondary">Revoke</button></form></td></tr>')
+        body += '</tbody></table></div>'
+    else:
+        body += '<p class="muted">No one else has access yet.</p>'
+    body += (f'<form method="post" action="{action_base}/grants" class="inline">{csrf}'
+             '<div><label for="grant-type">Type</label><select id="grant-type" name="type">'
+             '<option value="email">Email</option><option value="group">Group</option>'
+             '<option value="workspace">Workspace</option></select></div>'
+             '<div><label for="grant-value">Email or name</label>'
+             '<input id="grant-value" name="value" required maxlength="255"></div>'
+             '<div><label for="grant-role">Role</label><select id="grant-role" name="role">'
+             '<option value="viewer">Viewer</option><option value="editor">Editor</option></select></div>'
+             '<button>Add access</button></form></section>')
+    return body
+
+
+def render_activate(base_url: str, session: dict, code: str | None, info: dict | None, *,
+                    result: str | None = None) -> str:
+    base = esc(base_url.rstrip("/"))
+    if result is not None:
+        message = {
+            "approved": ("CLI approved", "Return to your terminal. The CLI finishes sign-in."),
+            "denied": ("CLI denied", "The CLI does not get a key."),
+        }.get(result, ("Code not found", "The code is wrong, used, or expired. Start again in the terminal."))
+        body = f'<div class="narrow"><h1>{esc(message[0])}</h1><p>{esc(message[1])}</p>'
+        body += f'<p><a href="{base}/cli/auth">CLI setup</a></p></div>'
+        return web_page(message[0], body, base_url, session)
+    body = '<div class="narrow"><h1>Connect a CLI</h1>'
+    if info is None:
+        if code:
+            body += '<p class="badge">Tailplan cannot find that code. It can be wrong or expired.</p>'
+        body += f'<form method="get" action="{base}/cli/activate"><label for="code">Code from your terminal</label>'
+        body += f'<input id="code" name="code" required maxlength="16" autocomplete="off" value="{esc(code or "")}">'
+        body += '<p><button>Continue</button></p></form></div>'
+        return web_page("Connect a CLI", body, base_url, session)
+    body += (f'<p>A CLI asks for an API key on <strong>{esc(session["accountName"])}</strong>.</p>'
+             f'<dl><dt>Code</dt><dd><code>{esc(info["userCode"])}</code></dd>'
+             f'<dt>Client</dt><dd>{esc(info.get("clientName") or "tailplan CLI")}</dd>'
+             f'<dt>Expires</dt><dd>{esc(info["expiresAt"][:16].replace("T", " "))} UTC</dd></dl>'
+             '<p>Approve only when this code matches your terminal.</p><div class="actions">')
+    for decision, label, css in (("approve", "Approve", ""), ("deny", "Deny", "secondary")):
+        body += (f'<form method="post" action="{base}/cli/activate">{csrf_field(session["csrf"])}'
+                 f'<input type="hidden" name="code" value="{esc(info["userCode"])}">'
+                 f'<input type="hidden" name="decision" value="{decision}">'
+                 f'<button class="{css}">{label}</button></form>')
+    body += '</div></div>'
+    return web_page("Connect a CLI", body, base_url, session)
+
+
+def render_detail(base_url: str, session: dict, detail: dict, *, sharing: dict | None = None) -> str:
     draft = detail["draft"]
     body = f'<h1>{esc(draft["title"])}</h1><p>{esc(draft["description"])}</p>'
     body += f'<p>{external_link(draft["shareUrl"], "Open latest draft")} · {external_link(draft["rawUrl"], "Raw HTML")}</p>'
@@ -5123,7 +6966,10 @@ def render_detail(base_url: str, session: dict, detail: dict) -> str:
     body += '<div class="actions">'
     for action, label in (("enable", "Enable draft") if draft["disabled"] else ("disable", "Disable draft"),):
         body += f'<form method="post" action="{action_base}/{action}">{csrf_field(session["csrf"])}<button class="secondary">{label}</button></form>'
-    body += '</div><h2>Version history</h2><div class="table-wrap"><table><thead><tr><th>Version</th><th>Commit</th><th>Ref</th><th>Published</th><th>Source</th></tr></thead><tbody>'
+    body += '</div>'
+    if sharing is not None:
+        body += render_sharing(base_url, session, sharing)
+    body += '<h2>Version history</h2><div class="table-wrap"><table><thead><tr><th>Version</th><th>Commit</th><th>Ref</th><th>Published</th><th>Source</th></tr></thead><tbody>'
     version_base = draft.get("versionBaseUrl") or f'{base_url.rstrip("/")}/d/{draft["draftId"]}'
     for version in detail["versions"]:
         number = version["versionNumber"]
@@ -5174,6 +7020,7 @@ def create_servers(
     base_url: str,
     redirect_view_base_url: str,
     session_secret: str | None = None,
+    auth: AuthConfig | None = None,
 ) -> tuple[TailplanHTTPServer, TailplanHTTPServer | None]:
     proxy = None
     if proxy_address is not None:
@@ -5197,14 +7044,17 @@ def create_servers(
     if not configured_base_url:
         host, port = primary.server_address[:2]
         configured_base_url = f"http://{host}:{port}"
+    auth = auth or AuthConfig()
     primary.store = store
     primary.token = token
+    primary.auth = auth
     primary.session_secret = session_secret
     primary.base_url = configured_base_url
     primary.redirect_view_base_url = redirect_view_base_url
     if proxy is not None:
         proxy.store = store
         proxy.token = token
+        proxy.auth = auth
         proxy.session_secret = session_secret
         proxy.base_url = configured_base_url
         proxy.redirect_view_base_url = ""
@@ -5305,8 +7155,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=_redirect_base_url,
         default=os.getenv("TAILPLAN_REDIRECT_VIEW_BASE_URL") or None,
     )
+    ap.add_argument("--auth-modes", default=os.getenv("TAILPLAN_AUTH_MODES", ""),
+                    help="comma-separated sign-in methods: api_key, tailscale, oidc")
+    ap.add_argument("--oidc-issuer", default=os.getenv("TAILPLAN_OIDC_ISSUER", ""))
+    ap.add_argument("--oidc-client-id", default=os.getenv("TAILPLAN_OIDC_CLIENT_ID", ""))
+    ap.add_argument("--oidc-client-secret-file", default=os.getenv("TAILPLAN_OIDC_CLIENT_SECRET_FILE") or None)
+    ap.add_argument("--oidc-scopes", default=os.getenv("TAILPLAN_OIDC_SCOPES", OIDC_DEFAULT_SCOPES))
+    ap.add_argument("--oidc-groups-claim", default=os.getenv("TAILPLAN_OIDC_GROUPS_CLAIM", "groups"))
+    ap.add_argument("--oidc-allow-private-issuer", action="store_true",
+                    default=os.getenv("TAILPLAN_OIDC_ALLOW_PRIVATE_ISSUER") == "1")
+    ap.add_argument("--oidc-link-emails", default=os.getenv("TAILPLAN_OIDC_LINK_EMAILS", ""),
+                    help="comma-separated verified emails that sign in as the local owner account")
+    ap.add_argument("--session-ttl-seconds", type=int,
+                    default=os.getenv("TAILPLAN_SESSION_TTL_SECONDS", str(DEFAULT_SESSION_TTL)))
+    ap.add_argument("--rbac-policy-file", default=os.getenv("TAILPLAN_RBAC_POLICY_FILE") or None)
+    ap.add_argument("--viewer-auth-mode", choices=VIEWER_AUTH_MODES,
+                    default=os.getenv("TAILPLAN_VIEWER_AUTH_MODE", "network"))
+    ap.add_argument("--max-visibility", choices=VISIBILITIES,
+                    default=os.getenv("TAILPLAN_MAX_VISIBILITY", "link"))
     args = ap.parse_args(argv)
     args.redirect_view_base_url = args.redirect_view_base_url or ""
+    if not 300 <= args.session_ttl_seconds <= 90 * 86400:
+        ap.error("session TTL must be between 300 seconds and 90 days")
+    try:
+        args.auth_modes = parse_auth_modes(args.auth_modes, oidc=bool(args.oidc_issuer))
+    except ValueError as exc:
+        ap.error(str(exc))
+    if "oidc" in args.auth_modes and not args.oidc_issuer:
+        ap.error("the oidc auth mode needs TAILPLAN_OIDC_ISSUER")
     if args.upload_ip_limit < 1 or args.upload_key_limit < 1:
         ap.error("upload limits must be positive")
     if args.viewer_404_limit < 1:
@@ -5325,6 +7201,51 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
+def read_oidc_client_secret(path: str | None) -> str:
+    if path:
+        try:
+            value = Path(path).expanduser().read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"cannot read the OIDC client secret file: {exc}") from exc
+    else:
+        value = (os.getenv("TAILPLAN_OIDC_CLIENT_SECRET") or "").strip()
+    if not value:
+        raise ValueError("OIDC needs TAILPLAN_OIDC_CLIENT_SECRET_FILE or TAILPLAN_OIDC_CLIENT_SECRET")
+    return value
+
+
+def build_auth_config(args: argparse.Namespace, session_secret: str | None) -> AuthConfig:
+    """Build the shared sign-in settings. Import PyJWT only when an OIDC issuer is set."""
+    def option(name: str, default: object = None) -> object:
+        return getattr(args, name, default)
+
+    issuer = option("oidc_issuer", "")
+    policy = RBACPolicy.load(option("rbac_policy_file"))
+    oidc = None
+    if issuer:
+        if not session_secret:
+            raise ValueError("OIDC needs a dedicated session secret (TAILPLAN_SESSION_SECRET_FILE)")
+        if not option("oidc_client_id"):
+            raise ValueError("OIDC needs TAILPLAN_OIDC_CLIENT_ID")
+        try:
+            oidc = OIDCClient(
+                issuer=issuer, client_id=option("oidc_client_id"),
+                client_secret=read_oidc_client_secret(option("oidc_client_secret_file")),
+                scopes=option("oidc_scopes", OIDC_DEFAULT_SCOPES),
+                groups_claim=option("oidc_groups_claim", "groups"),
+                allow_private=bool(option("oidc_allow_private_issuer", False)),
+            )
+        except ImportError as exc:
+            raise ValueError("OIDC needs PyJWT. Install tailplan[oidc].") from exc
+    links = frozenset(item.strip().lower() for item in str(option("oidc_link_emails", "")).split(",")
+                      if item.strip())
+    return AuthConfig(modes=option("auth_modes", None) or parse_auth_modes(None, oidc=bool(issuer)),
+                      policy=policy, viewer_mode=option("viewer_auth_mode", "network"),
+                      max_visibility=option("max_visibility", "link"),
+                      session_ttl=option("session_ttl_seconds", DEFAULT_SESSION_TTL),
+                      oidc=oidc, link_emails=links)
+
+
 def main() -> int:
     args = parse_args()
     token_path = Path(args.token_file).expanduser()
@@ -5336,6 +7257,10 @@ def main() -> int:
         os.getenv("TAILPLAN_SESSION_SECRET"),
         token,
     )
+    try:
+        auth = build_auth_config(args, session_secret)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     store = Store(Path(args.data_dir).expanduser())
     proxy_address = (
         (args.proxy_host, args.proxy_port) if args.proxy_host is not None else None
@@ -5349,6 +7274,7 @@ def main() -> int:
             base_url=args.base_url,
             redirect_view_base_url=args.redirect_view_base_url,
             session_secret=session_secret,
+            auth=auth,
         )
     except ListenerStartupError as exc:
         raise SystemExit(str(exc)) from exc

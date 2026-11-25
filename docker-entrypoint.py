@@ -9,6 +9,7 @@ RUNTIME_GID = 10001
 RUNTIME_DIRECTORY = Path("/run/tailplan")
 RUNTIME_TOKEN = RUNTIME_DIRECTORY / "upload-token"
 RUNTIME_SESSION_SECRET = RUNTIME_DIRECTORY / "session-secret"
+RUNTIME_OIDC_CLIENT_SECRET = RUNTIME_DIRECTORY / "oidc-client-secret"
 # Optional settings. An empty value, such as Compose passes for an unset
 # `${NAME:-}`, means "not set", so the server must not see it.
 OPTIONAL_ENVIRONMENT = (
@@ -21,6 +22,19 @@ OPTIONAL_ENVIRONMENT = (
     "TAILPLAN_REDIRECT_VIEW_BASE_URL",
     "TAILPLAN_SESSION_SECRET_FILE",
     "TAILPLAN_SESSION_SECRET",
+    "TAILPLAN_AUTH_MODES",
+    "TAILPLAN_OIDC_ISSUER",
+    "TAILPLAN_OIDC_CLIENT_ID",
+    "TAILPLAN_OIDC_CLIENT_SECRET_FILE",
+    "TAILPLAN_OIDC_SCOPES",
+    "TAILPLAN_OIDC_GROUPS_CLAIM",
+    "TAILPLAN_OIDC_ALLOW_PRIVATE_ISSUER",
+    "TAILPLAN_OIDC_LINK_EMAILS",
+    "TAILPLAN_SESSION_TTL_SECONDS",
+    "TAILPLAN_RBAC_POLICY_FILE",
+    "TAILPLAN_VIEWER_AUTH_MODE",
+    "TAILPLAN_MAX_VISIBILITY",
+    "TAILPLAN_OIDC_CLIENT_SECRET",
 )
 
 
@@ -63,6 +77,12 @@ def main() -> None:
         session_secret = Path(session_source).read_bytes()
         if not session_secret.strip():
             raise SystemExit("session secret is empty")
+    oidc_source = os.environ.get("TAILPLAN_OIDC_CLIENT_SECRET_FILE")
+    oidc_secret = b""
+    if oidc_source:
+        oidc_secret = Path(oidc_source).read_bytes()
+        if not oidc_secret.strip():
+            raise SystemExit("OIDC client secret is empty")
 
     RUNTIME_DIRECTORY.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chown(RUNTIME_DIRECTORY, 0, 0)
@@ -71,6 +91,9 @@ def main() -> None:
     if session_secret:
         install_runtime_secret(session_secret, RUNTIME_SESSION_SECRET)
         os.environ["TAILPLAN_SESSION_SECRET_FILE"] = str(RUNTIME_SESSION_SECRET)
+    if oidc_secret:
+        install_runtime_secret(oidc_secret, RUNTIME_OIDC_CLIENT_SECRET)
+        os.environ["TAILPLAN_OIDC_CLIENT_SECRET_FILE"] = str(RUNTIME_OIDC_CLIENT_SECRET)
     os.chown(RUNTIME_DIRECTORY, RUNTIME_UID, RUNTIME_GID)
 
     os.environ["TAILPLAN_TOKEN_FILE"] = str(RUNTIME_TOKEN)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import functools
 import getpass
 import hashlib
 import html
@@ -56,7 +57,9 @@ a { color: #2563eb; overflow-wrap: anywhere; }
 }
 """.strip()
 
-CLI_VERSION = "0.3.0"
+CLI_VERSION = "0.5.0"
+VISIBILITIES = ("private", "workspace", "authenticated", "link")
+GRANT_ROLES = ("viewer", "editor")
 STAGED_UPLOAD_RE = re.compile(r"^/tmp/tailplan-upload\.[A-Za-z0-9]{8}/")
 TITLE_RE = re.compile(r"<title\b[^>]*>(.*?)</title\s*>", re.IGNORECASE | re.DOTALL)
 VIEWPORT_RE = re.compile(r"<meta\b[^>]*\bname\s*=\s*['\"]?viewport\b", re.IGNORECASE)
@@ -2407,6 +2410,15 @@ def _error_detail(
     return detail
 
 
+def saved_token() -> str:
+    """Return the API key that uploads use, or an empty string."""
+    token_file = Path(os.getenv("TAILPLAN_TOKEN_FILE", str(Path.home() / ".tailplan" / "token")))
+    try:
+        return os.getenv("TAILPLAN_API_KEY") or token_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return ""
+
+
 def upload(
     html_path: Path,
     base_url: str,
@@ -2426,6 +2438,7 @@ def upload(
     files: list[dict] | None = None,
     slug: str | None = None,
     filename_override: str | None = None,
+    sharing: dict | None = None,
 ) -> dict:
     token_file = token_path or Path(os.getenv("TAILPLAN_TOKEN_FILE", str(Path.home() / ".tailplan" / "token")))
     try:
@@ -2460,6 +2473,7 @@ def upload(
         payload["description"] = description
     if metadata is not None:
         payload["metadata"] = metadata
+    payload.update(sharing or {})
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request_key = idempotency_key or secrets.token_urlsafe(32)
     attempts = max(1, max_attempts)
@@ -2546,6 +2560,7 @@ def verify_readback(
     expected_sha256: str | None = None,
     opener=None,
     timeout: float = 20,
+    token: str | None = None,
 ) -> None:
     verification_url = (
         public_url
@@ -2556,7 +2571,8 @@ def verify_readback(
     request = urllib.request.Request(
         verification_url,
         method="GET",
-        headers={"User-Agent": "tailplan-share/2.0", "Accept": "text/html"},
+        headers={"User-Agent": "tailplan-share/2.0", "Accept": "text/html",
+                 **({"Authorization": "Bearer " + token} if token else {})},
     )
     open_request = opener or _open_without_redirects
     try:
@@ -2746,6 +2762,7 @@ def _publish_locked(
     slug: str | None = None,
     files: list[dict] | None = None,
     filename_override: str | None = None,
+    sharing: dict | None = None,
 ) -> int:
     resolved_source = source.expanduser().resolve()
     staged_upload = bool(STAGED_UPLOAD_RE.match(str(resolved_source)))
@@ -2881,6 +2898,7 @@ def _publish_locked(
                 allow_insecure_http=allow_insecure_http,
                 description=description,
                 metadata=metadata if metadata is not None else collect_provenance(provenance_cwd),
+                **({"sharing": sharing} if sharing else {}),
             )
         return uploader(html_path, base_url, selected_draft_id)
 
@@ -2974,12 +2992,17 @@ def _publish_locked(
                 stdout=stdout,
                 stderr=stderr,
             )
+    public_origin = urllib.parse.urlsplit(str(result.get("publicUrl", "")))[:2]
+    if (verifier is None and result.get("visibility") not in (None, "link")
+            and public_origin == urllib.parse.urlsplit(base_url)[:2]):
+        # Only signed-in readers can open this draft. Send the key to the upload origin only.
+        verify_function = functools.partial(verify_readback, token=saved_token())
     try:
         if content_request is not None and verifier is None:
             digest = result.get("fileSha256")
             if not isinstance(digest, str):
                 raise VerificationFailure("Server omitted rendered content checksum")
-            verify_readback(result["publicUrl"] + f"/v/{result['versionNumber']}/content", None,
+            verify_function(result["publicUrl"] + f"/v/{result['versionNumber']}/content", None,
                             expected_sha256=digest)
         else:
             verify_url = result["publicUrl"]
@@ -3020,6 +3043,7 @@ def publish(
     slug: str | None = None,
     files: list[dict] | None = None,
     filename_override: str | None = None,
+    sharing: dict | None = None,
 ) -> int:
     resolved_source = source.expanduser().resolve()
     state_home = home or Path.home()
@@ -3046,6 +3070,7 @@ def publish(
             slug=slug,
             files=files,
             filename_override=filename_override,
+            sharing=sharing,
         )
     try:
         with source_publish_lock(mapping_path, resolved_source):
@@ -3070,6 +3095,7 @@ def publish(
                 slug=slug,
                 files=files,
                 filename_override=filename_override,
+                sharing=sharing,
             )
     except OSError:
         return _emit_failure(
@@ -3107,7 +3133,7 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if raw_argv and raw_argv[0] in {
         "auth", "whoami", "list", "history", "keys", "disable", "enable", "delete",
-        "themes", "typography", "check", "favorite", "unfavorite", "download",
+        "themes", "typography", "check", "favorite", "unfavorite", "download", "share",
     }:
         return management_main(raw_argv)
     if raw_argv and raw_argv[0] == "upload":
@@ -3116,7 +3142,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = TailplanArgumentParser(
         description="Share a markdown/text/html artifact or HTML folder through Tailplan.",
         epilog=(
-            "Commands: upload, check, download, favorite, unfavorite, list, "
+            "Commands: upload, check, download, share, favorite, unfavorite, list, "
             "history, whoami, auth, keys, disable, enable, delete. Use COMMAND --help."
         ),
     )
@@ -3131,6 +3157,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--typography", help="Font preset ID; list with tailplan typography")
     parser.add_argument("--layout", help="Document layout: reading or brief")
     parser.add_argument("--metadata-file", help="Read source provenance from a JSON file")
+    parser.add_argument("--workspace", help="Put a new draft in this workspace")
+    parser.add_argument("--visibility", choices=VISIBILITIES, help="Set who can read the draft")
     parser.add_argument("--json", action="store_true", help="Emit one machine-readable JSON object")
     parser.add_argument(
         "--allow-insecure-http",
@@ -3286,6 +3314,8 @@ def main(argv: list[str] | None = None) -> int:
         slug=args.slug,
         files=upload_files,
         filename_override=filename_override,
+        sharing={key: value for key, value in (("workspace", args.workspace), ("visibility", args.visibility))
+                 if value is not None},
     )
 
 
@@ -3474,6 +3504,37 @@ def write_downloaded_source(
     }
 
 
+def default_client_name() -> str:
+    import socket
+
+    return f"tailplan CLI on {socket.gethostname()[:60] or 'this computer'}"
+
+
+def device_login(request, base: str, *, client_name: str, stderr=sys.stderr, sleeper=time.sleep,
+                 clock=time.monotonic) -> str:
+    """Run the browser approval flow. Return the new API key."""
+    started = request("/api/auth/cli/start", "POST", {"clientName": client_name}, token="")
+    print(f"Open {started['verificationUriComplete']}", file=stderr)
+    print(f"Check that the page shows code {started['userCode']}, then approve.", file=stderr)
+    interval = max(1, int(started.get("interval") or 5))
+    deadline = clock() + int(started.get("expiresIn") or 600)
+    while clock() < deadline:
+        sleeper(interval)
+        try:
+            result = request("/api/auth/cli/poll", "POST", {"deviceCode": started["deviceCode"]}, token="")
+        except ConfigurationFailure as error:
+            if "denied" in str(error).lower():
+                raise ConfigurationFailure("Sign-in was denied in the browser.") from None
+            if "410" in str(error) or "expired" in str(error).lower():
+                raise ConfigurationFailure("The sign-in code expired or was used. Start again.") from None
+            raise
+        if result.get("ok") and result.get("apiKey"):
+            return result["apiKey"]
+        if result.get("status") == "slow_down":
+            interval += 5
+    raise ConfigurationFailure("The sign-in code expired. Start again.")
+
+
 def management_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Manage Tailplan drafts and API keys.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -3498,8 +3559,20 @@ def management_main(argv: list[str]) -> int:
     download_cmd = options(commands.add_parser("download"))
     download_cmd.add_argument("draft")
     download_cmd.add_argument("--print-source", action="store_true", dest="print_source")
+    share_cmd = options(commands.add_parser("share", help="Show or change who can read a draft"))
+    share_cmd.add_argument("draft")
+    share_cmd.add_argument("--visibility", choices=VISIBILITIES)
+    share_cmd.add_argument("--workspace")
+    share_cmd.add_argument("--grant-email", action="append", default=[], metavar="EMAIL")
+    share_cmd.add_argument("--grant-group", action="append", default=[], metavar="GROUP")
+    share_cmd.add_argument("--role", choices=GRANT_ROLES, default="viewer", help="Role for new grants")
+    share_cmd.add_argument("--revoke-email", action="append", default=[], metavar="EMAIL")
+    share_cmd.add_argument("--revoke-group", action="append", default=[], metavar="GROUP")
     auth = commands.add_parser("auth").add_subparsers(dest="action", required=True)
-    options(auth.add_parser("login"))
+    login_cmd = options(auth.add_parser("login"))
+    login_cmd.add_argument("--device", action="store_true",
+                           help="Approve this CLI in a browser and save a 90-day key")
+    login_cmd.add_argument("--client-name", default=None, help=argparse.SUPPRESS)
     options(auth.add_parser("set")).add_argument("key", nargs="?")
     options(auth.add_parser("logout"))
     keys = commands.add_parser("keys").add_subparsers(dest="action", required=True)
@@ -3656,6 +3729,33 @@ def management_main(argv: list[str]) -> int:
                 print(f"Upload: {receipt['uploadCommand']}")
             return 0
 
+        if args.command == "share":
+            ref = parse_draft_ref(args.draft, base)
+            path = f"/api/drafts/{ref}/sharing"
+            changes = {key: value for key, value in (("visibility", args.visibility),
+                                                    ("workspace", args.workspace)) if value is not None}
+            result = request(path, "POST", changes) if changes else None
+            for kind, values in (("email", args.grant_email), ("group", args.grant_group)):
+                for value in values:
+                    result = request(path + "/grants", "POST", {"type": kind, "value": value, "role": args.role})
+            for kind, values in (("email", args.revoke_email), ("group", args.revoke_group)):
+                for value in values:
+                    result = request(path + "/grants", "DELETE", {"type": kind, "value": value})
+            result = request(path) if result is None else result
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False))
+            else:
+                print(f"{ref}: {result['visibility']} in workspace {result['workspace']}")
+                print(f"  {result['shareUrl']}")
+                for grant in result.get("grants") or []:
+                    print(f"  {grant['role']}: {grant['type']} {grant['value']}")
+            return 0
+
+        if args.command == "auth" and args.action == "login" and args.device:
+            key = device_login(request, base, client_name=args.client_name or default_client_name(),
+                               stderr=sys.stderr)
+            args.key = key
+
         if args.command == "auth":
             if args.action == "logout":
                 token_path.unlink(missing_ok=True)
@@ -3663,6 +3763,8 @@ def management_main(argv: list[str]) -> int:
             else:
                 key = getattr(args, "key", None)
                 if not key:
+                    if args.action == "login":
+                        print(f"Or run: tailplan auth login --device --base-url {base}", file=sys.stderr)
                     if args.action == "login":
                         print(f"Open {base}/cli/auth\nGenerate a key, then paste it here.", file=sys.stderr)
                     key = getpass.getpass("API key: ") if sys.stdin.isatty() else sys.stdin.readline().strip()
