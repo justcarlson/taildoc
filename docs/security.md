@@ -8,8 +8,22 @@ Viewer URLs remain accessible to authorized tailnet devices.
 Named keys are stored as SHA-256 hashes.
 Each key belongs to one account.
 Browser sessions expire after 30 days and use signed cookies with form tokens.
-The bootstrap token also signs browser sessions.
-Token rotation invalidates all browser sessions.
+The server signs the `tailplan_session` and `tailplan_login` cookies with a session secret.
+Set `TAILPLAN_SESSION_SECRET_FILE` or the `--session-secret-file` option to give the server a dedicated secret.
+Set `TAILPLAN_SESSION_SECRET` only when a file is not practical, because environment values show in process listings.
+The secret must differ from the upload token.
+The server refuses to start when the file is empty, unreadable, or equal to the upload token.
+Create the file with mode `0600` and a long random value.
+
+When you set no session secret, the server derives the cookie key from the upload token.
+The derivation is HMAC-SHA256 of the label `tailplan-session-v1`, keyed by the upload token.
+The derived key differs from the upload token, so a cookie cannot help an attacker guess the token.
+In this mode, upload-token rotation invalidates all browser sessions.
+With a dedicated secret, upload-token rotation keeps browser sessions.
+Rotate the session secret to invalidate all browser sessions in that case.
+
+Releases before this change signed cookies with the upload token itself.
+After an upgrade, existing browser sessions stop working, and users sign in again once.
 
 Tailscale identity headers are optional.
 Only the configured loopback proxy listener accepts those headers.

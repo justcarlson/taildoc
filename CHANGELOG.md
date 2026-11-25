@@ -6,6 +6,13 @@ The project uses semantic version numbers.
 
 ## Unreleased
 
+- Store metadata in a SQLite database, `tailplan.db`, in write-ahead log mode.
+  The first start imports `metadata.json` and keeps the original as `metadata.json.pre-sqlite.bak`, so a rollback to 0.4.0 loses nothing.
+  Draft HTML files stay on disk.
+- Add `TAILPLAN_SESSION_SECRET_FILE` (`--session-secret-file`) and `TAILPLAN_SESSION_SECRET` for signing browser cookies.
+  Without them, the server derives the key from the upload token with HMAC-SHA256.
+  Browser sessions made by earlier releases stop working once, so users sign in again after the upgrade.
+- Make `/readyz` fast and offline-safe: it runs a SQLite quick check and a write probe, and no longer hashes draft files.
 - Add independent serif-heading and all-sans typography presets for every palette.
 - Support typography listing and selection through the API, direct CLI, and SSH client.
 - Freeze font metadata and CSS in each published version.

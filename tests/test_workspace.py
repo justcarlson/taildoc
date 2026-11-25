@@ -151,7 +151,8 @@ class WorkspaceTests(unittest.TestCase):
         identity = self.api("/api/me", token=token)[2]
         self.assertEqual("local", identity["accountId"])
         self.assertEqual("Agent", identity["apiKeyName"])
-        self.assertNotIn(token, self.store.meta.read_text())
+        for stored in self.store.root.glob("tailplan.db*"):
+            self.assertNotIn(token.encode(), stored.read_bytes())
         first = self.upload()
         for path, method, payload in (
             (f"/api/drafts/{first['draftId']}", "GET", None),
@@ -228,11 +229,12 @@ class WorkspaceTests(unittest.TestCase):
         self.proxy.trust_tailscale_identity = True
         self.proxy.owner_login = "owner@example.test"
         cookie = self.login(None, proxy=True, headers=headers)
-        session = server.read_signed(cookie.split("=", 1)[1], "bootstrap-test")
+        secret = server.derive_session_secret("bootstrap-test")
+        session = server.read_signed(cookie.split("=", 1)[1], secret)
         self.assertEqual("local", session["accountId"])
         other_headers = {"Tailscale-User-Login": "other@example.test"}
         other = self.login(None, proxy=True, headers=other_headers)
-        other_session = server.read_signed(other.split("=", 1)[1], "bootstrap-test")
+        other_session = server.read_signed(other.split("=", 1)[1], secret)
         self.assertNotEqual("local", other_session["accountId"])
 
     def test_legacy_data_and_historical_checksums(self):

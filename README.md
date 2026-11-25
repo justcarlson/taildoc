@@ -102,6 +102,9 @@ The owner mapping does not transfer drafts between accounts.
 The APIs require bearer keys for management operations.
 Browser sessions use signed cookies with a 30-day lifetime and form tokens.
 Revoking a named key also invalidates browser sessions created with that key.
+Set `TAILPLAN_SESSION_SECRET_FILE` (`--session-secret-file`) to sign cookies with a dedicated secret.
+Without it, the server derives the cookie key from the upload token.
+See `docs/security.md` for rotation rules.
 Deleted drafts disappear from listings, and every viewer URL returns 404.
 The files remain on disk for operator recovery.
 
@@ -275,6 +278,8 @@ The entrypoint starts as root to read the runtime secret.
 The entrypoint copies the upload token to a memory-backed file.
 The entrypoint drops all groups and starts the server as user `10001`.
 The image health check requests `/readyz`.
+To use a dedicated cookie secret, mount a file in the container and set `TAILPLAN_SESSION_SECRET_FILE` to its path.
+The entrypoint copies that file to the same memory-backed directory.
 
 The default port binds only to host loopback.
 Set the bind address, port, and public base URL for an HTTPS proxy:
@@ -660,6 +665,28 @@ curl -fsS https://<node>.<tailnet>.ts.net/tailplan/readyz
 
 The primary listener must not use `0.0.0.0`.
 The proxy listener must use a loopback address.
+
+## Metadata storage
+
+Tailplan keeps draft metadata in `tailplan.db`, a SQLite database in the data directory.
+Draft HTML files stay on disk under `drafts/`, as in earlier releases.
+The database holds accounts, drafts, versions, API key hashes, and request keys.
+The server opens it in write-ahead log mode, so a running server also uses `tailplan.db-wal` and `tailplan.db-shm`.
+
+The first start imports `metadata.json` into `tailplan.db` without any manual step.
+The server checks every imported record before it finishes.
+It then saves the original file as `metadata.json.pre-sqlite.bak` with mode `0600` and removes `metadata.json`.
+When `tailplan.db` already exists, the server uses it and ignores `metadata.json`.
+
+The `/readyz` check runs a SQLite quick check and a write probe.
+It also confirms that each current draft file exists.
+It does not read or hash draft files, so it stays fast with many drafts.
+The viewer still checks the hash of a draft file each time it serves the draft.
+
+Back up the whole data directory while the server is stopped.
+To roll back to version 0.4.0, stop the server and move `tailplan.db`, `tailplan.db-wal`, and `tailplan.db-shm` out of the data directory.
+Copy `metadata.json.pre-sqlite.bak` to `metadata.json`, then start the older release.
+The older release does not see changes made after the upgrade.
 
 ## Upgrade, rollback, and removal
 

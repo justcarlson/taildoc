@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from copy import deepcopy
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler
@@ -257,6 +259,15 @@ class HtmlValidationTests(unittest.TestCase):
         self.assertEqual(expected, server.make_links_openable(doc))
 
 
+def write_legacy_metadata(root: Path, data: dict) -> str:
+    """Make `root` look like a v0.4.0 data directory. Return the file text."""
+    for path in root.glob("tailplan.db*"):
+        path.unlink()
+    text = server.json.dumps(data, indent=2) + "\n"
+    (root / "metadata.json").write_text(text, encoding="utf-8")
+    return text
+
+
 class StoreTests(unittest.TestCase):
     def test_startup_rebases_mixed_legacy_paths_after_data_root_copy(self) -> None:
         with TemporaryDirectory() as td:
@@ -283,9 +294,7 @@ class StoreTests(unittest.TestCase):
             old_store.save_meta(metadata)
 
             shutil.copytree(old_root, new_root)
-            copied = server.json.loads(
-                (new_root / "metadata.json").read_text(encoding="utf-8")
-            )
+            copied = old_store.load_meta()
             for number, result in enumerate(created):
                 if number % 3 == 0:
                     draft = copied["drafts"][result["draftId"]]
@@ -295,8 +304,7 @@ class StoreTests(unittest.TestCase):
                         / result["draftId"]
                         / f"v{draft['latestVersionNumber']}.html"
                     )
-            original_text = server.json.dumps(copied, indent=2) + "\n"
-            (new_root / "metadata.json").write_text(original_text, encoding="utf-8")
+            original_text = write_legacy_metadata(new_root, copied)
             shutil.rmtree(old_root)
 
             migrated_store = server.Store(new_root)
@@ -317,13 +325,14 @@ class StoreTests(unittest.TestCase):
             )
             self.assertEqual(41, len(migrated["idempotency"]))
             self.assertEqual([], list(new_root.glob(".*.tmp")))
+            self.assertFalse(migrated_store.meta.exists())
 
-            metadata_before = migrated_store.meta.read_bytes()
-            metadata_inode = migrated_store.meta.stat().st_ino
+            database_before = migrated_store.db_path.read_bytes()
+            database_inode = migrated_store.db_path.stat().st_ino
             backup_before = migrated_store.backup.read_bytes()
             server.Store(new_root)
-            self.assertEqual(metadata_before, migrated_store.meta.read_bytes())
-            self.assertEqual(metadata_inode, migrated_store.meta.stat().st_ino)
+            self.assertEqual(database_before, migrated_store.db_path.read_bytes())
+            self.assertEqual(database_inode, migrated_store.db_path.stat().st_ino)
             self.assertEqual(backup_before, migrated_store.backup.read_bytes())
 
     def test_startup_does_not_rewrite_canonical_metadata(self) -> None:
@@ -336,14 +345,15 @@ class StoreTests(unittest.TestCase):
                 None,
                 "https://tailplan.test",
             )
-            before = store.meta.read_bytes()
-            inode = store.meta.stat().st_ino
+            before = store.db_path.read_bytes()
+            inode = store.db_path.stat().st_ino
 
             server.Store(root)
 
-            self.assertEqual(before, store.meta.read_bytes())
-            self.assertEqual(inode, store.meta.stat().st_ino)
+            self.assertEqual(before, store.db_path.read_bytes())
+            self.assertEqual(inode, store.db_path.stat().st_ino)
             self.assertFalse(store.backup.exists())
+            self.assertFalse(store.meta.exists())
 
     def test_startup_rebase_rejects_untrusted_paths_and_invalid_canonical_objects(
         self,
@@ -436,11 +446,10 @@ class StoreTests(unittest.TestCase):
                 draft_id = created["draftId"]
                 shutil.copytree(old_root, new_root)
                 metadata_path = new_root / "metadata.json"
-                metadata = server.json.loads(metadata_path.read_text(encoding="utf-8"))
+                metadata = old_store.load_meta()
                 draft = metadata["drafts"][draft_id]
                 corrupt(old_root, new_root, draft_id, draft)
-                original_text = server.json.dumps(metadata, indent=2) + "\n"
-                metadata_path.write_text(original_text, encoding="utf-8")
+                original_text = write_legacy_metadata(new_root, metadata)
                 shutil.rmtree(old_root)
 
                 with self.assertRaises((server.StorageError, OSError, UnicodeError)):
@@ -448,6 +457,8 @@ class StoreTests(unittest.TestCase):
 
                 self.assertEqual(original_text, metadata_path.read_text(encoding="utf-8"))
                 self.assertFalse((new_root / "metadata.json.bak").exists())
+                self.assertFalse((new_root / "metadata.json.pre-sqlite.bak").exists())
+                self.assertFalse((new_root / "tailplan.db").exists())
                 self.assertEqual([], list(new_root.glob(".*.tmp")))
 
     def test_failed_startup_rewrite_keeps_original_metadata_and_backup(self) -> None:
@@ -463,28 +474,30 @@ class StoreTests(unittest.TestCase):
                 "https://tailplan.test",
             )
             shutil.copytree(old_root, new_root)
-            shutil.rmtree(old_root)
             metadata_path = new_root / "metadata.json"
-            original = metadata_path.read_text(encoding="utf-8")
-            real_atomic_write = server._atomic_write_text
+            original = write_legacy_metadata(new_root, old_store.load_meta())
+            shutil.rmtree(old_root)
+            backup_path = new_root / "metadata.json.pre-sqlite.bak"
+            real_atomic_write = server._atomic_write_bytes
 
-            def fail_primary(path: Path, text: str) -> None:
-                if path == metadata_path:
-                    raise OSError("injected metadata rewrite failure")
-                real_atomic_write(path, text)
+            def fail_backup(path: Path, payload: bytes) -> None:
+                if path == backup_path:
+                    raise OSError("injected migration backup failure")
+                real_atomic_write(path, payload)
 
             with (
-                patch.object(server, "_atomic_write_text", side_effect=fail_primary),
-                self.assertRaisesRegex(OSError, "injected metadata rewrite failure"),
+                patch.object(server, "_atomic_write_bytes", side_effect=fail_backup),
+                self.assertRaisesRegex(OSError, "injected migration backup failure"),
             ):
                 server.Store(new_root)
 
             self.assertEqual(original, metadata_path.read_text(encoding="utf-8"))
-            self.assertEqual(
-                original,
-                (new_root / "metadata.json.bak").read_text(encoding="utf-8"),
-            )
+            self.assertFalse((new_root / "tailplan.db").exists())
             self.assertEqual([], list(new_root.glob(".*.tmp")))
+            # A later start, without the fault, still migrates the same file.
+            migrated = server.Store(new_root)
+            self.assertEqual(1, len(migrated.load_meta()["drafts"]))
+            self.assertEqual(original, backup_path.read_text(encoding="utf-8"))
 
     def test_readiness_rejects_deleted_current_object(self) -> None:
         with TemporaryDirectory() as td:
@@ -501,13 +514,20 @@ class StoreTests(unittest.TestCase):
     def test_malformed_and_wrong_schema_metadata_fail_closed(self) -> None:
         bad_documents = ("{not-json", "[]", '{"drafts": []}')
         for raw in bad_documents:
-            with self.subTest(raw=raw), TemporaryDirectory() as td:
+            with self.subTest(raw=raw, source="database"), TemporaryDirectory() as td:
                 root = Path(td)
                 store = server.Store(root)
-                store.meta.write_text(raw, encoding="utf-8")
+                store.db_path.write_text(raw, encoding="utf-8")
 
                 with self.assertRaises(server.StorageError):
                     store.load_meta()
+            with self.subTest(raw=raw, source="legacy file"), TemporaryDirectory() as td:
+                root = Path(td)
+                (root / "metadata.json").write_text(raw, encoding="utf-8")
+
+                with self.assertRaises(server.StorageError):
+                    server.Store(root)
+                self.assertFalse((root / "tailplan.db").exists())
 
     def test_malformed_inner_drafts_and_idempotency_receipts_fail_closed(self) -> None:
         with TemporaryDirectory() as td:
@@ -574,7 +594,7 @@ class StoreTests(unittest.TestCase):
 
             for label, malformed in cases.items():
                 with self.subTest(label=label):
-                    store.meta.write_text(server.json.dumps(malformed), encoding="utf-8")
+                    store._replace_all_unchecked(malformed)
                     with self.assertRaises(server.StorageError):
                         store.load_meta()
 
@@ -585,12 +605,16 @@ class StoreTests(unittest.TestCase):
                 "<title>Existing</title>", "existing.html", None, "https://tailplan.test"
             )
             metadata = store.load_meta()
-            metadata.pop("idempotency")
-            store.meta.write_text(server.json.dumps(metadata), encoding="utf-8")
+            metadata.pop("idempotency", None)
+            store.save_meta(metadata)
 
             loaded = store.load_meta()
 
             self.assertEqual(created["draftId"], loaded["drafts"][created["draftId"]]["draftId"])
+            store.upsert(
+                "<title>Next</title>", "next.html", None, "https://tailplan.test", "request-after"
+            )
+            self.assertEqual(["request-after"], list(store.load_meta()["idempotency"]))
 
     def test_update_refuses_to_create_version_beyond_metadata_range(self) -> None:
         with TemporaryDirectory() as td:
@@ -604,7 +628,7 @@ class StoreTests(unittest.TestCase):
             metadata["drafts"][draft_id]["currentObject"] = str(
                 store.drafts / draft_id / f"v{server.MAX_VERSION_NUMBER}.html"
             )
-            store.meta.write_text(server.json.dumps(metadata), encoding="utf-8")
+            store._replace_all_unchecked(metadata)
             overflow_path = store.drafts / draft_id / f"v{server.MAX_VERSION_NUMBER + 1}.html"
 
             with self.assertRaises(server.StorageError):
@@ -626,13 +650,15 @@ class StoreTests(unittest.TestCase):
                 "<title>Two</title>", "one.html", first["draftId"], "https://tailplan.test"
             )
 
-            backup = root / "metadata.json.bak"
-            self.assertTrue(backup.is_file())
-            backup_data = server.json.loads(backup.read_text(encoding="utf-8"))
+            # SQLite commits are atomic, so the JSON `.bak` copy no longer exists.
+            self.assertEqual([], list(root.glob("metadata.json*")))
+            self.assertEqual(0o600, store.db_path.stat().st_mode & 0o777)
             self.assertEqual(
-                1, backup_data["drafts"][first["draftId"]]["latestVersionNumber"]
+                2,
+                store.load_meta()["drafts"][first["draftId"]]["latestVersionNumber"],
             )
-            self.assertEqual(0o600, store.meta.stat().st_mode & 0o777)
+            with closing(sqlite3.connect(store.db_path)) as connection:
+                self.assertEqual("ok", connection.execute("PRAGMA integrity_check").fetchone()[0])
             self.assertEqual([], list(root.glob("*.tmp")))
             self.assertEqual([], list(root.glob(".*.tmp")))
 
@@ -1050,7 +1076,7 @@ class ApiTests(unittest.TestCase):
         self.assertRegex(health["build"], r"^[a-f0-9]{12}$")
 
         self.assertEqual(200, self.request("GET", "/readyz")[0])
-        self.store.meta.write_text("{corrupt", encoding="utf-8")
+        self.store.db_path.write_text("{corrupt", encoding="utf-8")
         ready_status, _headers, ready_body = self.request("GET", "/readyz")
         self.assertEqual(503, ready_status)
         self.assertFalse(server.json.loads(ready_body)["ok"])
@@ -1067,14 +1093,21 @@ class ApiTests(unittest.TestCase):
         )
         malformed = self.store.load_meta()
         malformed["drafts"][created["draftId"]]["fileSha256"] = "broken"
-        raw = server.json.dumps(malformed, sort_keys=True).encode("utf-8")
-        self.store.meta.write_bytes(raw)
+        self.store._replace_all_unchecked(malformed)
+
+        def stored_rows() -> list:
+            with closing(sqlite3.connect(self.store.db_path)) as connection:
+                return connection.execute(
+                    "SELECT draft_id, doc FROM drafts ORDER BY draft_id"
+                ).fetchall()
+
+        raw = stored_rows()
 
         status, _headers, body = self.request("GET", "/readyz")
 
         self.assertEqual(503, status)
         self.assertFalse(server.json.loads(body)["ok"])
-        self.assertEqual(raw, self.store.meta.read_bytes())
+        self.assertEqual(raw, stored_rows())
 
     def test_deleted_recorded_current_object_returns_generic_json_503(self) -> None:
         created = self.store.upsert(
@@ -1109,7 +1142,8 @@ class ApiTests(unittest.TestCase):
         ready_status, _headers, _body = self.request("GET", "/readyz")
         status, headers, body = self.request("GET", f"/d/{created['draftId']}")
 
-        self.assertEqual(503, ready_status)
+        # Readiness no longer reads draft files. The viewer still refuses the bad object.
+        self.assertEqual(200, ready_status)
         self.assertEqual(503, status)
         self.assertEqual("application/json; charset=utf-8", headers["Content-Type"])
         self.assertEqual(
@@ -1129,7 +1163,8 @@ class ApiTests(unittest.TestCase):
         ready_status, _headers, _body = self.request("GET", "/readyz")
         status, headers, body = self.request("GET", f"/d/{created['draftId']}")
 
-        self.assertEqual(503, ready_status)
+        # Readiness no longer hashes draft files. The viewer still refuses the bad object.
+        self.assertEqual(200, ready_status)
         self.assertEqual(503, status)
         self.assertEqual("application/json; charset=utf-8", headers["Content-Type"])
         self.assertEqual(
