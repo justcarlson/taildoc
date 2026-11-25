@@ -578,6 +578,10 @@ for source in \
   tailplan_themes/typography-selection.json \
   tailplan_themes/typography/serif-sans.json \
   tailplan_themes/typography/all-sans.json \
+  tailplan_web/__init__.py \
+  tailplan_web/assets.py \
+  tailplan_web/render.py \
+  tailplan_web/static/tailplan-mark.svg \
   bin/run-tailplan \
   bin/tailplan-share \
   bin/tailplan \
@@ -591,6 +595,9 @@ mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/skills/tailplan" "$STAGE_DIR/systemd"
 cp -a "$SCRIPT_DIR/tailplan_themes" "$STAGE_DIR/tailplan_themes"
 find "$STAGE_DIR/tailplan_themes" -type d -name __pycache__ -prune -exec rm -rf {} +
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_themes; tailplan_themes.catalog()'
+cp -a "$SCRIPT_DIR/tailplan_web" "$STAGE_DIR/tailplan_web"
+find "$STAGE_DIR/tailplan_web" -type d -name __pycache__ -prune -exec rm -rf {} +
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_web.assets as a, tailplan_web.render; assert a.lookup_asset(a.asset_url("", "tailplan-mark.svg")[len("/assets/"):])'
 install -m 755 "$SCRIPT_DIR/tailplan_server.py" "$STAGE_DIR/tailplan_server.py"
 install -m 755 "$SCRIPT_DIR/bin/run-tailplan" "$STAGE_DIR/bin/run-tailplan"
 install -m 755 "$SCRIPT_DIR/bin/tailplan-share" "$STAGE_DIR/bin/tailplan-share"
@@ -611,7 +618,9 @@ from pathlib import Path
 for source in sys.argv[1:]:
     ast.parse(Path(source).read_text(encoding="utf-8"), filename=source)
 PY
-EXPECTED_BUILD="$(sha256sum "$STAGE_DIR/tailplan_server.py" | cut -c1-12)"
+# The build id covers the server file, the web package sources, and the static asset bytes.
+EXPECTED_BUILD="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import sys, tailplan_web.assets as a; print(a.build_id(sys.argv[1]))' "$STAGE_DIR/tailplan_server.py")"
+[[ "$EXPECTED_BUILD" =~ ^[a-f0-9]{12}$ ]] || die "Could not compute the expected build id."
 
 TS_IP=""
 TS_DNS=""
@@ -815,6 +824,7 @@ backup_item() {
   fi
 }
 backup_item app-themes "$APP_DIR/tailplan_themes"
+backup_item app-web "$APP_DIR/tailplan_web"
 backup_item app-server "$APP_DIR/tailplan_server.py"
 backup_item app-runner "$APP_DIR/bin/run-tailplan"
 backup_item cli-share "$BIN_DIR/tailplan-share"
@@ -871,6 +881,10 @@ rollback() {
   rm -rf -- "$APP_DIR/tailplan_themes"
   if [[ -f "$BACKUP_DIR/state/app-themes.existed" ]]; then
     cp -a -- "$BACKUP_DIR/files/app-themes" "$APP_DIR/tailplan_themes" || rollback_failed=1
+  fi
+  rm -rf -- "$APP_DIR/tailplan_web"
+  if [[ -f "$BACKUP_DIR/state/app-web.existed" ]]; then
+    cp -a -- "$BACKUP_DIR/files/app-web" "$APP_DIR/tailplan_web" || rollback_failed=1
   fi
   restore_item app-server "$APP_DIR/tailplan_server.py" || rollback_failed=1
   restore_item app-runner "$APP_DIR/bin/run-tailplan" || rollback_failed=1
@@ -1039,6 +1053,10 @@ rm -rf -- "$APP_DIR/tailplan_themes"
 cp -a "$STAGE_DIR/tailplan_themes" "$APP_DIR/tailplan_themes"
 find "$APP_DIR/tailplan_themes" -type d -exec chmod 755 {} +
 find "$APP_DIR/tailplan_themes" -type f -exec chmod 644 {} +
+rm -rf -- "$APP_DIR/tailplan_web"
+cp -a "$STAGE_DIR/tailplan_web" "$APP_DIR/tailplan_web"
+find "$APP_DIR/tailplan_web" -type d -exec chmod 755 {} +
+find "$APP_DIR/tailplan_web" -type f -exec chmod 644 {} +
 install -m 755 "$STAGE_DIR/tailplan_server.py" "$APP_DIR/tailplan_server.py"
 install -m 755 "$STAGE_DIR/bin/run-tailplan" "$APP_DIR/bin/run-tailplan"
 install -m 755 "$STAGE_DIR/bin/tailplan-share" "$BIN_DIR/tailplan-share"
@@ -1230,6 +1248,7 @@ mv -f -- "$unit_tmp" "$UNIT_FILE"
 
 if [[ "$INSTALL_SCOPE" == system ]]; then
   chown -R root:root "$APP_DIR/tailplan_themes"
+  chown -R root:root "$APP_DIR/tailplan_web"
   chown root:root \
     "$APP_DIR" \
     "$APP_DIR/bin" \
@@ -1251,6 +1270,7 @@ verify_installed_file() {
   [[ "$(stat -c '%a' "$destination")" == "$expected_mode" ]] || die "Installed file mode mismatch: $destination"
 }
 diff -r --exclude=__pycache__ "$STAGE_DIR/tailplan_themes" "$APP_DIR/tailplan_themes" >/dev/null || die "Installed theme assets mismatch."
+diff -r --exclude=__pycache__ "$STAGE_DIR/tailplan_web" "$APP_DIR/tailplan_web" >/dev/null || die "Installed web assets mismatch."
 verify_installed_file "$STAGE_DIR/tailplan_server.py" "$APP_DIR/tailplan_server.py" 755
 verify_installed_file "$STAGE_DIR/bin/run-tailplan" "$APP_DIR/bin/run-tailplan" 755
 verify_installed_file "$STAGE_DIR/bin/tailplan-share" "$BIN_DIR/tailplan-share" 755

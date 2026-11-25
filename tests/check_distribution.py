@@ -4,12 +4,14 @@ import sys
 
 import tailplan_server as server
 import tailplan_themes as themes
+from tailplan_web import assets as web_assets
+import tailplan_web.render as web_render
 
 
 def main():
     source = Path(sys.argv[1]).resolve() / 'tailplan_themes'
     prefix = Path(sys.prefix).resolve()
-    for module in (server, themes):
+    for module in (server, themes, web_render, web_assets):
         assert module.__file__ is not None
         assert Path(module.__file__).resolve().is_relative_to(prefix), module.__file__
     expected = [p for p in source.rglob('*') if p.suffix in {'.py', '.css', '.json', '.txt'}]
@@ -31,7 +33,19 @@ def main():
             assert 'table-cell-label' in doc
             assert metadata['layoutVersion'] == themes.catalog()['layouts'][0]['version']
             count += 1
-    print(f'Installed artifact: {len(expected)} matching assets; {count} render combinations passed')
+    web_source = Path(sys.argv[1]).resolve() / 'tailplan_web'
+    web_expected = [p for p in (web_source / 'static').rglob('*') if p.is_file()]
+    assert any(p.name == 'tailplan-mark.svg' for p in web_expected)
+    for original in web_expected:
+        installed = web_assets.STATIC_DIR / original.relative_to(web_source / 'static')
+        assert installed.read_bytes() == original.read_bytes(), str(installed)
+        url = web_assets.asset_url('', original.relative_to(web_source / 'static').as_posix())
+        served = web_assets.lookup_asset(url[len('/assets/'):])
+        assert served is not None and served[0] == original.read_bytes(), str(installed)
+    for original in web_source.glob('*.py'):
+        assert (web_assets.ROOT / original.name).read_bytes() == original.read_bytes(), original.name
+    assert server.BUILD_ID == web_assets.build_id(server.__file__)
+    print(f'Installed artifact: {len(expected)} matching assets; {count} render combinations and {len(web_expected)} web assets passed')
 
 
 if __name__ == '__main__':

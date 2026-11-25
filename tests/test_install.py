@@ -225,7 +225,7 @@ class InstallerHarness:
             if [[ "$url" == https://* && "${MOCK_HTTPS_FAIL:-0}" == 1 ]]; then
               exit 22
             fi
-            build="$(sha256sum "$MOCK_APP_DIR/tailplan_server.py" | cut -c1-12)"
+            build="$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$MOCK_APP_DIR" python3 -c 'import sys, tailplan_web.assets as a; print(a.build_id(sys.argv[1]))' "$MOCK_APP_DIR/tailplan_server.py")"
             printf '{"ok":true,"service":"tailplan","build":"%s"}\n' "$build"
             """,
         )
