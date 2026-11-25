@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -28,12 +29,35 @@ def draft_ref_from_value(value: str) -> str:
     raise SystemExit("Provide a Tailplan draft id, slug, or URL containing /d/<ref>.")
 
 
-def load_draft(ref: str) -> dict:
+def read_drafts() -> dict:
+    """Read draft records from tailplan.db, or from metadata.json in an older data directory."""
+    database = TAILPLAN_META.with_name("tailplan.db")
+    if database.exists():
+        try:
+            connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True, timeout=5)
+            try:
+                drafts = {
+                    draft_id: json.loads(doc)
+                    for draft_id, doc in connection.execute("SELECT draft_id, doc FROM drafts")
+                }
+                for draft_id, number, doc in connection.execute(
+                    "SELECT draft_id, version_number, doc FROM draft_versions"
+                ):
+                    if draft_id in drafts:
+                        drafts[draft_id].setdefault("versions", {})[str(number)] = json.loads(doc)
+                return drafts
+            finally:
+                connection.close()
+        except Exception as e:
+            raise SystemExit(f"Could not read {database}: {e}")
     try:
-        meta = json.loads(TAILPLAN_META.read_text())
+        return json.loads(TAILPLAN_META.read_text()).get("drafts", {})
     except Exception as e:
         raise SystemExit(f"Could not read {TAILPLAN_META}: {e}")
-    drafts = meta.get("drafts", {})
+
+
+def load_draft(ref: str) -> dict:
+    drafts = read_drafts()
     draft = drafts.get(ref)
     if not draft:
         for candidate in drafts.values():

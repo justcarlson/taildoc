@@ -13,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import stat
 import string
 import struct
@@ -24,6 +25,7 @@ import time
 import unicodedata
 import zlib
 from collections import OrderedDict, deque
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from functools import lru_cache
 from html.parser import HTMLParser
@@ -2703,25 +2705,234 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+DB_FILENAME = "tailplan.db"
+LEGACY_METADATA_FILENAME = "metadata.json"
+LEGACY_BACKUP_FILENAME = "metadata.json.pre-sqlite.bak"
+SQLITE_BUSY_TIMEOUT_MS = 5000
+# Each entry upgrades the database from the previous version.
+# Add a new version here, such as 2, for later tables.
+_SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {
+    1: (
+        "CREATE TABLE meta_extra (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        """CREATE TABLE accounts (
+            account_id TEXT PRIMARY KEY,
+            name TEXT,
+            doc TEXT NOT NULL
+        )""",
+        """CREATE TABLE drafts (
+            draft_id TEXT PRIMARY KEY,
+            account_id TEXT,
+            slug TEXT,
+            title TEXT,
+            latest_version INTEGER,
+            created_at TEXT,
+            updated_at TEXT,
+            deleted_at TEXT,
+            disabled_at TEXT,
+            favorited_at TEXT,
+            doc TEXT NOT NULL
+        )""",
+        "CREATE INDEX drafts_account ON drafts (account_id, updated_at)",
+        "CREATE INDEX drafts_slug ON drafts (slug) WHERE slug IS NOT NULL",
+        """CREATE TABLE draft_versions (
+            draft_id TEXT NOT NULL REFERENCES drafts (draft_id)
+                ON DELETE CASCADE ON UPDATE CASCADE,
+            version_number INTEGER NOT NULL,
+            version_id TEXT,
+            created_at TEXT,
+            file_sha256 TEXT,
+            doc TEXT NOT NULL,
+            PRIMARY KEY (draft_id, version_number)
+        ) WITHOUT ROWID""",
+        """CREATE TABLE api_keys (
+            key_id TEXT PRIMARY KEY,
+            account_id TEXT,
+            name TEXT,
+            key_hash TEXT,
+            created_at TEXT,
+            last_used_at TEXT,
+            revoked_at TEXT,
+            doc TEXT NOT NULL
+        )""",
+        "CREATE INDEX api_keys_hash ON api_keys (key_hash)",
+        """CREATE TABLE idempotency_keys (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_key TEXT NOT NULL UNIQUE,
+            fingerprint TEXT,
+            doc TEXT NOT NULL
+        )""",
+    ),
+}
+SCHEMA_VERSION = max(_SCHEMA_STATEMENTS)
+_TOP_LEVEL_TABLE_KEYS = frozenset({"drafts", "accounts", "apiKeys", "idempotency"})
+
+
+def _json_text(value: object) -> str:
+    return json.dumps(value, separators=(",", ":"))
+
+
+def _text_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _int_or_none(value: object) -> int | None:
+    return value if type(value) is int else None
+
+
+def _store_form(data: dict) -> dict:
+    """Return the shape that the database gives back for the same metadata."""
+    result: dict = {}
+    for key, value in data.items():
+        if key in {"accounts", "apiKeys", "idempotency"} and not value:
+            continue
+        if key == "drafts":
+            value = {
+                draft_id: (
+                    {k: v for k, v in draft.items() if k != "versions"}
+                    if draft.get("versions") == {}
+                    else draft
+                )
+                for draft_id, draft in value.items()
+            }
+        result[key] = value
+    return result
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp_path, path)
+        _fsync_directory(path.parent)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _fsync_directory(directory: Path) -> None:
+    directory_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 class Store:
+    """Keep draft metadata in SQLite and draft pages as files under `drafts/`."""
+
     def __init__(self, root: Path):
         self.root = Path(os.path.abspath(root))
         self.drafts = self.root / "drafts"
-        self.meta = self.root / "metadata.json"
-        self.backup = self.root / "metadata.json.bak"
+        self.db_path = self.root / DB_FILENAME
+        # `meta` and `backup` name the files that older versions wrote.
+        self.meta = self.root / LEGACY_METADATA_FILENAME
+        self.backup = self.root / LEGACY_BACKUP_FILENAME
         self.drafts.mkdir(parents=True, exist_ok=True)
         self.root.mkdir(parents=True, exist_ok=True)
         os.chmod(self.root, 0o700)
         os.chmod(self.drafts, 0o700)
         with STORE_LOCK:
-            self._rebase_metadata_paths_locked()
+            if not self.db_path.exists() and self.meta.exists():
+                self._migrate_legacy_metadata_locked()
+            else:
+                self._open_database_locked()
 
-    def _rebase_metadata_paths_locked(self) -> None:
-        if not self.meta.exists():
-            return
+    # -- SQLite plumbing -------------------------------------------------
+
+    @staticmethod
+    def _connect(path: Path) -> sqlite3.Connection:
+        connection = sqlite3.connect(path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000, isolation_level=None)
+        connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        connection.execute("PRAGMA foreign_keys=ON")
+        return connection
+
+    @contextmanager
+    def _connection(self, path: Path | None = None):
         try:
-            original_text = self.meta.read_text(encoding="utf-8")
-            data = json.loads(original_text)
+            connection = self._connect(path or self.db_path)
+        except sqlite3.Error as exc:
+            raise StorageError("Metadata database is unavailable.") from exc
+        try:
+            yield connection
+        except sqlite3.Error as exc:
+            raise StorageError("Metadata database is unavailable or corrupt.") from exc
+        finally:
+            connection.close()
+
+    @staticmethod
+    @contextmanager
+    def _write_transaction(connection: sqlite3.Connection):
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        connection.execute("COMMIT")
+
+    def _prepare_database(self, connection: sqlite3.Connection) -> None:
+        mode = connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+        if str(mode).lower() != "wal":
+            raise StorageError("SQLite write-ahead logging is unavailable in the data directory.")
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version > SCHEMA_VERSION:
+            raise StorageError("Metadata database was written by a newer Tailplan version.")
+        if version == SCHEMA_VERSION:
+            return
+        with self._write_transaction(connection):
+            current = connection.execute("PRAGMA user_version").fetchone()[0]
+            for target in range(current + 1, SCHEMA_VERSION + 1):
+                for statement in _SCHEMA_STATEMENTS[target]:
+                    connection.execute(statement)
+                connection.execute(f"PRAGMA user_version = {target}")
+
+    def _open_database_locked(self) -> None:
+        with self._connection() as connection:
+            self._prepare_database(connection)
+            self._rebase_database_paths_locked(connection)
+        os.chmod(self.db_path, 0o600)
+
+    def _rebase_database_paths_locked(self, connection: sqlite3.Connection) -> None:
+        """Update stored object paths when a database moves to a new directory."""
+        data = self._read_all(connection)
+        drafts = data.get("drafts", {})
+        if not drafts:
+            return
+        changed = False
+        for draft_id, draft in drafts.items():
+            latest = draft.get("latestVersionNumber")
+            if type(latest) is not int or latest < 1:
+                continue
+            canonical = self.drafts / draft_id / f"v{latest}.html"
+            if draft.get("currentObject") != str(canonical):
+                self._verify_rebase_object(canonical, draft)
+                draft["currentObject"] = str(canonical)
+                changed = True
+        if changed:
+            _validate_metadata_schema(data, self.root)
+            with self._write_transaction(connection):
+                self._write_all(connection, data)
+
+    @staticmethod
+    def _remove_database_files(path: Path) -> None:
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            Path(str(path) + suffix).unlink(missing_ok=True)
+
+    def _migrate_legacy_metadata_locked(self) -> None:
+        """Import `metadata.json` into `tailplan.db` once, without changing draft files."""
+        try:
+            original = self.meta.read_bytes()
+            data = json.loads(original.decode("utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise StorageError("Metadata is unreadable or malformed.") from exc
         _validate_metadata_schema(
@@ -2729,24 +2940,221 @@ class Store:
             self.root,
             allow_legacy_current_objects=True,
         )
-        changed: list[tuple[dict, Path]] = []
         for draft_id, draft in data["drafts"].items():
-            canonical = (
-                self.drafts
-                / draft_id
-                / f"v{draft['latestVersionNumber']}.html"
-            )
+            canonical = self.drafts / draft_id / f"v{draft['latestVersionNumber']}.html"
             self._verify_rebase_object(canonical, draft)
-            if draft["currentObject"] != str(canonical):
-                changed.append((draft, canonical))
-        if not changed:
-            return
-        for draft, canonical in changed:
             draft["currentObject"] = str(canonical)
         _validate_metadata_schema(data, self.root)
-        replacement = json.dumps(data, indent=2) + "\n"
-        _atomic_write_text(self.backup, original_text)
-        _atomic_write_text(self.meta, replacement)
+        staging = self.root / f".{DB_FILENAME}.migrating.tmp"
+        self._remove_database_files(staging)
+        try:
+            with self._connection(staging) as connection:
+                self._prepare_database(connection)
+                with self._write_transaction(connection):
+                    self._write_all(connection, data)
+                self._verify_import(connection, data)
+            os.chmod(staging, 0o600)
+            descriptor = os.open(staging, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            # Keep the original file before the database goes live, so a rollback stays lossless.
+            _atomic_write_bytes(self.backup, original)
+            os.replace(staging, self.db_path)
+            _fsync_directory(self.root)
+        except BaseException:
+            self._remove_database_files(staging)
+            raise
+        self.meta.unlink(missing_ok=True)
+
+    def _verify_import(self, connection: sqlite3.Connection, data: dict) -> None:
+        connection.execute("BEGIN")
+        try:
+            imported = self._read_all(connection)
+            counts = {
+                table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("accounts", "drafts", "draft_versions", "api_keys", "idempotency_keys")
+            }
+        finally:
+            connection.execute("ROLLBACK")
+        expected = _store_form(data)
+        versions = sum(len(draft.get("versions", {})) for draft in data["drafts"].values())
+        expected_counts = {
+            "accounts": len(data.get("accounts", {})),
+            "drafts": len(data["drafts"]),
+            "draft_versions": versions,
+            "api_keys": len(data.get("apiKeys", {})),
+            "idempotency_keys": len(data.get("idempotency", {})),
+        }
+        if (
+            counts != expected_counts
+            or list(imported["drafts"]) != list(data["drafts"])
+            or imported != expected
+        ):
+            raise StorageError("Metadata import did not match the original file.")
+
+    @staticmethod
+    def _read_all(connection: sqlite3.Connection) -> dict:
+        data: dict = {}
+        for key, value in connection.execute("SELECT key, value FROM meta_extra ORDER BY key"):
+            data[key] = json.loads(value)
+        drafts: dict = {}
+        for draft_id, doc in connection.execute("SELECT draft_id, doc FROM drafts ORDER BY rowid"):
+            drafts[draft_id] = json.loads(doc)
+        for draft_id, number, doc in connection.execute(
+            "SELECT draft_id, version_number, doc FROM draft_versions ORDER BY draft_id, version_number"
+        ):
+            drafts[draft_id].setdefault("versions", {})[str(number)] = json.loads(doc)
+        data["drafts"] = drafts
+        accounts = {
+            account_id: json.loads(doc)
+            for account_id, doc in connection.execute("SELECT account_id, doc FROM accounts ORDER BY rowid")
+        }
+        if accounts:
+            data["accounts"] = accounts
+        keys = {
+            key_id: json.loads(doc)
+            for key_id, doc in connection.execute("SELECT key_id, doc FROM api_keys ORDER BY rowid")
+        }
+        if keys:
+            data["apiKeys"] = keys
+        receipts = {
+            request_key: json.loads(doc)
+            for request_key, doc in connection.execute(
+                "SELECT request_key, doc FROM idempotency_keys ORDER BY seq"
+            )
+        }
+        if receipts:
+            data["idempotency"] = receipts
+        return data
+
+    @staticmethod
+    def _sync_table(
+        connection: sqlite3.Connection,
+        table: str,
+        key_column: str,
+        columns: tuple[str, ...],
+        rows: dict,
+    ) -> None:
+        """Insert, update, or delete rows so the table matches `rows`.
+
+        Each value is the derived column values followed by the JSON document.
+        """
+        existing = dict(connection.execute(f"SELECT {key_column}, doc FROM {table}"))
+        names = ", ".join((key_column, *columns, "doc"))
+        marks = ", ".join("?" * (len(columns) + 2))
+        assignments = ", ".join(f"{name} = ?" for name in (*columns, "doc"))
+        for key, values in rows.items():
+            if key not in existing:
+                connection.execute(f"INSERT INTO {table} ({names}) VALUES ({marks})", (key, *values))
+            elif existing[key] != values[-1]:
+                connection.execute(
+                    f"UPDATE {table} SET {assignments} WHERE {key_column} = ?", (*values, key)
+                )
+        for key in existing.keys() - rows.keys():
+            connection.execute(f"DELETE FROM {table} WHERE {key_column} = ?", (key,))
+
+    def _write_all(self, connection: sqlite3.Connection, data: dict) -> None:
+        connection.execute("DELETE FROM meta_extra")
+        connection.executemany(
+            "INSERT INTO meta_extra (key, value) VALUES (?, ?)",
+            [(key, _json_text(value)) for key, value in data.items() if key not in _TOP_LEVEL_TABLE_KEYS],
+        )
+        self._sync_table(
+            connection, "accounts", "account_id", ("name",),
+            {
+                account_id: (_text_or_none(account.get("name")), _json_text(account))
+                for account_id, account in data.get("accounts", {}).items()
+            },
+        )
+        drafts = data.get("drafts", {})
+        self._sync_table(
+            connection, "drafts", "draft_id",
+            ("account_id", "slug", "title", "latest_version", "created_at", "updated_at",
+             "deleted_at", "disabled_at", "favorited_at"),
+            {
+                draft_id: (
+                    _text_or_none(draft.get("accountId", "local")),
+                    _text_or_none(draft.get("slug")),
+                    _text_or_none(draft.get("title")),
+                    _int_or_none(draft.get("latestVersionNumber")),
+                    _text_or_none(draft.get("createdAt")),
+                    _text_or_none(draft.get("updatedAt")),
+                    _text_or_none(draft.get("deletedAt")),
+                    _text_or_none(draft.get("disabledAt")),
+                    _text_or_none(draft.get("favoritedAt")),
+                    _json_text({k: v for k, v in draft.items() if k != "versions"}),
+                )
+                for draft_id, draft in drafts.items()
+            },
+        )
+        version_rows = {
+            (draft_id, int(number)): (
+                _text_or_none(version.get("versionId")),
+                _text_or_none(version.get("createdAt")),
+                _text_or_none(version.get("fileSha256")),
+                _json_text(version),
+            )
+            for draft_id, draft in drafts.items()
+            for number, version in (draft.get("versions") or {}).items()
+        }
+        existing = {
+            (draft_id, number): doc
+            for draft_id, number, doc in connection.execute(
+                "SELECT draft_id, version_number, doc FROM draft_versions"
+            )
+        }
+        for (draft_id, number), values in version_rows.items():
+            if (draft_id, number) not in existing:
+                connection.execute(
+                    "INSERT INTO draft_versions (draft_id, version_number, version_id, created_at,"
+                    " file_sha256, doc) VALUES (?, ?, ?, ?, ?, ?)",
+                    (draft_id, number, *values),
+                )
+            elif existing[(draft_id, number)] != values[-1]:
+                connection.execute(
+                    "UPDATE draft_versions SET version_id = ?, created_at = ?, file_sha256 = ?,"
+                    " doc = ? WHERE draft_id = ? AND version_number = ?",
+                    (*values, draft_id, number),
+                )
+        for draft_id, number in existing.keys() - version_rows.keys():
+            connection.execute(
+                "DELETE FROM draft_versions WHERE draft_id = ? AND version_number = ?",
+                (draft_id, number),
+            )
+        self._sync_table(
+            connection, "api_keys", "key_id",
+            ("account_id", "name", "key_hash", "created_at", "last_used_at", "revoked_at"),
+            {
+                key_id: (
+                    _text_or_none(key.get("accountId")),
+                    _text_or_none(key.get("name")),
+                    _text_or_none(key.get("keyHash")),
+                    _text_or_none(key.get("createdAt")),
+                    _text_or_none(key.get("lastUsedAt")),
+                    _text_or_none(key.get("revokedAt")),
+                    _json_text(key),
+                )
+                for key_id, key in data.get("apiKeys", {}).items()
+            },
+        )
+        self._sync_table(
+            connection, "idempotency_keys", "request_key", ("fingerprint",),
+            {
+                request_key: (
+                    _text_or_none(receipt.get("fingerprint")) if isinstance(receipt, dict) else None,
+                    _json_text(receipt),
+                )
+                for request_key, receipt in data.get("idempotency", {}).items()
+            },
+        )
+
+    def _replace_all_unchecked(self, data: dict) -> None:
+        """Write metadata without schema checks. Tests use this to plant corrupt records."""
+        with STORE_LOCK, self._connection() as connection:
+            with self._write_transaction(connection):
+                self._write_all(connection, data)
 
     def _verify_rebase_object(self, path: Path, draft: dict) -> None:
         fd = None
@@ -2786,23 +3194,23 @@ class Store:
 
     def load_meta(self) -> dict:
         with STORE_LOCK:
-            if not self.meta.exists():
-                return {"drafts": {}}
             try:
-                data = json.loads(self.meta.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                with self._connection() as connection:
+                    connection.execute("BEGIN")
+                    try:
+                        data = self._read_all(connection)
+                    finally:
+                        connection.execute("ROLLBACK")
+            except (ValueError, KeyError) as exc:
                 raise StorageError("Metadata is unreadable or malformed.") from exc
             return _validate_metadata_schema(data, self.root)
 
     def save_meta(self, data: dict) -> None:
         with STORE_LOCK:
             _validate_metadata_schema(data, self.root)
-            if self.meta.exists():
-                previous = self.load_meta()
-                _atomic_write_text(
-                    self.backup, json.dumps(previous, indent=2) + "\n"
-                )
-            _atomic_write_text(self.meta, json.dumps(data, indent=2) + "\n")
+            with self._connection() as connection:
+                with self._write_transaction(connection):
+                    self._write_all(connection, data)
 
     def _read_page_object(self, path: Path, expected_sha256: str) -> str:
         try:
@@ -3444,18 +3852,28 @@ class Store:
             self.save_meta(data)
 
     def check_ready(self) -> None:
+        """Check that metadata and storage work, without reading draft contents.
+
+        The check runs a SQLite integrity probe, validates the records, confirms that
+        each current draft object exists, and writes a probe file. It never hashes
+        draft files, so the cost stays low with thousands of drafts.
+        """
         with STORE_LOCK:
+            with self._connection() as connection:
+                if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+                    raise StorageError("Metadata database failed its integrity check.")
+                if connection.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+                    raise StorageError("Metadata database has an unexpected schema version.")
+                with self._write_transaction(connection):
+                    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             data = self.load_meta()
             for draft in data.get("drafts", {}).values():
-                self._read_current_object(draft)
-                latest = draft["latestVersionNumber"]
-                record = draft.get("versions", {}).get(str(latest))
-                if record and record.get("pages"):
-                    for page in record["pages"]:
-                        if page["path"] == "index.html":
-                            continue
-                        path = self.drafts / draft["draftId"] / f"v{latest}" / page["path"]
-                        self._read_page_object(path, page["fileSha256"])
+                try:
+                    current = os.lstat(draft["currentObject"])
+                except OSError as exc:
+                    raise StorageError("Recorded draft object is unavailable.") from exc
+                if not stat.S_ISREG(current.st_mode):
+                    raise StorageError("Recorded draft object path is invalid.")
             probe = self.root / f".ready-{secrets.token_hex(8)}"
             try:
                 _atomic_write_text(probe, "ready\n")
@@ -3524,6 +3942,33 @@ def parse_allowed_logins(value: str | None) -> frozenset[str]:
     return frozenset(item.strip().casefold() for item in (value or "").split(",") if item.strip())
 
 
+SESSION_SECRET_LABEL = b"tailplan-session-v1"
+
+
+def derive_session_secret(upload_token: str) -> str:
+    """Return a cookie signing key bound to, but not equal to, the upload token."""
+    return hmac.new(upload_token.encode(), SESSION_SECRET_LABEL, hashlib.sha256).hexdigest()
+
+
+def load_session_secret(path: str | None, value: str | None, upload_token: str) -> str | None:
+    """Read the dedicated cookie signing secret, or None to derive it from the upload token."""
+    if path:
+        try:
+            secret = Path(path).expanduser().read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError) as exc:
+            raise SystemExit(f"cannot read session secret file: {exc}") from exc
+        origin = "session secret file"
+    elif value is not None and value.strip():
+        secret, origin = value.strip(), "TAILPLAN_SESSION_SECRET"
+    else:
+        return None
+    if not secret:
+        raise SystemExit("empty session secret file")
+    if hmac.compare_digest(secret.encode(), upload_token.encode()):
+        raise SystemExit(f"{origin} must differ from the upload token")
+    return secret
+
+
 def signed_value(payload: dict, secret: str) -> str:
     encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
     return encoded + "." + hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).hexdigest()
@@ -3567,6 +4012,7 @@ class TailplanHTTPServer(ThreadingHTTPServer):
         self.limiter = RateLimiter()
         self.viewer_limiter = MissLimiter()
         self.viewer_404_limit = DEFAULT_VIEWER_404_LIMIT
+        self.session_secret: str | None = None
         self.trust_tailscale_identity = False
         self.owner_login = ""
         self.allowed_logins: frozenset[str] = frozenset()
@@ -3608,6 +4054,12 @@ class Handler(BaseHTTPRequestHandler):
     @property
     def token(self) -> str:
         return self.server.token  # type: ignore[attr-defined]
+
+    @property
+    def session_secret(self) -> str:
+        """Key for browser cookies: the dedicated secret, else one derived from the upload token."""
+        configured = getattr(self.server, "session_secret", None)
+        return configured or derive_session_secret(self.token)
 
     @property
     def base_url(self) -> str:
@@ -4316,7 +4768,7 @@ class Handler(BaseHTTPRequestHandler):
         return cookies[name].OutputString()
 
     def session(self) -> dict | None:
-        value = read_signed(self.cookie_value("tailplan_session"), self.token)
+        value = read_signed(self.cookie_value("tailplan_session"), self.session_secret)
         if not value or not all(isinstance(value.get(field), str)
                                 for field in ("accountId", "apiKeyId", "csrf")):
             return None
@@ -4363,7 +4815,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def sign_in_page(self, next_path: str = "/dashboard") -> None:
         state = {"csrf": secrets.token_hex(24), "expires": int(time.time()) + 600}
-        cookie = self.cookie_header("tailplan_login", signed_value(state, self.token), 600)
+        cookie = self.cookie_header("tailplan_login", signed_value(state, self.session_secret), 600)
         identity = self.tailscale_login()
         offer_tailscale = bool(identity and self.login_allowed(identity[0]))
         body = render_login(self.base_url, state["csrf"], next_path, offer_tailscale)
@@ -4459,7 +4911,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self.rate_allowed("login:" + self.source_ip(), 20):
                 return
             payload = self.read_control_body()
-            state = read_signed(self.cookie_value("tailplan_login"), self.token)
+            state = read_signed(self.cookie_value("tailplan_login"), self.session_secret)
             if not self.valid_form(payload, state):
                 self.send_json(403, {"ok": False, "error": "Sign-in expired. Reload and retry."})
                 return
@@ -4479,7 +4931,7 @@ class Handler(BaseHTTPRequestHandler):
             next_path = payload.get("next")
             if next_path != "/cli/auth" and not re.fullmatch(r"/dashboard(?:/drafts/[a-z0-9]{6,32})?", str(next_path)):
                 next_path = "/dashboard"
-            self.redirect(next_path, self.cookie_header("tailplan_session", signed_value(session, self.token), 30 * 86400))
+            self.redirect(next_path, self.cookie_header("tailplan_session", signed_value(session, self.session_secret), 30 * 86400))
             return
         session = self.session()
         if session is None:
@@ -4721,6 +5173,7 @@ def create_servers(
     token: str,
     base_url: str,
     redirect_view_base_url: str,
+    session_secret: str | None = None,
 ) -> tuple[TailplanHTTPServer, TailplanHTTPServer | None]:
     proxy = None
     if proxy_address is not None:
@@ -4746,11 +5199,13 @@ def create_servers(
         configured_base_url = f"http://{host}:{port}"
     primary.store = store
     primary.token = token
+    primary.session_secret = session_secret
     primary.base_url = configured_base_url
     primary.redirect_view_base_url = redirect_view_base_url
     if proxy is not None:
         proxy.store = store
         proxy.token = token
+        proxy.session_secret = session_secret
         proxy.base_url = configured_base_url
         proxy.redirect_view_base_url = ""
         proxy.limiter = primary.limiter
@@ -4828,6 +5283,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--proxy-port", type=_tcp_port, default=os.getenv("TAILPLAN_PROXY_PORT"))
     ap.add_argument("--data-dir", default=os.getenv("TAILPLAN_DATA_DIR", str(Path.home() / ".tailplan")))
     ap.add_argument("--token-file", default=os.getenv("TAILPLAN_TOKEN_FILE", str(Path.home() / ".tailplan" / "token")))
+    ap.add_argument("--session-secret-file", default=os.getenv("TAILPLAN_SESSION_SECRET_FILE") or None,
+                    help="file with the secret that signs browser cookies; "
+                         "default derives a key from the upload token")
     ap.add_argument("--base-url", default=os.getenv("TAILPLAN_BASE_URL", ""))
     ap.add_argument("--trust-tailscale-identity", action="store_true",
                     default=os.getenv("TAILPLAN_TRUST_TAILSCALE_IDENTITY") == "1")
@@ -4873,6 +5331,11 @@ def main() -> int:
     token = token_path.read_text().strip()
     if not token:
         raise SystemExit("empty token file")
+    session_secret = load_session_secret(
+        getattr(args, "session_secret_file", None),
+        os.getenv("TAILPLAN_SESSION_SECRET"),
+        token,
+    )
     store = Store(Path(args.data_dir).expanduser())
     proxy_address = (
         (args.proxy_host, args.proxy_port) if args.proxy_host is not None else None
@@ -4885,6 +5348,7 @@ def main() -> int:
             token=token,
             base_url=args.base_url,
             redirect_view_base_url=args.redirect_view_base_url,
+            session_secret=session_secret,
         )
     except ListenerStartupError as exc:
         raise SystemExit(str(exc)) from exc
