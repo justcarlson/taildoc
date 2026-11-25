@@ -3200,15 +3200,30 @@ class Store:
             cls._search_row(draft, body),
         )
 
-    def _read_search_body(self, draft: dict) -> str:
-        """Read the current page text for the index. An unreadable file gives an empty body."""
+    def _read_search_file(self, path: Path) -> str:
+        """Read one stored page that lies inside the drafts folder. A bad file gives an empty text."""
         try:
-            path = Path(str(draft.get("currentObject") or ""))
-            if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_HTML_BYTES:
+            if path.is_symlink():
                 return ""
-            return extract_searchable_text(path.read_bytes().decode("utf-8"))
-        except (OSError, UnicodeError, ValueError):
+            resolved = path.resolve(strict=True)
+            if (not resolved.is_relative_to(self.drafts.resolve(strict=True)) or not resolved.is_file()
+                    or resolved.stat().st_size > MAX_HTML_BYTES):
+                return ""
+            return resolved.read_bytes().decode("utf-8")
+        except (OSError, UnicodeError, ValueError, RuntimeError):
             return ""
+
+    def _read_search_body(self, draft: dict, page_paths: list[str] | None = None) -> str:
+        """Read the text of every page of the latest version for the index.
+
+        The index page comes first. The text has the same cap as at upload.
+        """
+        texts = [self._read_search_file(Path(str(draft.get("currentObject") or "")))]
+        latest = draft.get("latestVersionNumber")
+        for page_path in sorted(page_paths or []):
+            if page_path != "index.html" and latest:
+                texts.append(self._read_search_file(self.drafts / draft["draftId"] / f"v{latest}" / page_path))
+        return extract_searchable_text(" ".join(text for text in texts if text))
 
     def _backfill_search_locked(self, connection: sqlite3.Connection) -> None:
         """Index live drafts that have no search row. Drop rows for drafts that are gone."""
@@ -3227,8 +3242,17 @@ class Store:
                 for draft_id in stale:
                     connection.execute("DELETE FROM draft_search WHERE draft_id = ?", (draft_id,))
         for start in range(0, len(missing), self.SEARCH_BACKFILL_BATCH):
-            batch = [(live[draft_id], self._read_search_body(live[draft_id]))
-                     for draft_id in missing[start:start + self.SEARCH_BACKFILL_BATCH]]
+            batch = []
+            for draft_id in missing[start:start + self.SEARCH_BACKFILL_BATCH]:
+                draft = live[draft_id]
+                row = connection.execute(
+                    "SELECT doc FROM draft_versions WHERE draft_id = ? AND version_number = ?",
+                    (draft_id, draft.get("latestVersionNumber")),
+                ).fetchone()
+                pages = json.loads(row[0]).get("pages") if row else None
+                paths = [page["path"] for page in pages if isinstance(page, dict) and isinstance(
+                    page.get("path"), str)] if isinstance(pages, list) else []
+                batch.append((draft, self._read_search_body(draft, paths)))
             with self._write_transaction(connection):
                 for draft, body in batch:
                     self._index_draft(connection, draft, body)
@@ -3424,7 +3448,7 @@ class Store:
         )
         wanted_tags = {
             (draft_id, tag)
-            for draft_id, draft in drafts.items()
+            for draft_id, draft in drafts.items() if not draft.get("deletedAt")
             for tag in draft.get("tags") or []
         }
         stored_tags = {(row[0], row[1]) for row in connection.execute("SELECT draft_id, tag FROM draft_tags")}
@@ -4146,6 +4170,29 @@ class Store:
             "shareUrl": public_url + "/share", "versionBaseUrl": f"{base_url.rstrip('/')}/d/{draft_id}",
         }
 
+    @staticmethod
+    def _row_version_count(draft: dict, count: int) -> int | None:
+        """Trust the history rows only when they cover the latest version.
+
+        A legacy draft with no rows, or only some rows, reads its files instead.
+        """
+        return count if count and count >= (draft.get("latestVersionNumber") or 0) else None
+
+    def foreign_live_drafts(self, account_id: str) -> list[tuple[dict, int | None]]:
+        """Return live drafts of other accounts with their version counts, from SQLite only."""
+        sql = (
+            "SELECT d.doc, (SELECT COUNT(*) FROM draft_versions v WHERE v.draft_id = d.draft_id)"
+            " FROM drafts d WHERE COALESCE(d.account_id, 'local') <> ? AND d.deleted_at IS NULL"
+            " AND d.disabled_at IS NULL ORDER BY d.rowid"
+        )
+        with STORE_LOCK, self._connection() as connection:
+            try:
+                return [(draft, self._row_version_count(draft, count))
+                        for draft, count in ((json.loads(doc), count)
+                                             for doc, count in connection.execute(sql, (account_id,)).fetchall())]
+            except (ValueError, KeyError) as exc:
+                raise StorageError("Metadata is unreadable or malformed.") from exc
+
     def list_drafts(self, account_id: str, base_url: str, *, include_archived: bool = False) -> list[dict]:
         """List owned live drafts from SQLite, favorites first, then newest first."""
         sql = (
@@ -4160,8 +4207,7 @@ class Store:
                 result = []
                 for doc, count in rows:
                     draft = json.loads(doc)
-                    # Only a legacy draft with no history rows reads its files.
-                    result.append(self.public_draft(draft, base_url, version_count=count or None))
+                    result.append(self.public_draft(draft, base_url, version_count=self._row_version_count(draft, count)))
             except (ValueError, KeyError) as exc:
                 raise StorageError("Metadata is unreadable or malformed.") from exc
             return result
@@ -4174,15 +4220,17 @@ class Store:
                               key=lambda version: version["versionNumber"], reverse=True)
             return {"ok": True, "draft": public, "versions": versions}
 
-    def _edit_drafts(self, account_id: str, refs: list[str], apply) -> list[dict]:
+    def _edit_drafts(self, account_id: str, refs: list[str], apply, *, counts: bool = False
+                     ) -> list[tuple[dict, int | None]]:
         """Change owned live drafts in one transaction, one row each.
 
         `apply(doc, stamp)` edits the draft record in place. A missing or foreign
         draft rolls back every change. The change never touches `updatedAt`.
+        It returns each new record with its version count, or None unless `counts` is set.
         """
-        def operation(connection: sqlite3.Connection) -> list[dict]:
+        def operation(connection: sqlite3.Connection) -> list[tuple[dict, int | None]]:
             stamp = now_iso()
-            changed: dict[str, dict] = {}
+            changed: dict[str, tuple[dict, int | None]] = {}
             for ref in refs:
                 if not isinstance(ref, str):
                     raise ValueError("Each draft ID must be text.")
@@ -4204,7 +4252,11 @@ class Store:
                      _text_or_none(doc.get("archivedAt")), draft_id),
                 )
                 self._sync_draft_tags(connection, draft_id, doc.get("tags") or [])
-                changed[draft_id] = doc
+                count = None
+                if counts:
+                    count = self._row_version_count(doc, connection.execute(
+                        "SELECT COUNT(*) FROM draft_versions WHERE draft_id = ?", (draft_id,)).fetchone()[0])
+                changed[draft_id] = (doc, count)
             return list(changed.values())
 
         return self._write(operation)
@@ -4228,14 +4280,14 @@ class Store:
         def apply(doc: dict, stamp: str) -> None:
             doc["favoritedAt"] = (doc.get("favoritedAt") or stamp) if favorite else None
 
-        return self._edit_drafts(account_id, [ref], apply)[0]["draftId"]
+        return self._edit_drafts(account_id, [ref], apply)[0][0]["draftId"]
 
     def set_archived(self, account_id: str, ref: str, archived: bool) -> str:
         """Archive or restore an owned draft. It keeps updatedAt and favoritedAt."""
         def apply(doc: dict, stamp: str) -> None:
             doc["archivedAt"] = (doc.get("archivedAt") or stamp) if archived else None
 
-        return self._edit_drafts(account_id, [ref], apply)[0]["draftId"]
+        return self._edit_drafts(account_id, [ref], apply)[0][0]["draftId"]
 
     def set_tags(self, account_id: str, ref: str, tags: list[str]) -> tuple[str, list[str]]:
         """Replace the tags of an owned draft. Raise ValueError for a bad tag."""
@@ -4244,7 +4296,31 @@ class Store:
         def apply(doc: dict, stamp: str) -> None:
             doc["tags"] = wanted
 
-        return self._edit_drafts(account_id, [ref], apply)[0]["draftId"], wanted
+        return self._edit_drafts(account_id, [ref], apply)[0][0]["draftId"], wanted
+
+    def patch_draft(self, account_id: str, ref: str, base_url: str, *, tags: list[str] | None = None,
+                    add_tags: list[str] | None = None, remove_tags: list[str] | None = None,
+                    archived: bool | None = None, favorite: bool | None = None) -> dict:
+        """Change tags, archive, and star of one owned draft in one transaction.
+
+        `tags` replaces the list. `add_tags` and `remove_tags` then edit it.
+        It returns the new public draft. A bad tag changes nothing.
+        """
+        replace = None if tags is None else normalize_tags(tags)
+        added = normalize_tags(add_tags)
+        removed = set(normalize_tags(remove_tags))
+
+        def apply(doc: dict, stamp: str) -> None:
+            if replace is not None or added or removed:
+                current = list(doc.get("tags") or []) if replace is None else list(replace)
+                doc["tags"] = normalize_tags([tag for tag in current + added if tag not in removed])
+            if favorite is not None:
+                doc["favoritedAt"] = (doc.get("favoritedAt") or stamp) if favorite else None
+            if archived is not None:
+                doc["archivedAt"] = (doc.get("archivedAt") or stamp) if archived else None
+
+        doc, count = self._edit_drafts(account_id, [ref], apply, counts=True)[0]
+        return self.public_draft(doc, base_url, version_count=count)
 
     BULK_ACTIONS = ("favorite", "unfavorite", "archive", "unarchive", "add_tag", "remove_tag")
 
@@ -4284,7 +4360,7 @@ class Store:
         return [
             {"draftId": doc["draftId"], "favorite": bool(doc.get("favoritedAt")),
              "archived": bool(doc.get("archivedAt")), "tags": list(doc.get("tags") or [])}
-            for doc in self._edit_drafts(account_id, draft_ids, apply)
+            for doc, _count in self._edit_drafts(account_id, draft_ids, apply)
         ]
 
     def granted_draft_ids(self, account_id: str) -> set[str]:
@@ -4305,35 +4381,53 @@ class Store:
         """Escape a snippet, then turn the match markers into `<mark>` tags."""
         return html.escape(raw).replace("\x01", "<mark>").replace("\x02", "</mark>")
 
-    def search_fts(self, account_id: str, fts_query: str, *,
-                   draft_ids: set[str] | None = None) -> dict[str, tuple[float, str]]:
+    SEARCH_ID_CHUNK = 500
+
+    def search_fts(self, account_id: str, fts_query: str, *, draft_ids: set[str] | None = None,
+                   exclude_tags: bool = False) -> dict[str, tuple[float, str]]:
         """Run a safe FTS5 query. Return `{draft_id: (rank, snippet_html)}`, best rank first.
 
         Without `draft_ids`, it searches the live drafts of `account_id`.
-        With `draft_ids`, the caller has already checked read access to them.
+        With `draft_ids`, the caller has already checked read access to them,
+        and the SQL reads only those rows. `exclude_tags` is for a reader who is not
+        the owner: tags never match and never show in a snippet.
         """
-        if not fts_query:
+        if not fts_query or (draft_ids is not None and not draft_ids):
             return {}
-        # The first weight is for the unindexed draft ID column.
-        sql = (
-            "SELECT draft_search.draft_id, bm25(draft_search, 0.0, 10.0, 8.0, 4.0, 6.0, 1.0),"
-            " snippet(draft_search, -1, char(1), char(2), '...', 16)"
+        match = "{title slug description body} : (" + fts_query + ")" if exclude_tags else fts_query
+        mark = "char(1), char(2), '...', 16"
+        if exclude_tags:
+            snippets = ", ".join(f"snippet(draft_search, {column}, {mark})" for column in (5, 3, 1, 2))
+        else:
+            snippets = f"snippet(draft_search, -1, {mark})"
+        base = (
+            f"SELECT draft_search.draft_id, bm25(draft_search, 0.0, 10.0, 8.0, 4.0, 6.0, 1.0), {snippets}"
             " FROM draft_search JOIN drafts AS d ON d.draft_id = draft_search.draft_id"
             " WHERE draft_search MATCH ? AND d.deleted_at IS NULL"
-            + ("" if draft_ids is not None else " AND COALESCE(d.account_id, 'local') = ?")
-            + " ORDER BY 2"
         )
-        params = (fts_query,) if draft_ids is not None else (fts_query, account_id)
+        if draft_ids is None:
+            queries = [(base + " AND COALESCE(d.account_id, 'local') = ?", (match, account_id))]
+        else:
+            ids = sorted(draft_ids)
+            queries = [
+                (base + f" AND d.draft_id IN ({','.join('?' * len(chunk))})", (match, *chunk))
+                for chunk in (ids[start:start + self.SEARCH_ID_CHUNK]
+                              for start in range(0, len(ids), self.SEARCH_ID_CHUNK))
+            ]
+        rows: list[tuple] = []
         with STORE_LOCK, self._connection() as connection:
             try:
-                rows = connection.execute(sql, params).fetchall()
+                for sql, params in queries:
+                    rows.extend(connection.execute(sql, params).fetchall())
             except sqlite3.OperationalError:
                 return {}
-        return {
-            draft_id: (rank, self.safe_snippet(snippet or ""))
-            for draft_id, rank, snippet in rows
-            if draft_ids is None or draft_id in draft_ids
-        }
+        rows.sort(key=lambda row: row[1])
+        found: dict[str, tuple[float, str]] = {}
+        for draft_id, rank, *texts in rows:
+            # A snippet from the first column that holds a marked match.
+            snippet = next((text for text in texts if text and "\x01" in text), texts[0] or "")
+            found[draft_id] = (rank, self.safe_snippet(snippet))
+        return found
 
     def change_draft(self, account_id: str, ref: str, action: str, reason: str | None) -> None:
         with STORE_LOCK:
@@ -4342,6 +4436,7 @@ class Store:
             stamp = now_iso()
             if action == "delete":
                 draft["deletedAt"] = stamp
+                draft.pop("tags", None)
                 if draft.get("slug"):
                     old_slug = draft["slug"]
                     draft["slug"] = None
@@ -4356,12 +4451,11 @@ class Store:
             else:
                 raise ValueError("Unknown draft action.")
             draft["updatedAt"] = stamp
-            drop_search = (
-                (lambda connection: connection.execute(
-                    "DELETE FROM draft_search WHERE draft_id = ?", (draft["draftId"],)))
-                if action == "delete" else None
-            )
-            self.save_meta(data, also=drop_search)
+            def drop_rows(connection: sqlite3.Connection) -> None:
+                connection.execute("DELETE FROM draft_search WHERE draft_id = ?", (draft["draftId"],))
+                connection.execute("DELETE FROM draft_tags WHERE draft_id = ?", (draft["draftId"],))
+
+            self.save_meta(data, also=drop_rows if action == "delete" else None)
 
     def account(self, account_id: str) -> dict | None:
         if account_id == "local":
@@ -5758,7 +5852,7 @@ class TailplanHTTPServer(ThreadingHTTPServer):
 
 DASHBOARD_VIEWS = ("active", "favorites", "living", "shared", "archived", "all")
 DASHBOARD_SORTS = ("updated", "living", "favorited", "created", "title", "relevance")
-DASHBOARD_GROUPS = ("time", "repo", "none")
+DASHBOARD_GROUPS = ("time", "tag", "repo", "none")
 DASHBOARD_THEMES = ("light", "dark", "system")
 MAX_QUERY_CHARS = 500
 MAX_FTS_TERMS = 12
@@ -5794,7 +5888,7 @@ def _query_operator(parsed: dict, key: str, value: str) -> bool:
         except ValueError:
             return False
         parsed[key] = value
-    elif key == "age" and (match := _QUERY_AGE_RE.fullmatch(value)):
+    elif key == "age" and (match := _QUERY_AGE_RE.fullmatch(value.lower())):
         parsed["ages"].append((match[1], int(match[2])))
     else:
         return False
@@ -5810,6 +5904,7 @@ def parse_dashboard_query(q: str) -> dict:
     parsed: dict = {
         "is": set(), "versions": [], "tags": [], "repos": [], "vis": [], "ws": [],
         "after": None, "before": None, "ages": [], "text": [], "fts": "",
+        "repoFacets": [], "blank": False,
     }
     terms: list[str] = []
     for match in _QUERY_TOKEN_RE.finditer(q[:MAX_QUERY_CHARS] if isinstance(q, str) else ""):
@@ -5819,7 +5914,10 @@ def parse_dashboard_query(q: str) -> dict:
             continue
         phrase = key is None and quoted is not None
         words = re.findall(r"[^\W_]+", value if key is None else match[0])
-        if not words or len(terms) >= MAX_FTS_TERMS:
+        if not words:
+            parsed["blank"] = True  # The token held no letters or digits, so it can match nothing.
+            continue
+        if len(terms) >= MAX_FTS_TERMS:
             continue
         parsed["text"].append(" ".join(words))
         terms.append('"' + " ".join(words) + ('"' if phrase else '"*'))
@@ -5829,12 +5927,13 @@ def parse_dashboard_query(q: str) -> dict:
 
 def _draft_stem(draft: dict) -> str | None:
     base = re.sub(r"[^a-z0-9]+", "-", (draft.get("slug") or draft.get("title") or "").lower()).strip("-")
-    stem = _STEM_SUFFIX_RE.sub("", base).strip("-")
-    return stem if len(stem) >= 3 and TAG_RE.fullmatch(stem) else None
+    stem = _STEM_SUFFIX_RE.sub("", base).strip("-")[:32].rstrip("._-")
+    # "Tailplan Draft" is the title of an untitled draft, so it names no stream.
+    return stem if len(stem) >= 3 and stem != "tailplan" and TAG_RE.fullmatch(stem) else None
 
 
 def infer_suggested_tags(drafts: list[dict]) -> dict[str, str]:
-    """Suggest one tag per draft from a name stem that two or more drafts share.
+    """Suggest one tag per untagged draft from a name stem that two or more drafts share.
 
     A stem is the slug or title without version, date, and draft suffixes.
     The result maps draft IDs to tags. The server never applies a suggestion.
@@ -5847,15 +5946,16 @@ def infer_suggested_tags(drafts: list[dict]) -> dict[str, str]:
     return {
         draft["draftId"]: stem
         for stem, members in groups.items() if len(members) >= 2
-        for draft in members if stem not in (draft.get("tags") or [])
+        for draft in members if not draft.get("tags")
     }
 
 
 def _parse_stamp(value: object) -> datetime | None:
     try:
-        return datetime.fromisoformat(value) if isinstance(value, str) and value else None
+        stamp = datetime.fromisoformat(value) if isinstance(value, str) and value else None
     except ValueError:
         return None
+    return stamp.replace(tzinfo=UTC) if stamp is not None and stamp.tzinfo is None else stamp
 
 
 def _repo_label(draft: dict) -> str | None:
@@ -5885,8 +5985,13 @@ def _matches_query(draft: dict, parsed: dict, *, granted: set[str], shared_view:
         return False
     label = (_repo_label(draft) or "").lower()
     for wanted in parsed["repos"]:
-        if bool(label) if wanted == "none" else wanted not in f"{draft.get('repoHost') or ''}/{label}".lower():
+        if wanted == "none":
+            if label:
+                return False
+        elif not label or wanted not in f"{draft.get('repoHost') or ''}/{label}".lower():
             return False
+    if any(label != facet for facet in parsed["repoFacets"]):
+        return False
     if parsed["vis"] and draft["visibility"] not in parsed["vis"]:
         return False
     if parsed["ws"] and str(draft["workspace"]).lower() not in parsed["ws"]:
@@ -5923,12 +6028,20 @@ def query_dashboard(
 ) -> dict:
     """Return the dashboard state: the drafts for one view, search, and sort, plus facets."""
     view = view if view in DASHBOARD_VIEWS else "active"
+    group = "none" if group == "flat" else group
     group = group if group in DASHBOARD_GROUPS else "time"
     parsed = parse_dashboard_query(q)
-    if tag.strip() and TAG_RE.fullmatch(tag.strip().lower()):
+    # A tag facet that is not a valid tag, or text with no words, can match nothing.
+    invalid_tag = bool(tag.strip()) and not TAG_RE.fullmatch(tag.strip().lower())
+    if tag.strip() and not invalid_tag:
         parsed["tags"].append(tag.strip().lower())
     if repo.strip():
-        parsed["repos"].append(repo.strip().lower()[:100])
+        parsed["repoFacets"].append(repo.strip().lower()[:100])
+    no_match = invalid_tag or (
+        parsed["blank"] and not parsed["fts"] and not any(
+            parsed[key] for key in ("is", "versions", "tags", "repos", "vis", "ws", "after", "before", "ages")
+        )
+    )
     own = store.list_drafts(account_id, base_url, include_archived=True)
     for draft in own:
         draft["workspace"] = draft_workspace(draft, auth)
@@ -5961,7 +6074,7 @@ def query_dashboard(
     pool = shared if shared_view else [draft for draft in own if in_view(draft)]
     granted = store.granted_draft_ids(account_id) if "shared" in parsed["is"] and not shared_view else set()
     now = datetime.now(UTC)
-    matched = [
+    matched = [] if no_match else [
         draft for draft in pool
         if _matches_query(draft, parsed, granted=granted, shared_view=shared_view, now=now)
     ]
@@ -5970,6 +6083,7 @@ def query_dashboard(
         hits = store.search_fts(
             account_id, parsed["fts"],
             draft_ids={draft["draftId"] for draft in pool} if shared_view else None,
+            exclude_tags=shared_view,
         )
         matched = [{**draft, "rank": hits[draft["draftId"]][0], "snippet": hits[draft["draftId"]][1]}
                    for draft in matched if draft["draftId"] in hits]
@@ -7426,8 +7540,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(403, {"ok": False, "error": str(exc) or "Forbidden"})
         except PolicyLimit as exc:
             self.send_json(422, {"ok": False, "error": str(exc)})
-        except (ValueError, TypeError, UnicodeError):
+        except (json.JSONDecodeError, UnicodeError, TypeError):
             self.send_json(400, {"ok": False, "error": "Request fields or body are invalid."})
+        except ValueError as exc:
+            self.send_json(400, {"ok": False, "error": str(exc) or "Request fields or body are invalid."})
         except KeyError as exc:
             self.send_json(404, {"ok": False, "error": str(exc).strip("'")})
         except (StorageError, OSError) as exc:
@@ -7470,15 +7586,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(404, {"ok": False, "error": "Not found."})
         elif method == "GET" and path == "/api/drafts":
             query = {key: values[-1] for key, values in parse_qs(urlparse(self.path).query).items()}
-            if not query.keys() & {"view", "q", "sort", "dir", "tag", "archived"}:
+            if not query.keys() & {"view", "q", "sort", "dir", "tag", "archived", "group", "repo"}:
                 self.send_json(200, {"ok": True, "drafts": self.store.list_drafts(account_id, self.base_url)})
                 return
             view = query.get("view") or ("all" if query.get("archived", "").lower() in {"1", "true", "yes"}
                                          else "active")
             result = query_dashboard(
                 self.store, self.auth, account_id, self.base_url, view=view, q=query.get("q", ""),
-                sort=query.get("sort", ""), direction=query.get("dir", ""), tag=query.get("tag", ""),
-                shared_drafts=self.shared_drafts(identity))
+                sort=query.get("sort", ""), direction=query.get("dir", ""), group=query.get("group", "time"),
+                tag=query.get("tag", ""), repo=query.get("repo", ""), shared_drafts=self.shared_drafts(identity))
             result.pop("favorites")
             self.send_json(200, {"ok": True, **result})
         elif method == "GET" and path == "/api/api-keys":
@@ -7524,55 +7640,68 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_json(404, {"ok": False, "error": "Not found."})
 
-    def draft_edit(self, identity: dict, ref: str, payload: dict, *, actions: tuple[str, ...]) -> str:
-        """Apply favorite, archive, or tag changes to one owned draft. Return its ID.
+    @staticmethod
+    def _form_tag_edit(payload: dict) -> tuple[list | None, list | None, list | None]:
+        """Read the tags, add_tag, and remove_tag fields of a dashboard tag action."""
+        tags = add = remove = None
+        if "tags" in payload:
+            tags = payload["tags"]
+            if isinstance(tags, str):
+                tags = [part for part in re.split(r"[\s,]+", tags) if part]
+            if not isinstance(tags, list) or not all(isinstance(item, str) for item in tags):
+                raise ValueError("tags must be a list of text.")
+        for key in ("add_tag", "remove_tag"):
+            if payload.get(key) is not None and not isinstance(payload[key], str):
+                raise ValueError(f"{key} must be text.")
+        add = [payload["add_tag"]] if payload.get("add_tag") else None
+        remove = [payload["remove_tag"]] if payload.get("remove_tag") else None
+        if tags is None and add is None and remove is None:
+            raise ValueError("Send tags, add_tag, or remove_tag.")
+        return tags, add, remove
+
+    def _apply_draft_edit(self, identity: dict, ref: str, *, tags: list | None = None, add: list | None = None,
+                          remove: list | None = None, archived: bool | None = None,
+                          favorite: bool | None = None) -> dict:
+        """Run one atomic draft edit, then write its audit events. Return the public draft.
 
         The audit log keeps the action and tags. It never keeps draft content.
         """
-        account_id = identity["accountId"]
-        draft_id = self.store.draft_detail(account_id, ref, self.base_url)["draft"]["draftId"]
+        draft = self.store.patch_draft(identity["accountId"], ref, self.base_url, tags=tags, add_tags=add,
+                                       remove_tags=remove, archived=archived, favorite=favorite)
+        if archived is not None:
+            self.audit_event("draft." + ("archive" if archived else "unarchive"), identity, "draft",
+                             draft["draftId"])
+        if tags is not None or add or remove:
+            self.audit_event("draft.tag", identity, "draft", draft["draftId"], detail={"tags": draft["tags"]})
+        return draft
+
+    def draft_edit(self, identity: dict, ref: str, payload: dict, *, actions: tuple[str, ...]) -> dict:
+        """Apply a dashboard row action to one owned draft. Return the public draft."""
+        edit: dict = {}
         for action in actions:
             if action in {"favorite", "unfavorite"}:
-                self.store.set_favorite(account_id, draft_id, action == "favorite")
+                edit["favorite"] = action == "favorite"
             elif action in {"archive", "unarchive"}:
-                self.store.set_archived(account_id, draft_id, action == "archive")
-                self.audit_event("draft." + action, identity, "draft", draft_id)
+                edit["archived"] = action == "archive"
             elif action == "tags":
-                current = self.store.draft_detail(account_id, draft_id, self.base_url)["draft"]["tags"]
-                tags = payload.get("tags")
-                if isinstance(tags, str):
-                    tags = [part for part in re.split(r"[\s,]+", tags) if part]
-                if tags is None:
-                    tags = list(current)
-                    add, remove = payload.get("add_tag"), payload.get("remove_tag")
-                    if add:
-                        tags.append(str(add))
-                    if remove:
-                        tags = [tag for tag in tags if tag != str(remove).strip().lower()]
-                _id, saved = self.store.set_tags(account_id, draft_id, tags)
-                self.audit_event("draft.tag", identity, "draft", draft_id, detail={"tags": saved})
-        return draft_id
+                edit["tags"], edit["add"], edit["remove"] = self._form_tag_edit(payload)
+        return self._apply_draft_edit(identity, ref, **edit)
 
     def patch_draft(self, identity: dict, ref: str, payload: dict) -> dict:
-        """Handle PATCH /api/drafts/<ref> with tags, archived, and favorite."""
-        keys = payload.keys() & {"tags", "archived", "favorite"}
-        if not keys:
-            raise ValueError("Send tags, archived, or favorite.")
+        """Handle PATCH /api/drafts/<ref> with tags, addTags, removeTags, archived, and favorite."""
+        if not payload.keys() & {"tags", "addTags", "removeTags", "archived", "favorite"}:
+            raise ValueError("Send tags, addTags, removeTags, archived, or favorite.")
         for key in ("archived", "favorite"):
             if key in payload and type(payload[key]) is not bool:
                 raise ValueError(f"{key} must be true or false.")
-        if "tags" in payload:
-            normalize_tags(payload["tags"])
-        actions: list[str] = []
-        if "favorite" in payload:
-            actions.append("favorite" if payload["favorite"] else "unfavorite")
-        if "archived" in payload:
-            actions.append("archive" if payload["archived"] else "unarchive")
-        if "tags" in payload:
-            actions.append("tags")
-        draft_id = self.draft_edit(identity, ref, payload, actions=tuple(actions))
-        detail = self.store.draft_detail(identity["accountId"], draft_id, self.base_url)
-        return {"ok": True, "draft": detail["draft"]}
+        for key in ("tags", "addTags", "removeTags"):
+            value = payload.get(key)
+            if key in payload and not (isinstance(value, list) and all(isinstance(item, str) for item in value)):
+                raise ValueError(f"{key} must be a list of text.")
+        draft = self._apply_draft_edit(
+            identity, ref, tags=payload.get("tags"), add=payload.get("addTags"),
+            remove=payload.get("removeTags"), archived=payload.get("archived"), favorite=payload.get("favorite"))
+        return {"ok": True, "draft": draft}
 
     def device_api(self, path: str) -> None:
         """Start or poll a CLI device login. These calls need no credentials."""
@@ -7680,12 +7809,14 @@ class Handler(BaseHTTPRequestHandler):
         pairs += [("group", _normalize_principal_value(group)) for group in session.get("groups") or []]
         pairs += [("workspace", name) for name in session.get("workspaces") or {}]
         grants = self.store.grants_matching(pairs[:500])
-        shared = [
-            self.store.public_draft(draft, self.base_url) for draft in self.store.all_live_drafts()
-            if draft.get("accountId", "local") != session["accountId"] and not draft.get("disabledAt")
-            and shared_role(session, draft, grants.get(draft["draftId"], []), self.auth)
-        ]
-        shared.sort(key=lambda item: item["updatedAt"], reverse=True)
+        shared = []
+        for draft, count in self.store.foreign_live_drafts(session["accountId"]):
+            if shared_role(session, draft, grants.get(draft["draftId"], []), self.auth):
+                public = self.store.public_draft(draft, self.base_url, version_count=count)
+                # The owner's tags, archive state, and star are private to the owner.
+                public.update(tags=[], archived=False, archivedAt=None, favorite=False, favoritedAt=None)
+                shared.append(public)
+        shared.sort(key=lambda item: item["updatedAt"] or "", reverse=True)
         return self.annotate_drafts(shared)
 
     def management_web(self, method: str, path: str) -> None:
@@ -7756,14 +7887,17 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("draftIds must be a list.")
                 action, tag = payload.get("action"), payload.get("tag")
                 results = self.store.bulk_update(account_id, ids, action=action, tag=tag)
-                self.audit_event("draft.bulk", session, detail={
-                    "action": action, "count": len(results), **({"tag": tag} if tag else {})})
+                detail: dict = {"action": action, "count": len(results)}
+                if action in {"add_tag", "remove_tag"}:
+                    detail["tag"] = normalize_tags([tag])[0]  # Valid, or bulk_update raised.
+                self.audit_event("draft.bulk", session, detail=detail)
                 self.send_json(200, {"ok": True, "count": len(results), "drafts": results})
             elif path == "/dashboard/theme":
                 theme = payload.get("theme")
                 if theme not in DASHBOARD_THEMES:
                     raise ValueError("theme is invalid.")
-                cookie = f"tailplan_theme={theme}; Path=/; Max-Age=31536000; SameSite=Lax"
+                base_path = (urlparse(self.base_url).path.rstrip("/") or "") + "/"
+                cookie = f"tailplan_theme={theme}; Path={base_path}; Max-Age=31536000; SameSite=Lax"
                 if urlparse(self.base_url).scheme == "https":
                     cookie += "; Secure"
                 if self.wants_json():
@@ -7799,9 +7933,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect(f"/dashboard/drafts/{draft_match[1]}")
             elif draft_match and draft_match[2]:
                 if draft_match[2] in {"favorite", "unfavorite", "archive", "unarchive", "tags"}:
-                    draft_id = self.draft_edit(session, draft_match[1], payload, actions=(draft_match[2],))
+                    row = self.draft_edit(session, draft_match[1], payload, actions=(draft_match[2],))
+                    draft_id = row["draftId"]
                     if self.wants_json():
-                        row = self.store.draft_detail(account_id, draft_id, self.base_url)["draft"]
                         self.send_json(200, {"ok": True, "draftId": draft_id, "favorite": row["favorite"],
                                              "archived": row["archived"], "tags": row["tags"]})
                     else:

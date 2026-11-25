@@ -430,5 +430,230 @@ class DashboardPageTests(DashCase):
         self.assertTrue(re.search(r'"event": ?"draft\.archive"', logged))
 
 
+def row(draft_id: str, title: str, **fields) -> dict:
+    """Build the minimal public draft record that the query matcher reads."""
+    return {
+        "draftId": draft_id, "title": title, "slug": None, "tags": [], "favorite": False, "disabled": False,
+        "versionCount": 1, "visibility": "private", "workspace": "default", "updatedAt": "2026-01-01T00:00:00+00:00",
+        "repoHost": None, "repoOrg": None, "repoName": None, **fields,
+    }
+
+
+class ReviewStoreTests(StoreCase):
+    def two_page_draft(self) -> str:
+        files = [{"path": "index.html", "html": "<title>Multi</title><a href='two.html'>Two</a>"},
+                 {"path": "two.html", "html": "<title>Two</title><p>secondpageword</p>"}]
+        return self.store.upsert(None, None, None, BASE, files=files)["draftId"]
+
+    def wipe_index(self) -> None:
+        with closing(sqlite3.connect(self.store.db_path)) as connection:
+            connection.execute("DELETE FROM draft_search")
+            connection.commit()
+
+    def test_backfill_indexes_every_page_of_a_multipage_draft(self) -> None:
+        draft_id = self.two_page_draft()
+        self.assertIn(draft_id, self.search("secondpageword"))
+        self.wipe_index()
+        reopened = server.Store(self.root)
+        self.assertIn(draft_id, reopened.search_fts("local", server.parse_dashboard_query("secondpageword")["fts"]))
+
+    def test_backfill_never_follows_a_symlink_out_of_the_drafts_folder(self) -> None:
+        self.two_page_draft()
+        outside = Path(self.temporary.name) / "outside.html"
+        outside.write_text("<p>outsideword</p>", encoding="utf-8")
+        page = next(path for path in self.store.drafts.rglob("two.html"))
+        page.unlink()
+        page.symlink_to(outside)
+        self.wipe_index()
+        reopened = server.Store(self.root)
+        self.assertEqual({}, reopened.search_fts("local", server.parse_dashboard_query("outsideword")["fts"]))
+
+    def test_soft_delete_clears_tag_rows_for_good(self) -> None:
+        gone = seed(self.store, "<title>Gone</title>", tags=["ghost"])
+        self.store.change_draft("local", gone, "delete", None)
+        seed(self.store, "<title>Other</title>", tags=["live"])  # A later write syncs every draft.
+        with closing(sqlite3.connect(self.store.db_path)) as connection:
+            tags = {tag for (tag,) in connection.execute("SELECT tag FROM draft_tags")}
+        self.assertEqual({"live"}, tags)
+        self.assertEqual([], self.query(tag="ghost"))
+
+    def test_search_scopes_to_the_given_drafts_and_can_skip_tags(self) -> None:
+        first = seed(self.store, "<title>One</title><p>shared words</p>")
+        second = seed(self.store, "<title>Two</title><p>shared words</p>")
+        self.store.set_tags("local", first, ["tagonly"])
+        fts = server.parse_dashboard_query("shared")["fts"]
+        self.assertEqual({}, self.store.search_fts("local", fts, draft_ids=set()))
+        self.assertEqual({first}, set(self.store.search_fts("local", fts, draft_ids={first})))
+        tag_fts = server.parse_dashboard_query("tagonly")["fts"]
+        self.assertIn(first, self.store.search_fts("local", tag_fts))
+        self.assertEqual({}, self.store.search_fts("local", tag_fts, draft_ids={first, second}, exclude_tags=True))
+        snippet = self.store.search_fts("local", fts, draft_ids={first}, exclude_tags=True)[first][1]
+        self.assertIn("<mark>shared</mark>", snippet)
+
+    def test_patch_draft_is_atomic(self) -> None:
+        draft_id = seed(self.store, "<title>Plan</title>", tags=["a"])
+        draft = self.store.patch_draft("local", draft_id, BASE, tags=["a", "b"], add_tags=["c"],
+                                       remove_tags=["a"], archived=True, favorite=True)
+        self.assertEqual(["b", "c"], draft["tags"])
+        self.assertTrue(draft["archived"] and draft["favorite"])
+        self.assertEqual(1, draft["versionCount"])
+        with self.assertRaises(ValueError):
+            self.store.patch_draft("local", draft_id, BASE, add_tags=["bad tag"], archived=False)
+        after = self.store.draft_detail("local", draft_id, BASE)["draft"]
+        self.assertEqual((["b", "c"], True), (after["tags"], after["archived"]))
+
+    def test_reupload_keeps_tags_and_favorite(self) -> None:
+        draft_id = seed(self.store, "<title>Plan</title><p>one</p>", tags=["keep"], favorite=True)
+        self.store.upsert("<title>Plan</title><p>two</p>", "plan.html", draft_id, BASE)
+        draft = self.store.draft_detail("local", draft_id, BASE)["draft"]
+        self.assertEqual((["keep"], True, 2), (draft["tags"], draft["favorite"], draft["versionCount"]))
+
+    def test_group_names(self) -> None:
+        auth = server.AuthConfig(modes=("api_key",), policy=server.RBACPolicy(None))
+        for given, expected in (("flat", "none"), ("none", "none"), ("tag", "tag"), ("repo", "repo"),
+                                ("time", "time"), ("bogus", "time")):
+            state = server.query_dashboard(self.store, auth, "local", BASE, group=given)
+            self.assertEqual(expected, state["group"], given)
+
+    def test_bad_tag_facet_and_wordless_text_match_nothing(self) -> None:
+        seed(self.store, "<title>Plan</title><p>text</p>", tags=["real"])
+        self.assertEqual(1, len(self.query("")))
+        self.assertEqual([], self.query("", tag="bad tag"))
+        self.assertEqual([], self.query("---"))
+        self.assertEqual([], self.query("--- ***"))
+        self.assertEqual(1, len(self.query("--- tag:real")))
+
+    def test_repo_matching(self) -> None:
+        parsed = server.parse_dashboard_query("repo:/")
+        now = server.datetime.now(server.UTC)
+        kwargs = {"granted": set(), "shared_view": False, "now": now}
+        self.assertFalse(server._matches_query(row("a", "A"), parsed, **kwargs))
+        self.assertTrue(server._matches_query(row("b", "B", repoOrg="acme", repoName="app"), parsed, **kwargs))
+        facet = server.parse_dashboard_query("")
+        facet["repoFacets"].append("acme/app")
+        self.assertTrue(server._matches_query(row("b", "B", repoOrg="acme", repoName="app"), facet, **kwargs))
+        self.assertFalse(server._matches_query(row("c", "C", repoOrg="acme", repoName="app-two"), facet, **kwargs))
+        self.assertFalse(server._matches_query(row("d", "D"), facet, **kwargs))
+        none = server.parse_dashboard_query("repo:none")
+        self.assertTrue(server._matches_query(row("d", "D"), none, **kwargs))
+        self.assertFalse(server._matches_query(row("c", "C", repoOrg="acme", repoName="app"), none, **kwargs))
+
+    def test_naive_timestamps_read_as_utc_and_age_ignores_case(self) -> None:
+        self.assertEqual(server.UTC, server._parse_stamp("2026-01-01T00:00:00").tzinfo)
+        self.assertEqual(server.UTC, server._parse_stamp("2026-01-01T00:00:00+00:00").tzinfo)
+        self.assertIsNone(server._parse_stamp("nonsense"))
+        self.assertEqual([("<", 3)], server.parse_dashboard_query("age:<3D")["ages"])
+        naive = row("a", "A", updatedAt="2026-01-01T00:00:00")
+        parsed = server.parse_dashboard_query("age:>1d")
+        now = server.datetime(2026, 6, 1, tzinfo=server.UTC)
+        self.assertTrue(server._matches_query(naive, parsed, granted=set(), shared_view=False, now=now))
+
+
+class SuggestionRuleTests(unittest.TestCase):
+    def test_suggestions_skip_tagged_drafts_and_untitled_fallbacks(self) -> None:
+        def draft(draft_id: str, title: str, tags: list[str] | None = None) -> dict:
+            return {"draftId": draft_id, "slug": None, "title": title, "tags": tags or []}
+
+        drafts = [draft("a", "Roadmap v1"), draft("b", "Roadmap v2", ["other"]), draft("c", "Roadmap v3"),
+                  draft("d", "Tailplan Draft"), draft("e", "Tailplan Draft")]
+        self.assertEqual({"a": "roadmap", "c": "roadmap"}, server.infer_suggested_tags(drafts))
+        long = "a" * 50
+        suggested = server.infer_suggested_tags([draft("x", f"{long} v1"), draft("y", f"{long} v2")])
+        self.assertEqual({"x", "y"}, set(suggested))
+        for tag in suggested.values():
+            self.assertLessEqual(len(tag), 32)
+            self.assertEqual([tag], server.normalize_tags([tag]))
+
+
+class ReviewHttpTests(DashCase):
+    def test_patch_adds_and_removes_tags_in_one_step(self) -> None:
+        draft_id = self.upload("<title>Plan</title>", slug="patch-me")["draftId"]
+        self.api("/api/drafts/patch-me", "PATCH", {"tags": ["a", "b"]}, token=TOKEN)
+        status, body = self.api("/api/drafts/patch-me", "PATCH",
+                                {"addTags": ["C"], "removeTags": ["a"], "favorite": True}, token=TOKEN)
+        self.assertEqual(200, status, body)
+        self.assertEqual(["b", "c"], body["draft"]["tags"])
+        self.assertEqual(1, body["draft"]["versionCount"])
+        status, body = self.api("/api/drafts/patch-me", "PATCH",
+                                {"addTags": ["bad tag"], "archived": True}, token=TOKEN)
+        self.assertEqual(400, status)
+        self.assertIn("tag", body["error"])
+        after = self.draft(draft_id)
+        self.assertEqual((["b", "c"], False), (after["tags"], after["archived"]))
+
+    def test_patch_rejects_non_list_tags_with_a_specific_message(self) -> None:
+        self.upload("<title>Plan</title>", slug="patch-me")
+        for payload in ({"tags": None}, {"tags": [1]}, {"tags": "a"}, {"addTags": "x"}, {"removeTags": [None]},
+                        {"addTags": None}):
+            status, body = self.api("/api/drafts/patch-me", "PATCH", payload, token=TOKEN)
+            self.assertEqual(400, status, payload)
+            self.assertNotEqual("Request fields or body are invalid.", body["error"], payload)
+
+    def test_tag_action_rejects_empty_and_non_text_input_without_an_audit_event(self) -> None:
+        draft_id = self.upload("<title>Plan</title>")["draftId"]
+        path = f"/dashboard/drafts/{draft_id}/tags"
+        for payload in ({}, {"add_tag": 5}, {"remove_tag": ["x"]}, {"tags": None}, {"tags": {"a": 1}}):
+            status, _headers, body = self.post(path, payload, as_json=True)
+            self.assertEqual(400, status, payload)
+            self.assertIn("error", json.loads(body))
+        self.assertEqual([], self.events("draft.tag"))
+        status, _headers, _body = self.post(path, {"tags": "keep"}, as_json=True)
+        self.assertEqual(200, status)
+        self.assertEqual(1, len(self.events("draft.tag")))
+
+    def test_listing_passes_group_and_repo_through(self) -> None:
+        self.upload("<title>Plan</title>")
+        for given, expected in (("flat", "none"), ("tag", "tag"), ("repo", "repo")):
+            _status, body = self.api(f"/api/drafts?group={given}", token=TOKEN)
+            self.assertEqual(expected, body["group"], given)
+        _status, body = self.api("/api/drafts?repo=acme%2Fapp", token=TOKEN)
+        self.assertEqual([], body["drafts"])
+        self.assertEqual("acme/app", body["repo"])
+
+    def test_bulk_audit_holds_only_the_normalized_tag_of_a_tag_action(self) -> None:
+        draft_id = self.upload("<title>Plan</title>")["draftId"]
+        self.post("/dashboard/bulk", {"draftIds": [draft_id], "action": "add_tag", "tag": " Ship "}, as_json=True)
+        self.post("/dashboard/bulk", {"draftIds": [draft_id], "action": "favorite", "tag": "leakyvalue"},
+                  as_json=True)
+        events = self.events("draft.bulk")
+        self.assertEqual("ship", events[0]["detail"]["tag"])
+        self.assertNotIn("tag", events[1]["detail"])
+        self.assertNotIn("leakyvalue", self.audit_lines.getvalue())
+
+    def test_theme_cookie_follows_the_base_path(self) -> None:
+        self.primary.base_url = "https://tailplan.test/tp"
+        _status, headers, _body = self.post("/dashboard/theme", {"theme": "dark"}, as_json=True)
+        self.assertIn("Path=/tp/;", headers["Set-Cookie"][0])
+
+
+class SharedDraftPrivacyTests(AuthCase):
+    def test_a_reader_never_sees_owner_tags_stars_or_archive_state(self) -> None:
+        owner = self.oidc_login(sub="owner", email="owner@example.test")
+        draft = self.upload("<title>Roadmap</title><p>visibleword</p>", token=self.create_key(owner),
+                            visibility="private", tags=["secretproject"], favorite=True)
+        detail = f"/dashboard/drafts/{draft['draftId']}"
+        csrf = self.csrf(owner, detail)
+        self.request(detail + "/archive", "POST", cookies=[owner], form={"csrf": csrf})
+        self.request(detail + "/sharing/grants", "POST", cookies=[owner],
+                     form={"csrf": csrf, "type": "email", "value": "guest@example.test", "role": "viewer"})
+        guest = self.oidc_login(sub="guest", email="guest@example.test", groups=["outsiders"])
+        key = self.create_key(guest)
+        _status, body = self.api("/api/drafts?view=shared", token=key)
+        self.assertEqual(1, len(body["drafts"]))
+        shared = body["drafts"][0]
+        self.assertEqual(([], False, None, False, None),
+                         (shared["tags"], shared["archived"], shared["archivedAt"], shared["favorite"],
+                          shared["favoritedAt"]))
+        self.assertEqual([], body["tags"])
+        for params in ("q=secretproject", "tag=secretproject", "q=tag:secretproject"):
+            _status, body = self.api("/api/drafts?view=shared&" + params, token=key)
+            self.assertEqual([], body["drafts"], params)
+        _status, body = self.api("/api/drafts?view=shared&q=visibleword", token=key)
+        self.assertEqual(1, len(body["drafts"]))
+        self.assertNotIn("secretproject", body["drafts"][0]["snippet"])
+        _status, body = self.api("/api/drafts?view=archived&q=secretproject", token=self.create_key(owner))
+        self.assertEqual(1, len(body["drafts"]))
+
+
 if __name__ == "__main__":
     unittest.main()
