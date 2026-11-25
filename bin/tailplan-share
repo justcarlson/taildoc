@@ -2993,7 +2993,8 @@ def _publish_locked(
                 stderr=stderr,
             )
     public_origin = urllib.parse.urlsplit(str(result.get("publicUrl", "")))[:2]
-    if (verifier is None and result.get("visibility") not in (None, "link")
+    if (verifier is None
+            and (result.get("visibility") not in (None, "link") or result.get("viewerAuthMode") == "session")
             and public_origin == urllib.parse.urlsplit(base_url)[:2]):
         # Only signed-in readers can open this draft. Send the key to the upload origin only.
         verify_function = functools.partial(verify_readback, token=saved_token())

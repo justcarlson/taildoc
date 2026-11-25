@@ -2839,6 +2839,7 @@ _SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {
             principal_issuer TEXT,
             principal_subject TEXT,
             idp_session_id TEXT,
+            api_key_id TEXT,
             csrf TEXT NOT NULL,
             auth_method TEXT NOT NULL,
             epoch INTEGER NOT NULL DEFAULT 0,
@@ -3402,6 +3403,8 @@ class Store:
         files: list[dict] | None = None,
         slug: str | None = None,
         validation: dict | None = None,
+        workspace: str | None = None,
+        visibility: str | None = None,
     ) -> dict:
         if validation is None:
             raw_pages = (
@@ -3420,6 +3423,7 @@ class Store:
                 html_doc, filename, draft_id, base_url, request_key,
                 account_id, description, metadata or {}, audit or {},
                 files=files, slug=slug, page_checks=page_checks,
+                workspace=workspace, visibility=visibility,
             )
 
     def _upsert_locked(
@@ -3437,6 +3441,8 @@ class Store:
         files: list[dict] | None = None,
         slug: str | None = None,
         page_checks: dict[str, dict] | None = None,
+        workspace: str | None = None,
+        visibility: str | None = None,
     ) -> dict:
         data = self.load_meta()
         data.setdefault("drafts", {})
@@ -3592,6 +3598,8 @@ class Store:
                 "slug": effective_slug,
                 "publicUrl": public_url,
                 "description": clean_text(description, 1000) or draft.get("description"),
+                **({"workspace": workspace} if workspace is not None else {}),
+                **({"visibility": visibility} if visibility is not None else {}),
                 **{
                     field: metadata.get(field) or draft.get(field)
                     for field in ("repoHost", "repoOrg", "repoName")
@@ -3663,6 +3671,8 @@ class Store:
                 "accountId": account_id,
                 "description": clean_text(description, 1000) or draft.get("description"),
                 "versions": versions,
+                **({"workspace": workspace} if workspace is not None else {}),
+                **({"visibility": visibility} if visibility is not None else {}),
                 **{
                     field: metadata.get(field) or draft.get(field)
                     for field in ("repoHost", "repoOrg", "repoName")
@@ -3983,8 +3993,13 @@ class Store:
             key = data.get("apiKeys", {}).get(key_id)
             if not key or key["accountId"] != account_id or key.get("revokedAt"):
                 raise KeyError("API key not found.")
-            key["revokedAt"] = now_iso()
+            stamp = now_iso()
+            key["revokedAt"] = stamp
             self.save_meta(data)
+            self._write(lambda connection: connection.execute(
+                "UPDATE sessions SET revoked_at = ? WHERE account_id = ? AND api_key_id = ? AND revoked_at IS NULL",
+                (stamp, account_id, key_id),
+            ))
 
     def check_ready(self) -> None:
         """Check that metadata and storage work, without reading draft contents.
@@ -4168,16 +4183,17 @@ class Store:
         issuer: str | None = None,
         subject: str | None = None,
         idp_session_id: str | None = None,
+        api_key_id: str | None = None,
         epoch: int = 0,
     ) -> str:
         """Store a revocable browser session and return its secret ID."""
         session_id = secrets.token_urlsafe(32)
         self._write(lambda connection: connection.execute(
             """INSERT INTO sessions (session_id, account_id, principal_issuer, principal_subject,
-                   idp_session_id, csrf, auth_method, epoch, expires_at, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (sha256_text(session_id), account_id, issuer, subject, idp_session_id, csrf, auth_method,
-             epoch, int(time.time()) + ttl, now_iso()),
+                   idp_session_id, api_key_id, csrf, auth_method, epoch, expires_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (sha256_text(session_id), account_id, issuer, subject, idp_session_id, api_key_id,
+             csrf, auth_method, epoch, int(time.time()) + ttl, now_iso()),
         ))
         return session_id
 
@@ -4206,7 +4222,7 @@ class Store:
             return None
         return {
             "sessionHash": row["session_id"], "accountId": row["account_id"], "csrf": row["csrf"],
-            "authMethod": row["auth_method"], "issuer": row["principal_issuer"],
+            "authMethod": row["auth_method"], "apiKeyId": row["api_key_id"], "issuer": row["principal_issuer"],
             "subject": row["principal_subject"], "epoch": row["epoch"], "expiresAt": row["expires_at"],
         }
 
@@ -5565,6 +5581,14 @@ class Handler(BaseHTTPRequestHandler):
             record = self.store.session_by_hash(payload.get("h"))
             if record is None or not self.method_enabled(record["authMethod"]):
                 continue
+            if record["authMethod"] == "api_key":
+                key_id = record.get("apiKeyId")
+                if not key_id or not any(key["id"] == key_id for key in self.store.list_keys(record["accountId"])):
+                    continue
+            elif record["authMethod"] == "bootstrap" and record["accountId"] != "local":
+                continue
+            elif record["authMethod"] == "tailscale" and not self.server.trust_tailscale_identity:
+                continue
             account = self.store.account(record["accountId"])
             if account is None:
                 continue
@@ -5969,9 +5993,6 @@ class Handler(BaseHTTPRequestHandler):
                 if problem is not None:
                     self.send_json(422, {"ok": False, "error": problem})
                     return
-            sharing = self.upload_sharing(identity, payload)
-            if sharing is None:
-                return
             filename = payload.get("filename")
             draft_id = payload.get("draftId")
             if filename is not None and not isinstance(filename, str):
@@ -5990,6 +6011,11 @@ class Handler(BaseHTTPRequestHandler):
                 not isinstance(draft_id, str) or DRAFT_ID_RE.fullmatch(draft_id) is None
             ):
                 self.send_json(400, {"ok": False, "error": "draftId is invalid."})
+                return
+            roles = self.with_roles(identity) or {}
+            creating_new = draft_id is None and (slug is None or self.store.resolve_draft(slug) is None)
+            sharing = self.upload_sharing(identity, payload, roles=roles, creating_new=creating_new)
+            if sharing is None:
                 return
             request_key = self.headers.get("Idempotency-Key")
             if request_key is not None and (
@@ -6014,14 +6040,12 @@ class Handler(BaseHTTPRequestHandler):
                 files=pages if len(pages) > 1 else None,
                 slug=slug,
                 validation=validation,
+                workspace=sharing.get("workspace"),
+                visibility=sharing.get("visibility"),
             )
             created = result.pop("created")
             status = 201 if created else 200
-            roles = self.with_roles(identity) or {}
-            if created and "workspace" not in sharing:
-                sharing["workspace"] = roles.get("defaultWorkspace") or self.auth.policy.default_workspace
-            stored = self.store.set_sharing(result["draftId"], **sharing) if sharing else (
-                self.store.resolve_draft(result["draftId"]) or {})
+            stored = self.store.resolve_draft(result["draftId"]) or {}
             self.audit_event("draft.upload", roles, "draft", result["draftId"],
                              detail={"created": created, "version": result.get("versionNumber"), **sharing})
             self.send_json(
@@ -6031,6 +6055,7 @@ class Handler(BaseHTTPRequestHandler):
                     **result,
                     "workspace": draft_workspace(stored, self.auth),
                     "visibility": effective_visibility(stored, self.auth),
+                    "viewerAuthMode": self.auth.viewer_mode,
                     "warnings": validation["warnings"],
                     "shareUrl": result["publicUrl"] + "/share",
                 },
@@ -6055,8 +6080,16 @@ class Handler(BaseHTTPRequestHandler):
             self.log_message("unexpected upload error: %r", e)
             self.send_json(500, {"ok": False, "error": "Internal server error."})
 
-    def upload_sharing(self, identity: dict, payload: dict) -> dict | None:
+    def upload_sharing(
+        self,
+        identity: dict,
+        payload: dict,
+        *,
+        roles: dict | None = None,
+        creating_new: bool = False,
+    ) -> dict | None:
         """Check the upload workspace and visibility. Send the error and return None when they fail."""
+        roles = roles if roles is not None else (self.with_roles(identity) or {})
         sharing: dict = {}
         for field in ("workspace", "visibility"):
             if payload.get(field) is None:
@@ -6078,9 +6111,16 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(workspace, str) or WORKSPACE_RE.fullmatch(workspace) is None:
                 self.send_json(422, {"ok": False, "error": "workspace must be a lowercase workspace name."})
                 return None
-            if not workspace_allowed(self.with_roles(identity) or {}, workspace):
+            if not workspace_allowed(roles, workspace):
                 self.send_json(403, {"ok": False, "error": "You cannot publish to that workspace."})
                 return None
+        elif creating_new:
+            default_ws = roles.get("defaultWorkspace") or self.auth.policy.default_workspace
+            if self.auth.policy.configured and identity["accountId"] != "anonymous":
+                if not workspace_allowed(roles, default_ws):
+                    self.send_json(403, {"ok": False, "error": "You cannot publish to that workspace."})
+                    return None
+            sharing["workspace"] = default_ws
         return sharing
 
     def rate_allowed(self, key: str, maximum: int, window: int = 60) -> bool:
@@ -6180,7 +6220,8 @@ class Handler(BaseHTTPRequestHandler):
         csrf = secrets.token_hex(24)
         session_id = self.store.create_session(
             account_id=identity["accountId"], auth_method=method, csrf=csrf, ttl=ttl,
-            issuer=issuer, subject=subject, idp_session_id=idp_session_id, epoch=epoch)
+            issuer=issuer, subject=subject, idp_session_id=idp_session_id,
+            api_key_id=identity.get("apiKeyId") if method == "api_key" else None, epoch=epoch)
         cookie_fields = {key: identity[key] for key in ("accountId", "apiKeyId", "login") if key in identity}
         session = {**cookie_fields, "csrf": csrf, "sid": session_id, "epoch": epoch, "expires": int(time.time()) + ttl}
         self.audit_event("auth.login", self.with_roles(identity), "account", identity["accountId"],

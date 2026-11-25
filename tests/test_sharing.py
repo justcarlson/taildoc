@@ -129,6 +129,60 @@ class SharingApiTests(AuthCase):
         status, _body = self.api("/api/uploads", "POST", {"html": "<title>x</title>", "workspace": "team"},
                                  token=reader)
         self.assertEqual(403, status)
+        # Omitting workspace must not fall back to defaultWorkspace for a viewer-only account.
+        status, _body = self.api("/api/uploads", "POST", {"html": "<title>x</title>"},
+                                 token=reader)
+        self.assertEqual(403, status)
+
+    def test_upload_commits_visibility_atomically_without_set_sharing(self) -> None:
+        from unittest.mock import patch
+        with patch.object(self.store, "set_sharing", side_effect=AssertionError("set_sharing should not run")):
+            status, body = self.api(
+                "/api/uploads", "POST",
+                {"html": "<title>Secret</title>", "slug": "atomic-secret", "visibility": "private"},
+                token=self.editor_key,
+            )
+        self.assertEqual(201, status, body)
+        self.assertEqual("private", body["visibility"])
+        status, _headers, _body = self.request("/d/atomic-secret")
+        self.assertEqual(401, status)
+
+    def test_revoking_api_key_invalidates_view_cookie_and_token(self) -> None:
+        import re as _re
+        key_resp = self.store.create_key("local", "temp-browser-key")
+        key_token = key_resp["token"]
+        key_id = key_resp["apiKey"]["id"]
+        status, headers, login_body = self.request("/auth/sign-in")
+        self.assertEqual(200, status)
+        login_cookie = [c for c in headers["Set-Cookie"] if c.startswith("tailplan_login=")][0].split(";", 1)[0]
+        csrf = _re.search(r'name="csrf" value="([^"]+)"', login_body.decode()).group(1)
+        status, headers, _body = self.request(
+            "/auth/sign-in", "POST", cookies=[login_cookie],
+            form={"csrf": csrf, "token": key_token, "next": "/dashboard"},
+        )
+        self.assertEqual(303, status)
+        sess_cookie = [c for c in headers["Set-Cookie"] if c.startswith("tailplan_session=")][0].split(";", 1)[0]
+        # Open a multi-page private draft to mint a tailplan_view cookie and a ?tv= view token.
+        multi = self.upload(
+            files=[
+                {"path": "index.html", "html": '<title>M</title><a href="two.html">Two</a>'},
+                {"path": "two.html", "html": "<title>Two</title><p>Two</p>"},
+            ],
+            token=self.editor_key, visibility="private",
+        )
+        status, headers, body = self.request(f"/d/{multi['draftId']}/", cookies=[sess_cookie])
+        self.assertEqual(200, status)
+        view_cookie = [c for c in headers["Set-Cookie"] if c.startswith("tailplan_view=")][0].split(";", 1)[0]
+        tv_match = _re.search(r'href="(two\.html\?tv=[^"]+)"', body.decode())
+        self.assertIsNotNone(tv_match)
+        tv_href = tv_match.group(1)
+        # Before revocation, both view cookie and ?tv= work without session cookie.
+        self.assertEqual(200, self.request(f"/d/{multi['draftId']}/", cookies=[view_cookie])[0])
+        self.assertEqual(200, self.request(f"/d/{multi['draftId']}/{tv_href}")[0])
+        # Revoke the originating API key -> both view cookie and ?tv= must fail immediately.
+        self.store.revoke_key("local", key_id)
+        self.assertEqual(401, self.request(f"/d/{multi['draftId']}/", cookies=[view_cookie])[0])
+        self.assertEqual(401, self.request(f"/d/{multi['draftId']}/{tv_href}")[0])
 
 
 class SharingDashboardTests(AuthCase):
@@ -227,6 +281,16 @@ class ShareCliTests(AuthCase):
         self.assertEqual(("ops", "workspace"), (stored["workspace"], stored["visibility"]))
         result = self.run_cli("upload", "--visibility", "everyone", str(page))
         self.assertEqual(2, result.returncode)
+
+    def test_upload_link_visibility_readback_succeeds_in_session_mode(self) -> None:
+        self.auth.viewer_mode = "session"
+        with tempfile.TemporaryDirectory() as folder:
+            page = Path(folder) / "page.html"
+            page.write_text("<title>Session Link</title><p>Body</p>", encoding="utf-8")
+            result = self.run_cli("upload", str(page), "--visibility", "link", "--json", "--new")
+        self.assertEqual(0, result.returncode, result.stderr + result.stdout)
+        draft_id = json.loads(result.stdout)["draftId"]
+        self.assertEqual("link", self.store.resolve_draft(draft_id)["visibility"])
 
     def test_version_is_current(self) -> None:
         result = self.run_cli("--version")

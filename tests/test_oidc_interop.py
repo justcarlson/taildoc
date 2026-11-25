@@ -36,6 +36,7 @@ from auth_harness import AuthCase, cookie_pair
 ISSUER = os.getenv("TAILPLAN_INTEROP_ISSUER", "")
 CLIENT_ID = os.getenv("TAILPLAN_INTEROP_CLIENT_ID", "")
 SECRET_FILE = os.getenv("TAILPLAN_INTEROP_CLIENT_SECRET_FILE", "")
+REDIRECT_URI = os.getenv("TAILPLAN_INTEROP_REDIRECT_URI", "https://tailplan.example/auth/oidc/callback")
 DOCKER = os.getenv("TAILPLAN_INTEROP_DOCKER") == "1"
 KEYCLOAK_IMAGE = os.getenv("TAILPLAN_INTEROP_KEYCLOAK_IMAGE", "quay.io/keycloak/keycloak:26.0")
 ASYMMETRIC = {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"}
@@ -82,7 +83,7 @@ class LiveIssuerTests(unittest.TestCase):
     def test_token_endpoint_accepts_client_secret_basic(self):
         client = self.client()
         body = urlencode({"grant_type": "authorization_code", "code": "not-a-real-code",
-                          "redirect_uri": "https://tailplan.example/auth/oidc/callback",
+                          "redirect_uri": REDIRECT_URI,
                           "code_verifier": "v" * 43}).encode()
         status, raw = client.fetch(client.metadata()["token_endpoint"], method="POST", body=body, headers={
             "Content-Type": "application/x-www-form-urlencoded",
@@ -100,7 +101,7 @@ class NoRedirect(HTTPRedirectHandler):
 
 def realm(secret: str, password: str) -> dict:
     return {
-        "realm": "tailplan", "enabled": True,
+        "realm": "tailplan", "enabled": True, "sslRequired": "none",
         "groups": [{"name": "staff"}],
         "users": [{
             "username": "alice", "email": "alice@example.test", "emailVerified": True, "enabled": True,
@@ -179,9 +180,14 @@ class KeycloakTests(AuthCase):
         status, headers, _body = self.request("/auth/oidc/start?" + urlencode({"next": next_path}))
         self.assertEqual(302, status)
         flow_cookie = cookie_pair(headers["Set-Cookie"][0])
-        browser = build_opener(HTTPCookieProcessor(CookieJar()), NoRedirect)
+        jar = CookieJar()
+        browser = build_opener(HTTPCookieProcessor(jar), NoRedirect)
         with browser.open(headers["Location"], timeout=30) as response:
             page = response.read().decode()
+        # Keycloak 26 marks session cookies Secure for localhost/127.0.0.1 (a browser secure context);
+        # Python's CookieJar does not implement that rule, so allow sending them over loopback HTTP.
+        for cookie in jar:
+            cookie.secure = False
         action = html.unescape(re.search(r'<form[^>]+id="kc-form-login"[^>]+action="([^"]+)"', page)[1])
         form = urlencode({"username": "alice", "password": self.password, "credentialId": ""}).encode()
         try:
@@ -193,13 +199,14 @@ class KeycloakTests(AuthCase):
         self.assertEqual("/auth/oidc/callback", callback.path)
         status, headers, body = self.request(callback.path + "?" + callback.query, cookies=[flow_cookie])
         self.assertEqual(303, status, body[:300])
-        self.assertEqual(next_path, headers["Location"])
+        self.assertEqual(self.base + next_path, headers["Location"])
         session = [value for value in headers["Set-Cookie"] if value.startswith("tailplan_session=")]
         return cookie_pair(session[0])
 
     def test_keycloak_sign_in_maps_groups_to_workspace_roles(self):
         cookie = self.keycloak_login()
-        status, me = self.api("/api/me", cookies=[cookie])
+        key = self.create_key(cookie)
+        status, me = self.api("/api/me", token=key)
         self.assertEqual(200, status, me)
         self.assertEqual("alice@example.test", me["email"])
         self.assertEqual({"team": "editor"}, me["workspaces"])
@@ -209,9 +216,9 @@ class KeycloakTests(AuthCase):
 
     def test_keycloak_account_is_keyed_on_issuer_and_subject(self):
         cookie = self.keycloak_login()
-        _status, me = self.api("/api/me", cookies=[cookie])
+        _status, me = self.api("/api/me", token=self.create_key(cookie))
         again = self.keycloak_login()
-        _status, second = self.api("/api/me", cookies=[again])
+        _status, second = self.api("/api/me", token=self.create_key(again))
         self.assertEqual(me["accountId"], second["accountId"])
         self.assertNotEqual(cookie, again)
 
@@ -220,7 +227,7 @@ class KeycloakTests(AuthCase):
         path = f"/d/{draft['draftId']}/"
         status, headers, _body = self.request(path, headers={"Accept": "text/html"})
         self.assertEqual(302, status)
-        self.assertTrue(headers["Location"].startswith("/auth/sign-in?next="), headers["Location"])
+        self.assertTrue(headers["Location"].startswith(f"{self.base}/auth/sign-in?next="), headers["Location"])
         cookie = self.keycloak_login(path)
         status, _headers, body = self.request(path, cookies=[cookie])
         self.assertEqual(200, status)
