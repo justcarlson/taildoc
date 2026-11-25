@@ -6,6 +6,8 @@ The project uses semantic version numbers.
 
 ## Unreleased
 
+## 0.5.0 - 2026-11-25
+
 - Add optional OpenID Connect sign-in behind the `oidc` extra (`PyJWT[crypto]>=2.10,<3`).
   The server imports PyJWT only when `TAILPLAN_OIDC_ISSUER` is set.
 - Validate ID tokens with asymmetric algorithms only, PKCE `S256`, `client_secret_basic`, and 30 seconds of clock skew.
@@ -56,7 +58,7 @@ The project uses semantic version numbers.
 - Let the container health check follow `TAILPLAN_PORT`, and drop empty optional settings in the entrypoint.
 - Publish `ghcr.io/justcarlson/tailplan` with build provenance on `main` and `v*` tags.
 - Document the dual-listener container setup for a Tailscale sidecar.
-- Bump the version to 0.4.0.
+- Bump the version to 0.5.0.
 
 ## 0.3.0 - 2026-09-13
 
