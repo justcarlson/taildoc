@@ -39,8 +39,80 @@ The server does not create an account for that login.
 The server also rejects existing Tailscale sessions for logins that are not in the list.
 The sign-in page does not show "Continue with Tailscale" to those logins.
 Add the owner login to the list, or the owner must sign in with an API key.
-API keys, the bootstrap token, and viewer routes do not use the list.
+API keys, the bootstrap token, and unauthenticated link views do not use the list.
+When `TAILPLAN_TAILSCALE_VIEWER=1`, passive header reads also check the list.
 When the list is empty, any Tailscale login can sign in.
+
+### Passive Tailscale viewer
+
+Set `TAILPLAN_TAILSCALE_VIEWER=1` to let tailnet users and sharees read drafts with no sign-in step.
+The setting needs `TAILPLAN_TRUST_TAILSCALE_IDENTITY=1` and a proxy listener (`TAILPLAN_PROXY_PORT`).
+Without them, the server does not start.
+The primary listener always ignores the header.
+`TAILPLAN_AUTH_MODES` does not control the passive viewer.
+That setting controls interactive sign-in only.
+For example, with `TAILPLAN_AUTH_MODES=oidc,api_key`, the passive viewer still works, and "Continue with Tailscale" stays off.
+The server uses the `Tailscale-User-Login` header only for `GET` and `HEAD` requests to draft pages.
+These pages are `/d/<ref>`, `/share`, `/preview.png`, `/raw`, and `/content`.
+A session, a view cookie, or a view token comes first.
+A bearer key comes next, and the header comes last.
+A request with an `Authorization` header never uses the Tailscale header.
+
+The header identity has no account and no state.
+The server does not write accounts, principals, or sessions for it.
+It does not set cookies or make `tv=` tokens.
+The identity gets the `viewer` role and no more, even when a grant or rule gives more.
+The dashboard, `/api/*`, `/source`, and every `POST`, `PUT`, or `DELETE` ignore the header.
+`TAILPLAN_ALLOWED_LOGINS` also applies to the header.
+The audit log records each `GET` as `draft.view`, with the login as the actor email and `authMethod` `tailscale_header`.
+The event also records the login as `actorLogin`.
+This includes `/share` and `/preview.png`.
+
+When a header identity cannot read a draft, the server returns `404`.
+It does not send the reader to sign-in.
+The `404` page is the same for a missing draft and a hidden draft.
+Thus the page does not show that a draft exists.
+When the reader has no session cookie, the page shows a "Sign in" link.
+
+> [!WARNING]
+> Without `TAILPLAN_RBAC_POLICY_FILE`, every login on the tailnet matches the open policy.
+> Every such login then reads all `authenticated` drafts with no sign-in step.
+> Set a policy file before you turn on the passive viewer on a shared tailnet.
+
+A device with a tag has no user login, so Tailscale Serve sends no header.
+That device falls back to the usual sign-in page.
+
+### Logins and email addresses
+
+A Tailscale login is not always an email address.
+Logins such as `alice@github` and `alice@passkey` have no dotted domain.
+An email grant or an email rule needs a dotted domain, so these logins never match one.
+Use a `tailscale_login` grant or a `{"match": {"tailscale_login": "alice@github"}}` rule for them.
+A Tailscale login with a dotted domain also matches email grants and email rules.
+
+A login that matches no policy rule is a guest.
+A guest reads only drafts granted to it and `link` drafts.
+A guest does not read `authenticated` drafts.
+The server checks the loaded policy on each request.
+After a policy edit and server restart, a removed rule takes its roles away from existing sessions and keys.
+
+Tailscale sign-in always uses its own account, keyed to the `tailscale` issuer.
+It never joins a single sign-on account, even when the email is the same.
+Thus a Tailscale sign-in never inherits roles or groups from a single sign-on account.
+It resolves only against its own Tailscale login and verified-email policy rules.
+Single sign-on roles can need the identity provider's MFA, and back-channel logout revokes them.
+
+An email rule needs a dotted domain.
+The server does not start with an email rule such as `bob@passkey`.
+Change that rule to `{"match": {"tailscale_login": "bob@passkey"}}`.
+A `tailscale_login` value must be printable ASCII with no spaces.
+
+The upgrade to schema version 3 changes earlier data:
+
+- An `email` grant with no dotted domain becomes a `tailscale_login` grant.
+- A Tailscale principal with no dotted domain loses its stored email.
+
+You can revoke any grant, also an earlier grant that the new patterns refuse.
 
 Viewer routes count each missing draft, version, or slug against the caller.
 The key is the Tailscale login on the proxy listener when identity is trusted, otherwise the client address.
@@ -113,6 +185,9 @@ A key can never give more access than its account has.
 When you lower it, existing drafts become less visible at once.
 Only an owner, editor, or admin can change sharing.
 An upload can name a workspace only when the uploader is an editor or admin of that workspace.
+An upload can also carry grants.
+The server checks every grant first, and then writes the grants and the draft in one transaction.
+One bad grant rejects the whole upload with `422`.
 
 ## Device login
 

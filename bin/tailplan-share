@@ -57,7 +57,7 @@ a { color: #2563eb; overflow-wrap: anywhere; }
 }
 """.strip()
 
-CLI_VERSION = "0.5.0"
+CLI_VERSION = "0.6.0"
 VISIBILITIES = ("private", "workspace", "authenticated", "link")
 GRANT_ROLES = ("viewer", "editor")
 STAGED_UPLOAD_RE = re.compile(r"^/tmp/tailplan-upload\.[A-Za-z0-9]{8}/")
@@ -3160,6 +3160,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--metadata-file", help="Read source provenance from a JSON file")
     parser.add_argument("--workspace", help="Put a new draft in this workspace")
     parser.add_argument("--visibility", choices=VISIBILITIES, help="Set who can read the draft")
+    parser.add_argument("--grant-email", action="append", default=[], metavar="EMAIL",
+                        help="Share the draft with this verified email (repeatable)")
+    parser.add_argument("--grant-tailscale", action="append", default=[], metavar="LOGIN",
+                        help="Share the draft with this Tailscale login, such as alice@github (repeatable)")
+    parser.add_argument("--grant-group", action="append", default=[], metavar="GROUP",
+                        help="Share the draft with this sign-in group (repeatable)")
+    parser.add_argument("--grant-role", choices=GRANT_ROLES, default="viewer",
+                        help="Role for --grant-* options (default: viewer)")
     parser.add_argument("--json", action="store_true", help="Emit one machine-readable JSON object")
     parser.add_argument(
         "--allow-insecure-http",
@@ -3315,9 +3323,23 @@ def main(argv: list[str] | None = None) -> int:
         slug=args.slug,
         files=upload_files,
         filename_override=filename_override,
-        sharing={key: value for key, value in (("workspace", args.workspace), ("visibility", args.visibility))
-                 if value is not None},
+        sharing=upload_sharing_options(args),
     )
+
+
+def upload_sharing_options(args: argparse.Namespace) -> dict:
+    """Return the upload sharing fields: workspace, visibility, and grants."""
+    sharing = {key: value for key, value in (("workspace", args.workspace), ("visibility", args.visibility))
+               if value is not None}
+    grants = [
+        {"type": kind, "value": value, "role": args.grant_role}
+        for kind, values in (("email", args.grant_email), ("tailscale_login", args.grant_tailscale),
+                             ("group", args.grant_group))
+        for value in values
+    ]
+    if grants:
+        sharing["grants"] = grants
+    return sharing
 
 
 def collect_provenance(cwd: Path) -> dict:
@@ -3565,9 +3587,11 @@ def management_main(argv: list[str]) -> int:
     share_cmd.add_argument("--visibility", choices=VISIBILITIES)
     share_cmd.add_argument("--workspace")
     share_cmd.add_argument("--grant-email", action="append", default=[], metavar="EMAIL")
+    share_cmd.add_argument("--grant-tailscale", action="append", default=[], metavar="LOGIN")
     share_cmd.add_argument("--grant-group", action="append", default=[], metavar="GROUP")
     share_cmd.add_argument("--role", choices=GRANT_ROLES, default="viewer", help="Role for new grants")
     share_cmd.add_argument("--revoke-email", action="append", default=[], metavar="EMAIL")
+    share_cmd.add_argument("--revoke-tailscale", action="append", default=[], metavar="LOGIN")
     share_cmd.add_argument("--revoke-group", action="append", default=[], metavar="GROUP")
     auth = commands.add_parser("auth").add_subparsers(dest="action", required=True)
     login_cmd = options(auth.add_parser("login"))
@@ -3736,10 +3760,12 @@ def management_main(argv: list[str]) -> int:
             changes = {key: value for key, value in (("visibility", args.visibility),
                                                     ("workspace", args.workspace)) if value is not None}
             result = request(path, "POST", changes) if changes else None
-            for kind, values in (("email", args.grant_email), ("group", args.grant_group)):
+            for kind, values in (("email", args.grant_email), ("tailscale_login", args.grant_tailscale),
+                                 ("group", args.grant_group)):
                 for value in values:
                     result = request(path + "/grants", "POST", {"type": kind, "value": value, "role": args.role})
-            for kind, values in (("email", args.revoke_email), ("group", args.revoke_group)):
+            for kind, values in (("email", args.revoke_email), ("tailscale_login", args.revoke_tailscale),
+                                 ("group", args.revoke_group)):
                 for value in values:
                     result = request(path + "/grants", "DELETE", {"type": kind, "value": value})
             result = request(path) if result is None else result

@@ -6,6 +6,40 @@ The project uses semantic version numbers.
 
 ## Unreleased
 
+## 0.6.0 - 2026-11-25
+
+- Add the passive Tailscale viewer, `TAILPLAN_TAILSCALE_VIEWER=1` (`--tailscale-viewer`).
+  On the trusted proxy listener, a `GET` or `HEAD` draft page reads the `Tailscale-User-Login` header with no sign-in step.
+  It never makes an account, a session, a cookie, or a `tv=` token, and it gives only the `viewer` role.
+  The dashboard, the API, `/source`, and every write still need a session, an API key, or the upload token.
+  The audit log records each view as `draft.view` with `authMethod` `tailscale_header`.
+- Add the `tailscale_login` grant type and the `tailscale_login` policy match.
+  Use them for logins that are not email addresses, such as `alice@github` or `alice@passkey`.
+- Require a dotted domain in email grants, so a login such as `alice@github` never matches an email grant or rule.
+- A signed-in user that matches no policy rule now reads only drafts granted to them and `link` drafts, not `authenticated` drafts.
+- Tailscale sign-in always uses its own account, keyed to the `tailscale` issuer.
+  It never joins a single sign-on account with the same email, so it never gets that account's roles.
+- `TAILPLAN_AUTH_MODES` no longer controls the passive viewer.
+  The server does not start when `TAILPLAN_TAILSCALE_VIEWER=1` has no `TAILPLAN_TRUST_TAILSCALE_IDENTITY=1` or proxy listener.
+  Compose, the container entrypoint, and `install.sh` pass the setting.
+- A bearer key on a draft page now comes before the Tailscale header.
+- Every `404` page is the same, and it shows a "Sign in" link to a reader with no session.
+- `/share` and `/preview.png` reads now write `draft.view` audit events.
+  Upload grants now write `sharing.grant` audit events.
+- The server checks the loaded policy on each request. After a policy edit and server restart, a removed rule takes its roles away at once.
+- A reused `Idempotency-Key` with different grants, workspace, or visibility now returns `409`.
+- **Breaking:** an email policy rule with no dotted domain, such as `bob@passkey`, now stops the server at start.
+  Change it to a `tailscale_login` rule.
+- Add `grants` to `POST /api/uploads`. The server writes the grants and the draft in one transaction.
+- Add `--grant-email`, `--grant-tailscale`, `--grant-group`, and `--grant-role` to `tailplan upload`.
+- Add `--grant-tailscale` and `--revoke-tailscale` to `tailplan share`, and a "Tailscale login" grant to the sharing card.
+- Let the SSH publisher guard and the remote client run `tailplan share` and the upload sharing options.
+  The guard checks each value against a strict pattern.
+- Upgrade the SQLite schema to version 3. The upgrade copies every grant to the new table.
+  An `email` grant with no dotted domain becomes a `tailscale_login` grant.
+  A Tailscale principal with no dotted domain loses its stored email.
+  Back up `tailplan.db` before you upgrade: the server cannot go back to schema version 2.
+
 ## 0.5.0 - 2026-11-25
 
 - Add optional OpenID Connect sign-in behind the `oidc` extra (`PyJWT[crypto]>=2.10,<3`).

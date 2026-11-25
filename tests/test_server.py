@@ -1577,6 +1577,7 @@ class DualListenerTests(unittest.TestCase):
                 redirect_view_base_url="https://tailplan-https.example.test",
                 allow_anonymous_uploads=False,
                 trust_tailscale_identity=False,
+                tailscale_viewer=True,
                 owner_login="",
                 upload_ip_limit=60,
                 upload_key_limit=30,
@@ -1607,6 +1608,9 @@ class DualListenerTests(unittest.TestCase):
                 call.kwargs["redirect_view_base_url"],
             )
             run_spy.assert_called_once_with(primary, proxy)
+            # The passive viewer needs trusted identity, and the primary never gets it.
+            self.assertIs(False, proxy.tailscale_viewer)
+            self.assertNotIn("tailscale_viewer", vars(primary))
             for listener in (primary, proxy):
                 self.assertEqual(12, listener.viewer_404_limit)
             self.assertEqual(frozenset({"guest@example.test"}), proxy.allowed_logins)

@@ -685,7 +685,7 @@ class InteropGateDocumentation(unittest.TestCase):
                      "TAILPLAN_OIDC_CLIENT_SECRET_FILE", "TAILPLAN_OIDC_SCOPES", "TAILPLAN_OIDC_GROUPS_CLAIM",
                      "TAILPLAN_OIDC_ALLOW_PRIVATE_ISSUER", "TAILPLAN_OIDC_LINK_EMAILS",
                      "TAILPLAN_SESSION_TTL_SECONDS", "TAILPLAN_RBAC_POLICY_FILE", "TAILPLAN_VIEWER_AUTH_MODE",
-                     "TAILPLAN_MAX_VISIBILITY"):
+                     "TAILPLAN_MAX_VISIBILITY", "TAILPLAN_TAILSCALE_VIEWER"):
             self.assertIn(name + ": ${" + name + ":-}", compose)
             self.assertIn(f'"{name}"', entrypoint)
             self.assertIn(f'"{name}"', source)

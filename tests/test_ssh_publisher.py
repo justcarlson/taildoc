@@ -298,3 +298,84 @@ def test_documented_upgrade_requires_an_isolated_publisher_refresh() -> None:
 
     assert "Run the same SSH publisher installer command after every Tailplan upgrade." in instructions
     assert "The normal Tailplan installer does not update the isolated local publisher." in instructions
+
+
+@pytest.mark.parametrize("arguments", [
+    ["share", "draft123"],
+    ["share", "draft123", "--json"],
+    ["share", "draft123", "--visibility", "private", "--workspace", "family"],
+    ["share", "draft123", "--grant-email", "a@example.test", "--grant-email", "b@example.test",
+     "--grant-tailscale", "alice@github", "--grant-group", "/family", "--role", "editor"],
+    ["share", "draft123", "--revoke-email", "a@example.test", "--revoke-tailscale", "alice@github",
+     "--revoke-group", "ops", "--json"],
+])
+def test_guard_allows_share_with_strict_sharing_options(arguments) -> None:
+    with (
+        patch.object(mod, "configured_share_command", return_value="/publisher"),
+        patch.object(mod.os, "execv", side_effect=SystemExit(0)) as execute,
+        pytest.raises(SystemExit) as exited,
+    ):
+        mod.execute(["tailplan-share", *arguments])
+    assert exited.value.code == 0
+    execute.assert_called_once_with("/publisher", ["/publisher", *arguments])
+
+
+@pytest.mark.parametrize("arguments", [
+    ["share"],
+    ["share", "../draft"],
+    ["share", "draft123", "--grant-email"],
+    ["share", "draft123", "--grant-email", "--json"],
+    ["share", "draft123", "--grant-email", "-x@example.test"],
+    ["share", "draft123", "--grant-email=a@example.test"],
+    ["share", "draft123", "--grant-email", "a@example.test;id"],
+    ["share", "draft123", "--grant-email", "$(id)@example.test"],
+    ["share", "draft123", "--grant-tailscale", "alice@github x"],
+    ["share", "draft123", "--grant-group", "-ops"],
+    ["share", "draft123", "--visibility", "everyone"],
+    ["share", "draft123", "--role", "owner"],
+    ["share", "draft123", "--role", "viewer", "--role", "editor"],
+    ["share", "draft123", "--visibility", "link", "--visibility", "private"],
+    ["share", "draft123", "--json", "--json"],
+    ["share", "draft123", "--api-url", "https://other.test"],
+    ["share", "draft123", "--grant-role", "viewer"],
+    ["share", "draft123", *(["--grant-email", "a@example.test"] * 40)],
+])
+def test_guard_rejects_unsafe_share_arguments(arguments) -> None:
+    with (
+        patch.object(mod, "configured_share_command", return_value="/publisher"),
+        patch.object(mod.os, "execv", side_effect=AssertionError("executed")),
+        pytest.raises(SystemExit) as exited,
+    ):
+        mod.execute(["tailplan-share", *arguments])
+    assert exited.value.code == 126
+
+
+def test_guard_allows_publish_sharing_options_and_rejects_bad_values(tmp_path: Path) -> None:
+    directory = tmp_path / "tailplan-upload.Qr12St34"
+    directory.mkdir(mode=0o700, exist_ok=False)
+    source = directory / "draft.md"
+    source.write_text("# Draft\n")
+    _, patched_file_re = _patched_guard_patterns(tmp_path)
+    sharing = ["--new", "--workspace", "family", "--visibility", "private",
+               "--grant-email", "a@example.test", "--grant-tailscale", "alice@github",
+               "--grant-tailscale", "bob@passkey", "--grant-group", "ops", "--grant-role", "editor"]
+    with (
+        patch.object(mod, "FILE_RE", patched_file_re),
+        patch.object(mod, "configured_share_command", return_value="/publisher"),
+        patch.object(mod.os, "execv", side_effect=SystemExit(0)) as execute,
+        pytest.raises(SystemExit) as exited,
+    ):
+        mod.execute(["tailplan-share", str(source), *sharing])
+    assert exited.value.code == 0
+    execute.assert_called_once_with("/publisher", ["/publisher", str(source), *sharing])
+
+    for bad in (["--grant-email", "a@b;rm"], ["--grant-role", "owner"], ["--visibility", "public"],
+                ["--revoke-email", "a@example.test"], ["--role", "viewer"], ["--grant-group"],
+                ["--workspace", "a", "--workspace", "b"]):
+        with (
+            patch.object(mod, "FILE_RE", patched_file_re),
+            patch.object(mod.os, "execv", side_effect=AssertionError("executed")),
+            pytest.raises(SystemExit) as raised,
+        ):
+            mod.execute(["tailplan-share", str(source), "--new", *bad])
+        assert raised.value.code == 126, bad

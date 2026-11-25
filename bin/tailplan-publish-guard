@@ -19,6 +19,47 @@ DRAFT_RE = re.compile(r"[a-z0-9]{6,32}")
 SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,38}[a-z0-9]")
 DRAFT_REF_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,39}")
 MAX_FILES_JSON_BYTES = 512 * 1024 * 6 + 64 * 1024
+MAX_SHARING_ARGS = 64
+# Sharing values. Each pattern refuses a leading "-", so no value reads as an option.
+VISIBILITY_RE = re.compile(r"private|workspace|authenticated|link")
+WORKSPACE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
+# An email needs a dotted domain. A dot-free login such as alice@github is a
+# Tailscale login: use --grant-tailscale for it.
+EMAIL_ARG_RE = re.compile(
+    r"[A-Za-z0-9_%+'][A-Za-z0-9._%+'-]{0,63}"
+    r"@(?=[A-Za-z0-9.-]{3,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+"
+)
+TAILSCALE_LOGIN_ARG_RE = re.compile(
+    r"[A-Za-z0-9_%+'][A-Za-z0-9._%+'-]{0,63}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?"
+)
+GROUP_ARG_RE = re.compile(r"[A-Za-z0-9/_][A-Za-z0-9 _./:@+-]{0,254}")
+ROLE_RE = re.compile(r"viewer|editor")
+SHARING_VALUES = {
+    "--visibility": VISIBILITY_RE,
+    "--workspace": WORKSPACE_RE,
+    "--grant-email": EMAIL_ARG_RE,
+    "--grant-tailscale": TAILSCALE_LOGIN_ARG_RE,
+    "--grant-group": GROUP_ARG_RE,
+    "--revoke-email": EMAIL_ARG_RE,
+    "--revoke-tailscale": TAILSCALE_LOGIN_ARG_RE,
+    "--revoke-group": GROUP_ARG_RE,
+    "--role": ROLE_RE,
+    "--grant-role": ROLE_RE,
+}
+REPEATABLE_OPTIONS = {
+    "--grant-email", "--grant-tailscale", "--grant-group",
+    "--revoke-email", "--revoke-tailscale", "--revoke-group",
+}
+SHARE_OPTIONS = {
+    "--visibility", "--workspace", "--role",
+    "--grant-email", "--grant-tailscale", "--grant-group",
+    "--revoke-email", "--revoke-tailscale", "--revoke-group",
+}
+PUBLISH_SHARING_OPTIONS = {
+    "--visibility", "--workspace", "--grant-role",
+    "--grant-email", "--grant-tailscale", "--grant-group",
+}
 
 
 def deny(detail: str) -> None:
@@ -80,6 +121,34 @@ def _verify_staged_file(path_str: str, *, max_size: int | None = None, label: st
         deny(f"{label} is too large")
 
 
+def check_sharing_value(option: str, value: str) -> None:
+    pattern = SHARING_VALUES[option]
+    if pattern.fullmatch(value) is None:
+        deny(f"{option} value is invalid")
+
+
+def check_share_command(values: list[str]) -> None:
+    """Allow `share REF` with sharing options. Deny everything else."""
+    if len(values) < 2 or len(values) > MAX_SHARING_ARGS or DRAFT_REF_RE.fullmatch(values[1]) is None:
+        deny("share arguments are invalid")
+    rest = values[2:]
+    seen: set[str] = set()
+    while rest:
+        option, *rest = rest
+        if option == "--json":
+            if option in seen:
+                deny("duplicate share option")
+            seen.add(option)
+            continue
+        if option not in SHARE_OPTIONS or not rest:
+            deny("share option is invalid")
+        if option in seen and option not in REPEATABLE_OPTIONS:
+            deny("duplicate share option")
+        seen.add(option)
+        value, *rest = rest
+        check_sharing_value(option, value)
+
+
 def execute(argv: list[str]) -> None:
     if argv == ["mktemp", "-d", "/tmp/tailplan-upload.XXXXXXXX"]:
         os.execv("/usr/bin/mktemp", argv)
@@ -96,9 +165,13 @@ def execute(argv: list[str]) -> None:
 
     if argv and argv[0] == "tailplan-share" and len(argv) > 1 and argv[1] in {
         "list", "whoami", "history", "disable", "enable", "delete",
-        "favorite", "unfavorite", "keys", "themes", "typography", "download", "check",
+        "favorite", "unfavorite", "keys", "themes", "typography", "download", "check", "share",
     }:
         values = argv[1:]
+        if values[0] == "share":
+            check_share_command(values)
+            command = configured_share_command()
+            os.execv(command, [command, *argv[1:]])
         if values[0] == "check":
             rest = values[1:]
             seen_check: set[str] = set()
@@ -152,7 +225,7 @@ def execute(argv: list[str]) -> None:
         command = configured_share_command()
         os.execv(command, [command, *argv[1:]])
 
-    if 2 <= len(argv) <= 22 and argv[0] == "tailplan-share":
+    if 2 <= len(argv) <= 22 + MAX_SHARING_ARGS and argv[0] == "tailplan-share":
         if argv[1] == "--files-json":
             if len(argv) < 3 or FILE_RE.fullmatch(argv[2]) is None:
                 deny("publish path is invalid")
@@ -167,10 +240,16 @@ def execute(argv: list[str]) -> None:
         seen = set()
         while options:
             option, *options = options
-            if option in seen:
+            if option in seen and option not in REPEATABLE_OPTIONS:
                 deny("duplicate publish option")
             seen.add(option)
             if option in {"--new", "--json"}:
+                continue
+            if option in PUBLISH_SHARING_OPTIONS:
+                if not options:
+                    deny("publish option is invalid")
+                value, *options = options
+                check_sharing_value(option, value)
                 continue
             if option not in {
                 "--draft", "--slug", "--description", "--metadata-file",
