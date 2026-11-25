@@ -59,7 +59,7 @@ def test_single_sign_on_returns_to_the_draft(page, tailplan):
     assert names["tailplan_session"]["httpOnly"]
     assert names["tailplan_session"]["sameSite"] == "Lax"
     assert "tailplan_oidc_flow" not in names or names["tailplan_oidc_flow"]["value"] == ""
-    assert tailplan.events("auth.login")[-1]["detail"]["method"] == "oidc"
+    assert tailplan.events("auth.login")[-1]["auth_method"] == "oidc"
 
 
 def test_view_token_carries_reads_when_cookies_are_blocked(page, tailplan):

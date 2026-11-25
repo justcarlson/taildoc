@@ -64,8 +64,8 @@ It does not set cookies or make `tv=` tokens.
 The identity gets the `viewer` role and no more, even when a grant or rule gives more.
 The dashboard, `/api/*`, `/source`, and every `POST`, `PUT`, or `DELETE` ignore the header.
 `TAILPLAN_ALLOWED_LOGINS` also applies to the header.
-The audit log records each `GET` as `draft.view`, with the login as the actor email and `authMethod` `tailscale_header`.
-The event also records the login as `actorLogin`.
+The audit log records each `GET` as `draft.view`, with `auth_method` `tailscale_header`. The actor is the hash of the login.
+The database event also records the login as `actorLogin`. The printed line does not.
 This includes `/share` and `/preview.png`.
 
 When a header identity cannot read a draft, the server returns `404`.
@@ -198,12 +198,46 @@ The new API key expires after 90 days.
 
 ## Audit log
 
-The `audit_log` table is append-only.
+The `audit_events` table is append-only.
 Database triggers refuse updates and deletes.
-The server also writes each event to standard output as one JSON line.
-Each line has these fields: `ts`, `service`, `event`, `actor_account_id`, `actor_email`, `target_type`, `target_id`, `outcome`, and `detail`.
-The `service` field is always `tailplan`.
+The table keeps the full record, with the actor email.
 Only admins and auditors can read `GET /api/audit`.
+
+The server also prints each event as one wide event: one compact JSON object per line with sorted keys.
+The line holds no email address, no free text, and no nested value.
+A successful event goes to standard output.
+A failed event goes to standard error, with no `<3>` prefix.
+Docker's journald log driver sets the priority from the stream.
+
+Each line has these fields:
+
+| Field | Value |
+| --- | --- |
+| `event` | `tailplan.` and the event name, for example `tailplan.draft.change` |
+| `event_version` | `1` |
+| `run_id` | A random 32-character hex id |
+| `started_at` | UTC time with milliseconds, for example `2026-11-06T04:00:00.123Z` |
+| `duration_ms` | `0`. The server does not time an event. |
+| `outcome` | `success` or `error` |
+| `error_type` | An empty string on success. `denied` or `failure` on error. |
+| `release` | The Tailplan version |
+| `actor_hash` | The first 16 hex characters of an HMAC-SHA256 of the account id, or of the lowercase email. Empty when there is no actor. |
+| `actor_kind` | `owner`, `member`, `local`, `api_key`, `anonymous`, `system`, or `other` |
+| `target_type` | `draft`, `account`, `principal`, `api_key`, `device_code`, or `other` |
+| `target_id` | An id of 1 to 80 characters from `A-Za-z0-9_.:-`. The HMAC of a `principal`. `other` when the id does not fit. |
+
+An event can add more fields. The server adds a field only when its value passes a check.
+The fields are `client.address`, `auth_method`, `reason`, `action`, `created`, `draft_version`, `visibility`, and `workspace`.
+The other fields are `grant_count`, `grant_type`, `grant_role`, `grant_hash`, `session_count`, and `item_count`.
+A tag never appears on the line.
+`grant_hash` is the same kind of hash, of the grant value.
+The server drops every other detail field from the line.
+The server checks each row before it prints it.
+A row that fails the check prints as `tailplan.audit.invalid` with only the fields above.
+
+Set `TAILPLAN_AUDIT_HMAC_KEY` to a secret value so that hashes stay the same after a restart.
+Without it, the server uses a random key for each process.
+The `ts` and `service` fields are not on the line: the log driver adds the time and the container name.
 
 ## Suitable content
 

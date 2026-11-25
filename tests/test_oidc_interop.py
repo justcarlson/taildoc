@@ -211,7 +211,7 @@ class KeycloakTests(AuthCase):
         self.assertEqual("alice@example.test", me["email"])
         self.assertEqual({"team": "editor"}, me["workspaces"])
         login = self.events("auth.login")[-1]
-        self.assertEqual("oidc", login["detail"]["method"])
+        self.assertEqual("oidc", login["auth_method"])
         self.assertEqual("success", login["outcome"])
 
     def test_keycloak_account_is_keyed_on_issuer_and_subject(self):
