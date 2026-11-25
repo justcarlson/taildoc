@@ -962,6 +962,7 @@ The project uses ASD-STE100 Simplified Technical English for documents and sourc
 Dockerfile                   Container image
 compose.yaml                 Container deployment example
 tailplan_server.py           HTTP service
+tailplan_web/                Web page renderers and hashed static assets
 install.sh                   Native server installer
 install-client.sh            Remote client installer
 install-ssh-publisher.sh      Forced-command publisher installer
