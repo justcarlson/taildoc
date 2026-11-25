@@ -97,7 +97,7 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual("wal", connection.execute("PRAGMA journal_mode").fetchone()[0])
             self.assertEqual(1, connection.execute("PRAGMA foreign_keys").fetchone()[0])
             self.assertEqual(5000, connection.execute("PRAGMA busy_timeout").fetchone()[0])
-            self.assertEqual(3, connection.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(4, connection.execute("PRAGMA user_version").fetchone()[0])
             tables = {
                 row[0]
                 for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")

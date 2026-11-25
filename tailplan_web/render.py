@@ -121,7 +121,9 @@ def _render_shared_row(draft: dict) -> str:
     return row
 
 
-def render_dashboard(base_url: str, session: dict, drafts: list[dict], *, shared: list[dict] | None = None) -> str:
+def render_dashboard(base_url: str, session: dict, drafts: list[dict], *, shared: list[dict] | None = None,
+                     state: dict | None = None) -> str:
+    """Render the dashboard. `state` holds the query, view, and theme. The page ignores it for now."""
     favorites = [draft for draft in drafts if draft.get("favorite")]
     non_favorites = [draft for draft in drafts if not draft.get("favorite")]
     groups: dict[tuple, list] = {}
