@@ -49,14 +49,26 @@ def test_browser_lane_is_cross_engine_and_keeps_failure_evidence():
     assert set(job['strategy']['matrix']['browser']) == {'chromium', 'webkit'}
     script = commands(job)
     for required in ('--browser', '--tracing retain-on-failure', '--screenshot only-on-failure',
-                     '--junitxml=test-results/browser.xml', 'check_junit.py', '--minimum 90'):
+                     '--junitxml=test-results/browser.xml', 'check_junit.py', '--minimum 93'):
         assert required in script
     run = next(step for step in job['steps'] if 'tests/test_theme_browser.py' in step.get('run', ''))
+    assert 'tests/test_oidc_browser.py' in run['run']
     assert run['env']['TAILPLAN_BROWSER_TESTS'] == '1'
     upload = next(step for step in job['steps'] if step.get('uses', '').startswith('actions/upload-artifact@'))
     assert upload['if'] == 'always()'
     assert upload['with']['path'] == 'test-results/'
     assert upload['with']['if-no-files-found'] == 'error'
+
+
+def test_interop_lane_signs_in_through_keycloak_and_rejects_skips():
+    jobs = workflow('ci.yml')['jobs']
+    script = commands(jobs['interop'])
+    run = next(step for step in jobs['interop']['steps'] if 'test_oidc_interop.py' in step.get('run', ''))
+    assert run['env']['TAILPLAN_INTEROP_DOCKER'] == '1'
+    assert 'check_junit.py test-results/interop.xml' in script
+    unit = commands(jobs['tests'])
+    for gated in ('test_theme_browser.py', 'test_oidc_browser.py', 'test_oidc_interop.py'):
+        assert f'--ignore=tests/{gated}' in unit
 
 
 def test_packaging_cannot_be_satisfied_by_checkout_imports():

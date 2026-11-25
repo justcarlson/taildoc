@@ -1,6 +1,6 @@
 [project]
 name = "tailplan"
-version = "0.4.0"
+version = "0.5.0"
 description = "Tailnet-only static HTML draft publishing for agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,6 +15,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
+
+[project.optional-dependencies]
+oidc = ["PyJWT[crypto]>=2.10,<3"]
 
 [project.scripts]
 tailplan-server = "tailplan_server:main"
@@ -36,6 +39,7 @@ line-length = 100
 [dependency-groups]
 dev = [
     "jsonschema>=4.26.0",
+    "PyJWT[crypto]>=2.10,<3",
     "pytest>=9.1.1",
     "pytest-playwright>=0.9.0",
     "pyyaml>=6.0.3",

@@ -4,6 +4,8 @@ Tailplan uses the tailnet as the viewer security boundary.
 The upload API requires an upload token unless anonymous publication is explicitly enabled.
 Management accounts restrict draft listings, changes, history, and API key operations.
 Viewer URLs remain accessible to authorized tailnet devices.
+Version 0.5.0 adds optional single sign-on, roles, and draft visibility.
+The sections below describe them.
 
 Named keys are stored as SHA-256 hashes.
 Each key belongs to one account.
@@ -53,6 +55,81 @@ External HTTPS images, media, fonts, allowlisted stylesheets, and escaped popups
 Script-free drafts, Markdown drafts, anonymous uploads, and pre-0.0.6 versions keep `script-src 'none'`.
 Forms, external scripts, unsupported script types, embeds, meta refresh, and unsafe URL attributes are rejected.
 
+## Single sign-on
+
+Tailplan uses the OpenID Connect authorization code flow with PKCE `S256`.
+It sends the client secret with HTTP Basic authentication (`client_secret_basic`).
+Discovery is lazy: the server makes no identity provider request until the first sign-in.
+The server checks that the discovery `issuer` is equal to `TAILPLAN_OIDC_ISSUER`.
+Every endpoint must use HTTPS and the issuer origin.
+
+The server refuses redirects from the identity provider.
+It refuses loopback, private, link-local, and CGNAT addresses unless `TAILPLAN_OIDC_ALLOW_PRIVATE_ISSUER=1`.
+It limits each response to 512 KiB and each request to 5 seconds.
+
+The server keeps the key set for one hour.
+An unknown key ID causes a refresh, but not more than once each 60 seconds.
+The server accepts only `RS256`, `PS256`, `ES256`, `ES384`, and `EdDSA`.
+It refuses `none` and every HMAC algorithm.
+It checks `iss`, `aud`, `azp`, `exp`, `nbf`, `iat`, and `nonce`, with 30 seconds of clock skew.
+When the ID token has no groups, the server reads them from the userinfo endpoint.
+The userinfo `sub` must match the ID token.
+
+The server keys each account on the issuer and the subject (`iss`, `sub`).
+It never uses the email address as an account key.
+A first sign-in links to an existing account only when the email is verified and is in `TAILPLAN_OIDC_LINK_EMAILS`.
+
+The flow state, nonce, and PKCE verifier stay in a signed `tailplan_oidc_flow` cookie for 10 minutes.
+The `next` value must be a local path on an allowlist.
+Other values go to `/dashboard`.
+
+## Sessions and view tokens
+
+Each browser session has a row in the database.
+Sign-out and back-channel logout revoke that row at once.
+Back-channel logout accepts a signed logout token at `/auth/oidc/backchannel-logout`.
+The token must have the logout event, no nonce, and `sub` or `sid`.
+
+The `tailplan_session` cookie uses `SameSite=Lax` and `HttpOnly`.
+It uses `Secure` when the base URL uses HTTPS.
+Draft pages also get a `tailplan_view` cookie with `SameSite=None`, `Secure`, `HttpOnly`, and `Path=/d/`.
+It lets a draft open in a new tab from another site.
+
+Some browsers block that cookie, for example Safari with third-party cookies off.
+For these browsers, links between pages of a multi-page draft carry a `?tv=` token.
+The token is an HMAC over the draft ID and the session.
+It expires after one hour and works only for `GET` requests to that draft.
+When the session ends, its view tokens and view cookies stop working.
+
+## Roles and visibility
+
+Access is deny by default.
+A sign-in that matches no policy rule gets `403` and an `auth.denied` audit event.
+The bootstrap upload token has the `admin` instance role.
+An API key has the roles of its account.
+A key can never give more access than its account has.
+
+`TAILPLAN_MAX_VISIBILITY` caps the visibility of every draft.
+When you lower it, existing drafts become less visible at once.
+Only an owner, editor, or admin can change sharing.
+An upload can name a workspace only when the uploader is an editor or admin of that workspace.
+
+## Device login
+
+`tailplan auth login --device` starts a device code flow.
+The signed-in user opens `/cli/activate`, checks the code, and approves.
+The code expires after 10 minutes and works once.
+The new API key expires after 90 days.
+
+## Audit log
+
+The `audit_log` table is append-only.
+Database triggers refuse updates and deletes.
+The server also writes each event to standard output as one JSON line.
+Each line has these fields: `ts`, `service`, `event`, `actor_account_id`, `actor_email`, `target_type`, `target_id`, `outcome`, and `detail`.
+The `service` field is always `tailplan`.
+Only admins and auditors can read `GET /api/audit`.
+
 ## Suitable content
 
 Tailplan is suitable for these file types only if the files contain no restricted content:
@@ -75,6 +152,8 @@ Do not upload a document if only a subset of the authorized Tailplan viewers can
 Keep the upload-token file at mode `0600`.
 Keep the upload token only on the Tailplan server.
 Use Tailscale access controls to restrict viewer access.
+Use `TAILPLAN_VIEWER_AUTH_MODE=session` when the tailnet alone is too wide a boundary.
+Keep the OIDC client secret in a file with mode `0600`.
 Use a forced-command SSH account for remote publishers.
 
 ## Public sharing

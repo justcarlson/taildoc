@@ -375,7 +375,7 @@ class ContainerTests(unittest.TestCase):
         compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
         service = compose["services"]["tailplan"]
         version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-        self.assertEqual("0.4.0", version)
+        self.assertEqual("0.5.0", version)
         self.assertEqual(f"tailplan:{version}", service["image"])
         environment = service["environment"]
         self.assertEqual("0.0.0.0", environment["TAILPLAN_HOST"])

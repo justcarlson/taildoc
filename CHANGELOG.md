@@ -6,6 +6,22 @@ The project uses semantic version numbers.
 
 ## Unreleased
 
+- Add optional OpenID Connect sign-in behind the `oidc` extra (`PyJWT[crypto]>=2.10,<3`).
+  The server imports PyJWT only when `TAILPLAN_OIDC_ISSUER` is set.
+- Validate ID tokens with asymmetric algorithms only, PKCE `S256`, `client_secret_basic`, and 30 seconds of clock skew.
+- Key accounts on issuer and subject, and link by email only for verified emails in `TAILPLAN_OIDC_LINK_EMAILS`.
+- Store browser sessions in the database, so sign-out and back-channel logout revoke them at once.
+- Add deny-by-default roles from `TAILPLAN_RBAC_POLICY_FILE`, with workspaces and the `admin` and `auditor` instance roles.
+- Add draft visibility (`private`, `workspace`, `authenticated`, `link`), grants, and `TAILPLAN_MAX_VISIBILITY`.
+- Add `TAILPLAN_VIEWER_AUTH_MODE` with `network`, `per-draft`, and `session` modes.
+  The default `network` mode keeps the 0.4.0 viewer behavior.
+- Add the `tailplan_view` cookie and `?tv=` link tokens, so multi-page drafts work when third-party cookies are blocked.
+- Add a sharing card, visibility badges, and a "Shared with me" section to the dashboard.
+- Add `tailplan share`, plus `--workspace` and `--visibility` on `tailplan upload`.
+- Add `tailplan auth login --device`, which saves an API key that expires after 90 days.
+- Add an append-only audit log, JSON lines on standard output, and `GET /api/audit` for admins and auditors.
+- Upgrade the SQLite schema to version 2.
+- Run sign-in browser checks on Chromium and WebKit, and a Keycloak 26 sign-in check in CI.
 - Store metadata in a SQLite database, `tailplan.db`, in write-ahead log mode.
   The first start imports `metadata.json` and keeps the original as `metadata.json.pre-sqlite.bak`, so a rollback to 0.4.0 loses nothing.
   Draft HTML files stay on disk.
