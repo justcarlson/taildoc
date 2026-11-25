@@ -2899,7 +2899,29 @@ class Store:
     def _open_database_locked(self) -> None:
         with self._connection() as connection:
             self._prepare_database(connection)
+            self._rebase_database_paths_locked(connection)
         os.chmod(self.db_path, 0o600)
+
+    def _rebase_database_paths_locked(self, connection: sqlite3.Connection) -> None:
+        """Update stored object paths when a database moves to a new directory."""
+        data = self._read_all(connection)
+        drafts = data.get("drafts", {})
+        if not drafts:
+            return
+        changed = False
+        for draft_id, draft in drafts.items():
+            latest = draft.get("latestVersionNumber")
+            if type(latest) is not int or latest < 1:
+                continue
+            canonical = self.drafts / draft_id / f"v{latest}.html"
+            if draft.get("currentObject") != str(canonical):
+                self._verify_rebase_object(canonical, draft)
+                draft["currentObject"] = str(canonical)
+                changed = True
+        if changed:
+            _validate_metadata_schema(data, self.root)
+            with self._write_transaction(connection):
+                self._write_all(connection, data)
 
     @staticmethod
     def _remove_database_files(path: Path) -> None:

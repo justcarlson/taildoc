@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import socket
 import sqlite3
 import sys
@@ -506,6 +507,49 @@ class ReadinessTests(unittest.TestCase):
         elapsed = (time.perf_counter() - started) / 5
 
         self.assertLess(elapsed, 1.0)
+
+    def test_reopening_copied_sqlite_data_directory_rebases_object_paths(self) -> None:
+        created = self.make_drafts(1)[0]
+        copied = Path(self.temporary.name) / "copied-data"
+        shutil.copytree(self.store.root, copied)
+
+        restored = server.Store(copied)
+        restored.check_ready()
+        draft, body = restored.get(created["draftId"])
+        self.assertIsNotNone(draft)
+        self.assertIn("Draft 0", body)
+        self.assertEqual(
+            draft["currentObject"],
+            str(copied / "drafts" / created["draftId"] / "v1.html"),
+        )
+
+    def test_tailplan_share_public_restores_versions_from_sqlite(self) -> None:
+        import importlib.machinery
+        import importlib.util
+
+        created = self.store.upsert(
+            None,
+            None,
+            None,
+            BASE_URL,
+            description="Public mirror check",
+            slug="multi-public",
+            files=[
+                {"path": "index.html", "html": "<!doctype html><meta name=viewport content='width=device-width'><title>Multi</title><a href='page2.html'>p2</a>"},
+                {"path": "page2.html", "html": "<!doctype html><meta name=viewport content='width=device-width'><title>P2</title><p>two</p>"},
+            ],
+        )
+        script = Path(__file__).resolve().parents[1] / "bin" / "tailplan-share-public"
+        loader = importlib.machinery.SourceFileLoader("tailplan_share_public_mod", str(script))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        with patch.object(module, "TAILPLAN_META", self.store.root / "metadata.json"):
+            draft = module.load_draft(created["draftId"])
+        versions = draft.get("versions", {})
+        self.assertIn("1", versions)
+        self.assertEqual(versions["1"].get("pageCount"), 2)
+        self.assertIn("page2.html", [p["path"] for p in versions["1"].get("pages", [])])
 
 
 if __name__ == "__main__":

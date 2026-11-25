@@ -36,10 +36,16 @@ def read_drafts() -> dict:
         try:
             connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True, timeout=5)
             try:
-                return {
+                drafts = {
                     draft_id: json.loads(doc)
                     for draft_id, doc in connection.execute("SELECT draft_id, doc FROM drafts")
                 }
+                for draft_id, number, doc in connection.execute(
+                    "SELECT draft_id, version_number, doc FROM draft_versions"
+                ):
+                    if draft_id in drafts:
+                        drafts[draft_id].setdefault("versions", {})[str(number)] = json.loads(doc)
+                return drafts
             finally:
                 connection.close()
         except Exception as e:
