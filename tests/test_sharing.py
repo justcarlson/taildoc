@@ -220,6 +220,20 @@ class SharingDashboardTests(AuthCase):
         _status, _headers, body = self.request("/dashboard", cookies=[guest])
         self.assertNotIn(b"Roadmap", body)
 
+    def test_sharing_card_offers_tailscale_login_grants(self) -> None:
+        owner = self.oidc_login(sub="owner", email="owner@example.test")
+        draft = self.upload("<title>Logins</title>", token=self.create_key(owner), visibility="private")
+        detail = f"/dashboard/drafts/{draft['draftId']}"
+        _status, _headers, body = self.request(detail, cookies=[owner])
+        self.assertIn(b'<option value="tailscale_login">Tailscale login</option>', body)
+        csrf = self.csrf(owner, detail)
+        status, _headers, _body = self.request(
+            detail + "/sharing/grants", "POST", cookies=[owner],
+            form={"csrf": csrf, "type": "tailscale_login", "value": "alice@github", "role": "viewer"})
+        self.assertEqual(303, status)
+        _status, _headers, body = self.request(detail, cookies=[owner])
+        self.assertIn(b"alice@github", body)
+
     def test_dashboard_shows_badges(self) -> None:
         owner = self.oidc_login(sub="owner")
         self.upload("<title>Badge</title>", token=self.create_key(owner), visibility="authenticated")
@@ -291,6 +305,37 @@ class ShareCliTests(AuthCase):
         self.assertEqual(0, result.returncode, result.stderr + result.stdout)
         draft_id = json.loads(result.stdout)["draftId"]
         self.assertEqual("link", self.store.resolve_draft(draft_id)["visibility"])
+
+    def test_share_command_grants_and_revokes_tailscale_logins(self) -> None:
+        draft = self.upload(visibility="private")
+        result = self.run_cli("share", draft["draftId"], "--grant-tailscale", "alice@github", "--json")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn(("tailscale_login", "alice@github", "viewer"),
+                      {(grant["type"], grant["value"], grant["role"])
+                       for grant in json.loads(result.stdout)["grants"]})
+        result = self.run_cli("share", draft["draftId"], "--grant-email", "alice@github")
+        self.assertNotEqual(0, result.returncode)
+        result = self.run_cli("share", draft["draftId"], "--revoke-tailscale", "alice@github", "--json")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], json.loads(result.stdout)["grants"])
+
+    def test_upload_shares_with_people_in_the_same_request(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            page = Path(folder) / "page.html"
+            page.write_text("<title>Shared page</title><p>Body</p>", encoding="utf-8")
+            result = self.run_cli("upload", str(page), "--visibility", "private", "--grant-email",
+                                  "Zed@Example.test", "--grant-tailscale", "alice@github",
+                                  "--grant-group", "ops", "--grant-role", "editor", "--json", "--new")
+            self.assertEqual(0, result.returncode, result.stderr + result.stdout)
+            draft_id = json.loads(result.stdout)["draftId"]
+            self.assertEqual({("email", "zed@example.test", "editor"),
+                              ("tailscale_login", "alice@github", "editor"), ("group", "ops", "editor")},
+                             {(grant["type"], grant["value"], grant["role"])
+                              for grant in self.store.list_grants(draft_id)})
+            drafts = len(self.store.load_meta()["drafts"])
+            result = self.run_cli("upload", str(page), "--grant-email", "alice@github", "--new")
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual(drafts, len(self.store.load_meta()["drafts"]))
 
     def test_version_is_current(self) -> None:
         result = self.run_cli("--version")

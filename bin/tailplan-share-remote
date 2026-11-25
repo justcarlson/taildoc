@@ -19,6 +19,18 @@ TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 DRAFT_RE = re.compile(r"^[a-z0-9]{6,32}$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$")
 REMOTE_DIR_RE = re.compile(r"^/tmp/tailplan-upload\.[A-Za-z0-9]{8}$")
+VISIBILITIES = ("private", "workspace", "authenticated", "link")
+GRANT_ROLES = ("viewer", "editor")
+# These match the publish guard on the server, so a value it refuses fails here first.
+WORKSPACE_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,62}")
+EMAIL_ARG_RE = re.compile(r"[A-Za-z0-9_%+'][A-Za-z0-9._%+'-]{0,63}@[A-Za-z0-9][A-Za-z0-9.-]{0,252}")
+GROUP_ARG_RE = re.compile(r"[A-Za-z0-9/_][A-Za-z0-9 _./:@+-]{0,254}")
+SHARING_PATTERNS = {
+    "--workspace": WORKSPACE_RE,
+    "--grant-email": EMAIL_ARG_RE, "--revoke-email": EMAIL_ARG_RE,
+    "--grant-tailscale": EMAIL_ARG_RE, "--revoke-tailscale": EMAIL_ARG_RE,
+    "--grant-group": GROUP_ARG_RE, "--revoke-group": GROUP_ARG_RE,
+}
 Run = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -40,6 +52,28 @@ def validate_remote_dir(path: str) -> None:
         raise RuntimeError("Remote mktemp returned an unsafe path.")
 
 
+def sharing_arguments(options: list[tuple[str, str | list[str] | None]]) -> list[str]:
+    """Return remote sharing options as shell-quoted words. Raise ValueError on a bad value.
+
+    Each value must match a strict pattern, and each word is also quoted,
+    because OpenSSH joins the words into one remote shell command.
+    """
+    words: list[str] = []
+    for option, value in options:
+        values = value if isinstance(value, list) else ([] if value is None else [value])
+        for item in values:
+            if option == "--visibility":
+                valid = item in VISIBILITIES
+            elif option in {"--role", "--grant-role"}:
+                valid = item in GRANT_ROLES
+            else:
+                valid = SHARING_PATTERNS[option].fullmatch(item) is not None
+            if not valid:
+                raise ValueError(f"{option} value is invalid: {item!r}")
+            words.extend([option, shlex.quote(item)])
+    return words
+
+
 def share_file(
     source: Path,
     *,
@@ -56,8 +90,10 @@ def share_file(
     typography: str | None = None,
     slug: str | None = None,
     files_json_path: Path | None = None,
+    sharing: list[tuple[str, str | list[str] | None]] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     source = source.expanduser().resolve()
+    sharing_words = sharing_arguments(sharing or [])
     if files_json_path is None and not source.is_file():
         raise FileNotFoundError(source)
     validate_target(target)
@@ -110,6 +146,7 @@ def share_file(
             command.extend(["--description", shlex.quote(description)])
         if metadata_path:
             command.extend(["--metadata-file", f"{remote_dir}/provenance.json"])
+        command.extend(sharing_words)
         return run(command, check=True, capture_output=True, text=True)
     finally:
         run(
@@ -307,6 +344,32 @@ def _remote_check(argv: list[str], target: str) -> int:
             subprocess.run(["ssh", target, "rm", "-rf", "--", remote_dir], check=False, capture_output=True)
 
 
+def _remote_share(argv: list[str], target: str) -> int:
+    """Show or change who can read a draft on the remote server."""
+    parser = argparse.ArgumentParser(prog="tailplan share", description="Show or change who can read a draft")
+    parser.add_argument("draft")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--visibility", choices=VISIBILITIES)
+    parser.add_argument("--workspace")
+    parser.add_argument("--role", choices=GRANT_ROLES)
+    for kind, metavar in (("email", "EMAIL"), ("tailscale", "LOGIN"), ("group", "GROUP")):
+        parser.add_argument(f"--grant-{kind}", action="append", default=[], metavar=metavar)
+        parser.add_argument(f"--revoke-{kind}", action="append", default=[], metavar=metavar)
+    args = parser.parse_args(argv)
+    validate_target(target)
+    ref = _load_library()["parse_draft_ref"](args.draft)
+    command = ["ssh", target, "tailplan-share", "share", shlex.quote(ref)]
+    if args.json:
+        command.append("--json")
+    command.extend(sharing_arguments([
+        ("--visibility", args.visibility), ("--workspace", args.workspace), ("--role", args.role),
+        ("--grant-email", args.grant_email), ("--grant-tailscale", args.grant_tailscale),
+        ("--grant-group", args.grant_group), ("--revoke-email", args.revoke_email),
+        ("--revoke-tailscale", args.revoke_tailscale), ("--revoke-group", args.revoke_group),
+    ]))
+    return subprocess.run(command, check=False).returncode
+
+
 def _remote_download(argv: list[str], target: str) -> int:
     parser = argparse.ArgumentParser(prog="tailplan download")
     parser.add_argument("draft")
@@ -383,6 +446,12 @@ def main() -> int:
         except (ValueError, RuntimeError, OSError) as exc:
             print(f"tailplan: {exc}", file=sys.stderr)
             return 2
+    if argv and argv[0] == "share":
+        try:
+            return _remote_share(argv[1:], target)
+        except (ValueError, RuntimeError, OSError) as exc:
+            print(f"tailplan: {exc}", file=sys.stderr)
+            return 2
     if argv and argv[0] == "check":
         try:
             return _remote_check(argv[1:], target)
@@ -415,8 +484,19 @@ def main() -> int:
     parser.add_argument("--typography", help="Font preset ID; list with tailplan typography")
     parser.add_argument("--layout")
     parser.add_argument("--description")
+    parser.add_argument("--workspace", help="Put a new draft in this workspace")
+    parser.add_argument("--visibility", choices=VISIBILITIES, help="Set who can read the draft")
+    parser.add_argument("--grant-email", action="append", default=[], metavar="EMAIL")
+    parser.add_argument("--grant-tailscale", action="append", default=[], metavar="LOGIN")
+    parser.add_argument("--grant-group", action="append", default=[], metavar="GROUP")
+    parser.add_argument("--grant-role", choices=GRANT_ROLES, default=None)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    upload_sharing = [
+        ("--workspace", args.workspace), ("--visibility", args.visibility),
+        ("--grant-email", args.grant_email), ("--grant-tailscale", args.grant_tailscale),
+        ("--grant-group", args.grant_group), ("--grant-role", args.grant_role),
+    ]
 
     try:
         library = _load_library()
@@ -461,6 +541,7 @@ def main() -> int:
                     description=args.description, json_output=True, metadata_path=metadata_path,
                     theme=args.theme, document_type=args.document_type, layout=args.layout,
                     typography=args.typography, slug=slug, files_json_path=files_json_path,
+                    sharing=upload_sharing,
                 )
             except subprocess.CalledProcessError as exc:
                 try:
@@ -484,6 +565,7 @@ def main() -> int:
                     description=args.description, json_output=True, metadata_path=metadata_path,
                     theme=args.theme, document_type=args.document_type, layout=args.layout,
                     typography=args.typography, slug=slug, files_json_path=files_json_path,
+                    sharing=upload_sharing,
                 )
             value = json.loads(result.stdout)
             if not isinstance(value, dict) or value.get("ok") is not True:

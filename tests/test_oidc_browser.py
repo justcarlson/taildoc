@@ -1,4 +1,4 @@
-"""Opt-in browser checks for single sign-on and the view token fallback.
+"""Opt-in browser checks for single sign-on, the view token fallback, and the Tailscale viewer.
 
 CI runs this file on Chromium and WebKit. The token test removes every cookie
 from draft requests, as a browser that blocks third-party cookies does.
@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 from auth_harness import AuthCase
+from test_tailscale_viewer import ViewerCase
 
 pytestmark = pytest.mark.skipif(not os.getenv("TAILPLAN_BROWSER_TESTS"),
                                 reason="Set TAILPLAN_BROWSER_TESTS=1 for browser checks")
@@ -91,4 +92,45 @@ def test_view_token_stops_after_sign_out(page, tailplan):
     page.wait_for_url(re.compile(r".*/$"))
     page.context.clear_cookies()
     page.goto(draft_url + href)
+    assert urlparse(page.url).path == "/auth/sign-in"
+
+
+class PassiveViewerCase(ViewerCase):
+    def runTest(self) -> None:  # unittest needs a method name; pytest drives this case.
+        pass
+
+
+@pytest.fixture
+def tailnet():
+    case = PassiveViewerCase()
+    case.setUp()
+    try:
+        yield case
+    finally:
+        case.tearDown()
+
+
+def test_tailscale_header_renders_a_shared_draft_with_zero_clicks(page, tailnet):
+    shared = tailnet.draft("Shared plan")
+    unshared = tailnet.draft("Owner only")
+    tailnet.store.add_grant(shared, "email", "zachvivier@gmail.com", "viewer", "local")
+    base = f"http://127.0.0.1:{tailnet.proxy.server_port}"
+    # Tailscale Serve adds this header for a tailnet user or a sharee.
+    page.set_extra_http_headers({"Tailscale-User-Login": "zachvivier@gmail.com"})
+    response = page.goto(f"{base}/d/{shared}")
+    assert response.status == 200
+    assert urlparse(page.url).path == f"/d/{shared}"
+    assert page.locator("h1").inner_text() == "Shared plan"
+    assert page.context.cookies() == []
+    assert page.goto(f"{base}/d/{unshared}").status == 404
+    # The header never opens the dashboard. It shows the usual sign-in form.
+    page.goto(f"{base}/dashboard")
+    assert "Owner only" not in page.content()
+    assert "tailplan_session" not in {cookie["name"] for cookie in page.context.cookies()}
+    assert tailnet.state() == (0, 0, 0)
+
+
+def test_tagged_node_without_the_header_falls_back_to_sign_in(page, tailnet):
+    draft_id = tailnet.draft("Shared plan")
+    page.goto(f"http://127.0.0.1:{tailnet.proxy.server_port}/d/{draft_id}")
     assert urlparse(page.url).path == "/auth/sign-in"

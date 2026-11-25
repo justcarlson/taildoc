@@ -292,3 +292,67 @@ def test_tailplan_skill_prohibits_an_ordinary_markdown_fallback() -> None:
         "markdown" in line and "fallback" in line and ("do not" in line or "never" in line)
         for line in rules
     )
+
+
+def test_remote_share_command_forwards_quoted_sharing_options(tmp_path: Path) -> None:
+    ssh = tmp_path / "ssh"
+    ssh.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+    ssh.chmod(0o755)
+    completed = subprocess.run(
+        [sys.executable, str(REMOTE_CLIENT), "share", "https://plans.example.test/d/abc123/share",
+         "--grant-tailscale", "alice@github", "--grant-email", "o'neil@example.test",
+         "--visibility", "private", "--role", "editor", "--json"],
+        env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
+        capture_output=True, text=True, check=True,
+    )
+    words = json.loads(completed.stdout)
+    assert words[:4] == ["tailplan-server", "tailplan-share", "share", "abc123"]
+    parsed = shlex.split(" ".join(words[1:]))
+    assert parsed[parsed.index("--grant-tailscale") + 1] == "alice@github"
+    assert parsed[parsed.index("--grant-email") + 1] == "o'neil@example.test"
+    assert parsed[parsed.index("--role") + 1] == "editor"
+    assert "--json" in parsed
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--grant-email", "a@b;id"], ["--grant-tailscale", "$(id)@x"], ["--grant-group", "-ops"],
+    ["--workspace", "a b"], ["--revoke-email", "a@example.test`id`"],
+])
+def test_remote_share_command_rejects_unsafe_values(tmp_path: Path, arguments: list[str]) -> None:
+    ssh = tmp_path / "ssh"
+    ssh.write_text("#!/bin/sh\necho SSH-WAS-CALLED >&2\nexit 9\n")
+    ssh.chmod(0o755)
+    completed = subprocess.run(
+        [sys.executable, str(REMOTE_CLIENT), "share", "abc123", *arguments],
+        env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
+        capture_output=True, text=True, check=False,
+    )
+    assert completed.returncode == 2
+    assert "SSH-WAS-CALLED" not in completed.stderr
+
+
+def test_remote_publish_forwards_sharing_options_and_checks_them_first(tmp_path: Path) -> None:
+    source = tmp_path / "report.md"
+    source.write_text("# Report\n")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        output = "/tmp/tailplan-upload.Ab12Cd34\n" if "mktemp" in command else ""
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    mod.share_file(source, target="tailplan-server", new=True, draft=None, run=run, sharing=[
+        ("--visibility", "private"), ("--grant-email", ["a@example.test"]),
+        ("--grant-tailscale", ["alice@github"]), ("--grant-role", "editor"),
+    ])
+    published = next(call for call in calls if call[:3] == ["ssh", "tailplan-server", "tailplan-share"])
+    parsed = shlex.split(" ".join(published[2:]))
+    assert parsed[parsed.index("--grant-tailscale") + 1] == "alice@github"
+    assert parsed[parsed.index("--grant-role") + 1] == "editor"
+    assert parsed[parsed.index("--visibility") + 1] == "private"
+
+    calls.clear()
+    with pytest.raises(ValueError):
+        mod.share_file(source, target="tailplan-server", new=True, draft=None, run=run,
+                       sharing=[("--grant-email", ["a@b;id"])])
+    assert calls == []

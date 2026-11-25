@@ -42,6 +42,40 @@ Add the owner login to the list, or the owner must sign in with an API key.
 API keys, the bootstrap token, and viewer routes do not use the list.
 When the list is empty, any Tailscale login can sign in.
 
+### Passive Tailscale viewer
+
+Set `TAILPLAN_TAILSCALE_VIEWER=1` to let tailnet users and sharees read drafts with no sign-in step.
+The setting works only with `TAILPLAN_TRUST_TAILSCALE_IDENTITY=1`, and only on the loopback proxy listener.
+The primary listener always ignores the header.
+The server uses the `Tailscale-User-Login` header only for `GET` and `HEAD` requests to draft pages.
+These pages are `/d/<ref>`, `/share`, `/preview.png`, `/raw`, and `/content`.
+A session, a view cookie, or a view token comes first.
+The header comes next, and a bearer key comes last.
+
+The header identity has no account and no state.
+The server does not write accounts, principals, or sessions for it.
+It does not set cookies or make `tv=` tokens.
+The identity gets the `viewer` role and no more, even when a grant or rule gives more.
+The dashboard, `/api/*`, `/source`, and every `POST`, `PUT`, or `DELETE` ignore the header.
+`TAILPLAN_ALLOWED_LOGINS` also applies to the header.
+The audit log records each `GET` as `draft.view`, with the login as the actor email and `authMethod` `tailscale_header`.
+
+A device with a tag has no user login, so Tailscale Serve sends no header.
+That device falls back to the usual sign-in page.
+
+### Logins and email addresses
+
+A Tailscale login is not always an email address.
+Logins such as `alice@github` and `alice@passkey` have no dotted domain.
+An email grant or an email rule needs a dotted domain, so these logins never match one.
+Use a `tailscale_login` grant or a `{"match": {"tailscale_login": "alice@github"}}` rule for them.
+A Tailscale login with a dotted domain also matches email grants and email rules.
+
+A login that matches no policy rule is a guest.
+A guest reads only drafts granted to it and `link` drafts.
+A guest does not read `authenticated` drafts.
+When Tailscale sign-in has a verified email that a single sign-on account already has, it uses that account.
+
 Viewer routes count each missing draft, version, or slug against the caller.
 The key is the Tailscale login on the proxy listener when identity is trusted, otherwise the client address.
 After `TAILPLAN_VIEWER_404_LIMIT` misses in 60 seconds, the server returns `429` with `Retry-After` for viewer requests from that key.
@@ -113,6 +147,9 @@ A key can never give more access than its account has.
 When you lower it, existing drafts become less visible at once.
 Only an owner, editor, or admin can change sharing.
 An upload can name a workspace only when the uploader is an editor or admin of that workspace.
+An upload can also carry grants.
+The server checks every grant first, and then writes the grants and the draft in one transaction.
+One bad grant rejects the whole upload with `422`.
 
 ## Device login
 

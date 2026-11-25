@@ -4,7 +4,7 @@ services:
   tailplan:
     build:
       context: .
-    image: tailplan:0.5.0
+    image: tailplan:0.6.0
     restart: unless-stopped
     init: true
     environment:

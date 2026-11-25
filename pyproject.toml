@@ -1,6 +1,6 @@
 [project]
 name = "tailplan"
-version = "0.5.0"
+version = "0.6.0"
 description = "Tailnet-only static HTML draft publishing for agents"
 readme = "README.md"
 requires-python = ">=3.11"

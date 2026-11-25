@@ -6,6 +6,25 @@ The project uses semantic version numbers.
 
 ## Unreleased
 
+## 0.6.0 - 2026-11-25
+
+- Add the passive Tailscale viewer, `TAILPLAN_TAILSCALE_VIEWER=1` (`--tailscale-viewer`).
+  On the trusted proxy listener, a `GET` or `HEAD` draft page reads the `Tailscale-User-Login` header with no sign-in step.
+  It never makes an account, a session, a cookie, or a `tv=` token, and it gives only the `viewer` role.
+  The dashboard, the API, `/source`, and every write still need a session, an API key, or the upload token.
+  The audit log records each view as `draft.view` with `authMethod` `tailscale_header`.
+- Add the `tailscale_login` grant type and the `tailscale_login` policy match.
+  Use them for logins that are not email addresses, such as `alice@github` or `alice@passkey`.
+- Require a dotted domain in email grants, so a login such as `alice@github` never matches an email grant or rule.
+- A signed-in user that matches no policy rule now reads only drafts granted to them and `link` drafts, not `authenticated` drafts.
+- Tailscale sign-in now uses the existing single sign-on account when the verified email is the same.
+- Add `grants` to `POST /api/uploads`. The server writes the grants and the draft in one transaction.
+- Add `--grant-email`, `--grant-tailscale`, `--grant-group`, and `--grant-role` to `tailplan upload`.
+- Add `--grant-tailscale` and `--revoke-tailscale` to `tailplan share`, and a "Tailscale login" grant to the sharing card.
+- Let the SSH publisher guard and the remote client run `tailplan share` and the upload sharing options.
+  The guard checks each value against a strict pattern.
+- Upgrade the SQLite schema to version 3. The upgrade copies every grant to the new table.
+
 ## 0.5.0 - 2026-11-25
 
 - Add optional OpenID Connect sign-in behind the `oidc` extra (`PyJWT[crypto]>=2.10,<3`).

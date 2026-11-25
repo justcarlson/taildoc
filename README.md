@@ -60,6 +60,8 @@ tailplan keys revoke <key-id>
 tailplan auth login --device --base-url https://tailplan.example.test
 tailplan upload ./plan.html --workspace team --visibility workspace
 tailplan share migration-plan --visibility authenticated --grant-email reader@example.test
+tailplan upload ./plan.html --visibility private --grant-email reader@example.test --grant-tailscale alice@github
+tailplan share migration-plan --grant-tailscale alice@github --revoke-tailscale bob@passkey
 ```
 
 The `tailplan-share FILE` command remains available.
@@ -95,6 +97,7 @@ External scripts, unsupported script types, forms, embeds, meta refresh, and uns
 | `TAILPLAN_TRUST_TAILSCALE_IDENTITY` | `0` | Trust identity headers only on the loopback proxy listener. |
 | `TAILPLAN_OWNER_LOGIN` | Empty | Map this Tailscale login to the existing local account. |
 | `TAILPLAN_ALLOWED_LOGINS` | Empty | Comma-separated Tailscale logins that may sign in. Empty allows any login. |
+| `TAILPLAN_TAILSCALE_VIEWER` | `0` | Let the proxy listener show drafts from the Tailscale login header, as a viewer, with no sign-in step. |
 | `TAILPLAN_VIEWER_404_LIMIT` | `30` | Maximum missing-draft responses per viewer each minute before `429`. |
 | `TAILPLAN_ALLOW_ANONYMOUS_UPLOADS` | `0` | Allow uploads into a separate anonymous account. |
 | `TAILPLAN_UPLOAD_IP_LIMIT` | `60` | Maximum uploads per client address each minute. |
@@ -160,6 +163,8 @@ For Keycloak, set `TAILPLAN_OIDC_SCOPES=openid profile email` and add a group me
 
 The policy file assigns roles.
 A sign-in that matches no rule gets `403`, and the audit log records `auth.denied`.
+A `tailscale_login` rule matches a Tailscale login that is not an email address, such as `alice@github`.
+An `email` rule needs a dotted domain.
 
 ```json
 {
@@ -168,7 +173,8 @@ A sign-in that matches no rule gets `403`, and the audit log records `auth.denie
     {"match": {"group": "staff"}, "workspaces": {"team": "editor"}},
     {"match": {"group": "readers"}, "workspaces": {"team": "viewer"}},
     {"match": {"group": "auditors"}, "instance_role": "auditor"},
-    {"match": {"email": "owner@example.test"}, "instance_role": "admin"}
+    {"match": {"email": "owner@example.test"}, "instance_role": "admin"},
+    {"match": {"tailscale_login": "alice@github"}, "workspaces": {"team": "viewer"}}
   ]
 }
 ```
@@ -203,6 +209,14 @@ A signed-in reader without access gets `404`, so the draft stays hidden.
 The dashboard shows a sharing card on each draft, a visibility badge, and a "Shared with me" section.
 The API has `GET` and `POST /api/drafts/<ref>/sharing`, plus `POST` and `DELETE /api/drafts/<ref>/sharing/grants`.
 The `tailplan share` command uses these routes.
+Grant types are `email`, `tailscale_login`, `group`, and `workspace`.
+`tailplan upload` can also send `--grant-email`, `--grant-tailscale`, `--grant-group`, and `--grant-role`.
+The server writes those grants with the draft in one transaction.
+
+With `TAILPLAN_TAILSCALE_VIEWER=1`, a tailnet user or sharee opens a draft link and reads it at once.
+The server reads the Tailscale login header on the proxy listener, for draft pages only.
+It gives the `viewer` role and keeps no session.
+The dashboard, the API, and every change still need a sign-in or an API key.
 
 `tailplan auth login --device` prints a link and a code.
 Open the link, check the code, and approve.
@@ -401,7 +415,7 @@ The proxy listener must use a loopback address:
 ```yaml
 services:
   tailplan:
-    image: ghcr.io/justcarlson/tailplan:0.5.0
+    image: ghcr.io/justcarlson/tailplan:0.6.0
     network_mode: service:ts-tailplan
     environment:
       TAILPLAN_HOST: 127.0.0.1
@@ -673,6 +687,7 @@ tailplan-share [--files-json] /tmp/tailplan-upload.<eight-allowed-characters>/<a
 tailplan-share check [staged file or --files-json] [--slug <slug>] [--json]
 tailplan-share download <ref> --print-source
 tailplan-share <list|whoami|themes|typography|history|disable|enable|delete|favorite|unfavorite|keys> [validated args]
+tailplan-share share <ref> [validated sharing options] [--json]
 rm -rf -- /tmp/tailplan-upload.<eight-allowed-characters>
 ```
 
@@ -780,6 +795,8 @@ Copy `metadata.json.pre-sqlite.bak` to `metadata.json`, then start the older rel
 The older release does not see changes made after the upgrade.
 Version 0.5.0 upgrades the database schema to version 2 at start.
 A release that knows only schema version 1 refuses to open it.
+Version 0.6.0 upgrades the schema to version 3, which adds the `tailscale_login` grant type.
+A 0.5.0 release refuses to open a version 3 database.
 
 ## Upgrade, rollback, and removal
 
@@ -837,6 +854,7 @@ Remove the old version images separately:
 docker image rm tailplan:0.2.1
 docker image rm tailplan:0.3.0
 docker image rm tailplan:0.4.0
+docker image rm tailplan:0.5.0
 ```
 
 ### Native service
