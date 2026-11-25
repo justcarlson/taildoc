@@ -2439,6 +2439,8 @@ def upload(
     slug: str | None = None,
     filename_override: str | None = None,
     sharing: dict | None = None,
+    tags: list[str] | None = None,
+    favorite: bool | None = None,
 ) -> dict:
     token_file = token_path or Path(os.getenv("TAILPLAN_TOKEN_FILE", str(Path.home() / ".tailplan" / "token")))
     try:
@@ -2474,6 +2476,10 @@ def upload(
     if metadata is not None:
         payload["metadata"] = metadata
     payload.update(sharing or {})
+    if tags is not None:
+        payload["tags"] = tags
+    if favorite is not None:
+        payload["favorite"] = favorite
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request_key = idempotency_key or secrets.token_urlsafe(32)
     attempts = max(1, max_attempts)
@@ -2763,6 +2769,9 @@ def _publish_locked(
     files: list[dict] | None = None,
     filename_override: str | None = None,
     sharing: dict | None = None,
+    tags: list[str] | None = None,
+    default_tags: list[str] | None = None,
+    favorite: bool | None = None,
 ) -> int:
     resolved_source = source.expanduser().resolve()
     staged_upload = bool(STAGED_UPLOAD_RE.match(str(resolved_source)))
@@ -2884,6 +2893,7 @@ def _publish_locked(
             )
 
     def upload_once(selected_draft_id: str | None):
+        upload_tags = tags_for_upload(tags, default_tags, new_draft=selected_draft_id is None)
         if uploader is None:
             provenance_cwd = resolved_source if resolved_source.is_dir() else resolved_source.parent
             return upload(
@@ -2899,6 +2909,8 @@ def _publish_locked(
                 description=description,
                 metadata=metadata if metadata is not None else collect_provenance(provenance_cwd),
                 **({"sharing": sharing} if sharing else {}),
+                **({"favorite": favorite} if favorite is not None else {}),
+                **({"tags": upload_tags} if upload_tags is not None else {}),
             )
         return uploader(html_path, base_url, selected_draft_id)
 
@@ -3045,6 +3057,9 @@ def publish(
     files: list[dict] | None = None,
     filename_override: str | None = None,
     sharing: dict | None = None,
+    tags: list[str] | None = None,
+    default_tags: list[str] | None = None,
+    favorite: bool | None = None,
 ) -> int:
     resolved_source = source.expanduser().resolve()
     state_home = home or Path.home()
@@ -3072,6 +3087,9 @@ def publish(
             files=files,
             filename_override=filename_override,
             sharing=sharing,
+            tags=tags,
+            default_tags=default_tags,
+            favorite=favorite,
         )
     try:
         with source_publish_lock(mapping_path, resolved_source):
@@ -3097,6 +3115,9 @@ def publish(
                 files=files,
                 filename_override=filename_override,
                 sharing=sharing,
+                tags=tags,
+                default_tags=default_tags,
+                favorite=favorite,
             )
     except OSError:
         return _emit_failure(
@@ -3135,6 +3156,7 @@ def main(argv: list[str] | None = None) -> int:
     if raw_argv and raw_argv[0] in {
         "auth", "whoami", "list", "history", "keys", "disable", "enable", "delete",
         "themes", "typography", "check", "favorite", "unfavorite", "download", "share",
+        "tag", "archive", "unarchive",
     }:
         return management_main(raw_argv)
     if raw_argv and raw_argv[0] == "upload":
@@ -3143,8 +3165,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = TailplanArgumentParser(
         description="Share a markdown/text/html artifact or HTML folder through Tailplan.",
         epilog=(
-            "Commands: upload, check, download, share, favorite, unfavorite, list, "
-            "history, whoami, auth, keys, disable, enable, delete. Use COMMAND --help."
+            "Commands: upload, check, download, share, favorite, unfavorite, tag, archive, "
+            "unarchive, list, history, whoami, auth, keys, disable, enable, delete. "
+            "Use COMMAND --help."
         ),
     )
     parser.add_argument("--version", action="version", version=f"tailplan {CLI_VERSION}")
@@ -3168,6 +3191,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Share the draft with this sign-in group (repeatable)")
     parser.add_argument("--grant-role", choices=GRANT_ROLES, default="viewer",
                         help="Role for --grant-* options (default: viewer)")
+    parser.add_argument("--tag", action="append", default=[], metavar="TAG",
+                        help="Tag the draft, such as a project name (repeatable or comma-separated)")
+    parser.add_argument("--favorite", action="store_true", help="Pin the draft as a favorite")
     parser.add_argument("--json", action="store_true", help="Emit one machine-readable JSON object")
     parser.add_argument(
         "--allow-insecure-http",
@@ -3211,6 +3237,12 @@ def main(argv: list[str] | None = None) -> int:
                 exit_code=2,
             )
         args.slug = normalized_slug
+
+    try:
+        explicit_tags = parse_tags(args.tag)
+    except ValueError as error:
+        return _emit_failure("usage", f"Invalid arguments: {error}", json_output=args.json,
+                             stdout=sys.stdout, stderr=sys.stderr, exit_code=2)
 
     upload_files = None
     filename_override = None
@@ -3324,6 +3356,9 @@ def main(argv: list[str] | None = None) -> int:
         files=upload_files,
         filename_override=filename_override,
         sharing=upload_sharing_options(args),
+        tags=explicit_tags or None,
+        default_tags=default_tags_from_env(),
+        favorite=True if args.favorite else None,
     )
 
 
@@ -3340,6 +3375,56 @@ def upload_sharing_options(args: argparse.Namespace) -> dict:
     if grants:
         sharing["grants"] = grants
     return sharing
+
+
+TAG_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
+MAX_TAGS = 10
+LIST_VIEWS = ("active", "favorites", "living", "shared", "archived", "all")
+LIST_SORTS = ("updated", "living", "favorited", "created", "title", "relevance")
+
+
+def parse_tags(values: list[str]) -> list[str]:
+    """Split comma-separated tag text, lowercase it, and check each tag. Raise ValueError."""
+    tags: list[str] = []
+    for value in values:
+        for part in value.split(","):
+            tag = part.strip().lower()
+            if not tag:
+                continue
+            if TAG_RE.fullmatch(tag) is None:
+                raise ValueError(
+                    f"Invalid tag {part.strip()!r}: use 1 to 32 letters, digits, dots, underscores, or hyphens."
+                )
+            if tag not in tags:
+                tags.append(tag)
+    if len(tags) > MAX_TAGS:
+        raise ValueError(f"A draft holds at most {MAX_TAGS} tags.")
+    return tags
+
+
+def clean_env_tag(text: str) -> str | None:
+    """Turn free text into one valid tag, or None when nothing usable remains."""
+    tag = re.sub(r"[^a-z0-9._-]+", "-", text.strip().lower())[:32].strip("-._")
+    return tag if TAG_RE.fullmatch(tag) else None
+
+
+def default_tags_from_env(environ=None) -> list[str]:
+    """Read TAILPLAN_PROJECT and TAILPLAN_TAGS. Skip anything unusable. Never use the working folder."""
+    environ = os.environ if environ is None else environ
+    candidates = [environ.get("TAILPLAN_PROJECT", "")] + environ.get("TAILPLAN_TAGS", "").split(",")
+    tags: list[str] = []
+    for candidate in candidates:
+        tag = clean_env_tag(candidate)
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags[:MAX_TAGS]
+
+
+def tags_for_upload(tags: list[str] | None, default_tags: list[str] | None, *, new_draft: bool) -> list[str] | None:
+    """Pick the tags to send. Default tags join only a new draft, so a re-upload keeps edited tags."""
+    if new_draft and default_tags:
+        return list(dict.fromkeys([*(tags or []), *default_tags]))[:MAX_TAGS]
+    return tags or None
 
 
 def collect_provenance(cwd: Path) -> dict:
@@ -3558,6 +3643,62 @@ def device_login(request, base: str, *, client_name: str, stderr=sys.stderr, sle
     raise ConfigurationFailure("The sign-in code expired. Start again.")
 
 
+def rewrite_tag_tokens(argv: list[str]) -> list[str]:
+    """Turn +tag and -tag words of the tag command into --add and --remove options.
+
+    This keeps argparse from reading -tag as an unknown option.
+    """
+    if not argv or argv[0] != "tag":
+        return argv
+    valued = {"--base-url", "--api-url", "--add", "--remove", "--set"}
+    rewritten = ["tag"]
+    after_value = False
+    for token in argv[1:]:
+        if after_value:
+            rewritten.append(token)
+            after_value = False
+        elif token in valued:
+            rewritten.append(token)
+            after_value = True
+        elif token.startswith("+") and len(token) > 1:
+            rewritten.append("--add=" + token[1:])
+        elif token.startswith("-") and not token.startswith("--") and len(token) > 1 and token != "-h":
+            rewritten.append("--remove=" + token[1:])
+        else:
+            rewritten.append(token)
+    return rewritten
+
+
+def draft_list_path(args: argparse.Namespace) -> str:
+    """Return the GET /api/drafts path with the filters of the list command."""
+    params = [(key, value) for key, value in (
+        ("view", args.view), ("q", args.q), ("sort", args.sort), ("dir", args.dir),
+        ("repo", args.repo),
+    ) if value]
+    if args.tag:
+        params.append(("tag", parse_tags([args.tag])[0]))
+    if args.archived:
+        params.append(("archived", "1"))
+    return "/api/drafts" + ("?" + urllib.parse.urlencode(params) if params else "")
+
+
+def tag_changes(args: argparse.Namespace) -> dict:
+    """Build the PATCH body of the tag command. Raise ConfigurationFailure on a bad tag."""
+    try:
+        changes: dict = {}
+        if args.set_tags is not None:
+            changes["tags"] = parse_tags([args.set_tags])
+        if args.add:
+            changes["addTags"] = parse_tags(args.add)
+        if args.remove:
+            changes["removeTags"] = parse_tags(args.remove)
+    except ValueError as error:
+        raise ConfigurationFailure(str(error)) from None
+    if not changes:
+        raise ConfigurationFailure("Give +tag, -tag, or --set a,b to change tags.")
+    return changes
+
+
 def management_main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Manage Tailplan drafts and API keys.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -3568,13 +3709,26 @@ def management_main(argv: list[str]) -> int:
         command.add_argument("--allow-insecure-http", action="store_true")
         return command
 
-    for name in ("whoami", "list", "themes", "typography"):
+    for name in ("whoami", "themes", "typography"):
         options(commands.add_parser(name))
+    list_cmd = options(commands.add_parser("list", help="List your drafts, with optional filters"))
+    list_cmd.add_argument("--tag")
+    list_cmd.add_argument("--view", choices=LIST_VIEWS)
+    list_cmd.add_argument("--q", help="Search text, such as 'is:fav tag:dawn v:>1'")
+    list_cmd.add_argument("--sort", choices=LIST_SORTS)
+    list_cmd.add_argument("--dir", choices=("asc", "desc"))
+    list_cmd.add_argument("--repo")
+    list_cmd.add_argument("--archived", action="store_true", help="Include archived drafts")
+    tag_cmd = options(commands.add_parser("tag", help="Add, remove, or replace draft tags: +tag -tag --set a,b"))
+    tag_cmd.add_argument("draft")
+    tag_cmd.add_argument("--add", action="append", default=[], metavar="TAG", help="Same as +TAG")
+    tag_cmd.add_argument("--remove", action="append", default=[], metavar="TAG", help="Same as -TAG")
+    tag_cmd.add_argument("--set", dest="set_tags", metavar="TAGS", help="Replace all tags; use '' to clear")
     check_cmd = options(commands.add_parser("check"))
     check_cmd.add_argument("file", nargs="?")
     check_cmd.add_argument("--slug")
     check_cmd.add_argument("--files-json", dest="files_json")
-    for name in ("history", "disable", "enable", "delete", "favorite", "unfavorite"):
+    for name in ("history", "disable", "enable", "delete", "favorite", "unfavorite", "archive", "unarchive"):
         command = options(commands.add_parser(name))
         command.add_argument("draft")
         if name == "disable":
@@ -3604,7 +3758,7 @@ def management_main(argv: list[str]) -> int:
     options(keys.add_parser("list"))
     options(keys.add_parser("create")).add_argument("name")
     options(keys.add_parser("revoke")).add_argument("key_id")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(rewrite_tag_tokens(argv))
     try:
         base = validate_base_url(args.base_url or os.getenv("TAILPLAN_BASE_URL") or default_base_url(),
                                  allow_insecure_http=args.allow_insecure_http)
@@ -3817,7 +3971,20 @@ def management_main(argv: list[str]) -> int:
         elif args.command == "whoami":
             result = request("/api/me")
         elif args.command == "list":
-            result = request("/api/drafts")
+            result = request(draft_list_path(args))
+        elif args.command == "tag":
+            ref = parse_draft_ref(args.draft, base)
+            result = request(f"/api/drafts/{ref}", "PATCH", tag_changes(args))
+            tags = result.get("draft", {}).get("tags") or []
+            result["message"] = f"Tags for {ref}: " + (", ".join(tags) if tags else "none")
+        elif args.command in {"archive", "unarchive"}:
+            ref = parse_draft_ref(args.draft, base)
+            archived = args.command == "archive"
+            result = request(f"/api/drafts/{ref}", "PATCH", {"archived": archived})
+            result["message"] = (
+                f"Archived {ref}. It leaves the dashboard. Its links still work." if archived
+                else f"Restored {ref} to the dashboard."
+            )
         elif args.command == "keys":
             if args.action == "list":
                 result = request("/api/api-keys")
@@ -3847,7 +4014,10 @@ def management_main(argv: list[str]) -> int:
             for draft in result["drafts"]:
                 repo = "/".join(filter(None, (draft.get("repoOrg"), draft.get("repoName")))) or "No repository"
                 prefix = "★ " if draft.get("favorite") else ""
-                print(f"{prefix}{draft['title']}\n  {repo} · v{draft['latestVersionNumber']} · {draft['versionCount']} versions · {draft['updatedAt']}")
+                marker = " [archived]" if draft.get("archived") else ""
+                print(f"{prefix}{draft['title']}{marker}\n  {repo} · v{draft['latestVersionNumber']} · {draft['versionCount']} versions · {draft['updatedAt']}")
+                if draft.get("tags"):
+                    print("  " + " ".join("#" + tag for tag in draft["tags"]))
                 print(f"  {draft.get('shareUrl') or draft['publicUrl']}")
                 if draft.get("description"):
                     print(f"  {draft['description']}")

@@ -40,7 +40,56 @@ SHARING_PATTERNS = {
     "--grant-tailscale": TAILSCALE_LOGIN_ARG_RE, "--revoke-tailscale": TAILSCALE_LOGIN_ARG_RE,
     "--grant-group": GROUP_ARG_RE, "--revoke-group": GROUP_ARG_RE,
 }
+TAG_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
+MAX_TAGS = 10
+LIST_VIEWS = ("active", "favorites", "living", "shared", "archived", "all")
+LIST_SORTS = ("updated", "living", "favorited", "created", "title", "relevance")
+REPO_ARG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}")
+QUERY_ARG_RE = re.compile(r"[^\x00-\x1f\x7f-]{1}[^\x00-\x1f\x7f]{0,199}")
 Run = Callable[..., subprocess.CompletedProcess[str]]
+
+
+def parse_tags(values: list[str]) -> list[str]:
+    """Split comma-separated tag text, lowercase it, and check each tag. Raise ValueError."""
+    tags: list[str] = []
+    for value in values:
+        for part in value.split(","):
+            tag = part.strip().lower()
+            if not tag:
+                continue
+            if TAG_RE.fullmatch(tag) is None:
+                raise ValueError(f"Invalid tag {part.strip()!r}: use 1 to 32 letters, digits, dots, underscores, or hyphens.")
+            if tag not in tags:
+                tags.append(tag)
+    if len(tags) > MAX_TAGS:
+        raise ValueError(f"A draft holds at most {MAX_TAGS} tags.")
+    return tags
+
+
+def default_tags_from_env(environ=None) -> list[str]:
+    """Read TAILPLAN_PROJECT and TAILPLAN_TAGS. Skip anything unusable. Never use the working folder."""
+    environ = os.environ if environ is None else environ
+    tags: list[str] = []
+    for candidate in [environ.get("TAILPLAN_PROJECT", "")] + environ.get("TAILPLAN_TAGS", "").split(","):
+        tag = re.sub(r"[^a-z0-9._-]+", "-", candidate.strip().lower())[:32].strip("-._")
+        if TAG_RE.fullmatch(tag) and tag not in tags:
+            tags.append(tag)
+    return tags[:MAX_TAGS]
+
+
+def tags_for_upload(tags: list[str], default_tags: list[str], *, new_draft: bool) -> list[str]:
+    """Pick the tags to send. Default tags join only a new draft, so a re-upload keeps edited tags."""
+    if new_draft and default_tags:
+        return list(dict.fromkeys([*tags, *default_tags]))[:MAX_TAGS]
+    return tags
+
+
+def tag_arguments(tags: list[str]) -> list[str]:
+    """Return --tag options as shell-quoted words. Raise ValueError on a bad tag."""
+    words: list[str] = []
+    for tag in parse_tags(tags):
+        words.extend(["--tag", shlex.quote(tag)])
+    return words
 
 
 def safe_filename(path: Path) -> str:
@@ -100,9 +149,13 @@ def share_file(
     slug: str | None = None,
     files_json_path: Path | None = None,
     sharing: list[tuple[str, str | list[str] | None]] | None = None,
+    tags: list[str] | None = None,
+    favorite: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     source = source.expanduser().resolve()
-    sharing_words = sharing_arguments(sharing or [])
+    sharing_words = sharing_arguments(sharing or []) + tag_arguments(tags or [])
+    if favorite:
+        sharing_words.append("--favorite")
     if files_json_path is None and not source.is_file():
         raise FileNotFoundError(source)
     validate_target(target)
@@ -379,6 +432,84 @@ def _remote_share(argv: list[str], target: str) -> int:
     return subprocess.run(command, check=False).returncode
 
 
+def _checked_value(option: str, value: str | None, pattern: re.Pattern[str]) -> str | None:
+    if value is not None and pattern.fullmatch(value) is None:
+        raise ValueError(f"{option} value is invalid: {value!r}")
+    return value
+
+
+def _remote_list(argv: list[str], target: str) -> int:
+    """List drafts on the remote server. Check every filter before the SSH call."""
+    parser = argparse.ArgumentParser(prog="tailplan list")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--tag")
+    parser.add_argument("--view", choices=LIST_VIEWS)
+    parser.add_argument("--q")
+    parser.add_argument("--sort", choices=LIST_SORTS)
+    parser.add_argument("--dir", choices=("asc", "desc"))
+    parser.add_argument("--repo")
+    parser.add_argument("--archived", action="store_true")
+    args = parser.parse_args(argv)
+    validate_target(target)
+    command = ["ssh", target, "tailplan-share", "list"]
+    if args.json:
+        command.append("--json")
+    if args.tag is not None:
+        command.extend(["--tag", shlex.quote(parse_tags([args.tag])[0])])
+    for option, value, pattern in (
+        ("--view", args.view, None), ("--sort", args.sort, None), ("--dir", args.dir, None),
+        ("--q", args.q, QUERY_ARG_RE), ("--repo", args.repo, REPO_ARG_RE),
+    ):
+        if value is not None:
+            if pattern is not None:
+                _checked_value(option, value, pattern)
+            command.extend([option, shlex.quote(value)])
+    if args.archived:
+        command.append("--archived")
+    return subprocess.run(command, check=False).returncode
+
+
+def _remote_tag(argv: list[str], target: str) -> int:
+    """Add, remove, or replace tags of a draft on the remote server."""
+    parser = argparse.ArgumentParser(prog="tailplan tag")
+    parser.add_argument("draft")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--add", action="append", default=[])
+    parser.add_argument("--remove", action="append", default=[])
+    parser.add_argument("--set", dest="set_tags")
+    rewritten: list[str] = []
+    after_value = False
+    for token in argv:
+        if after_value:
+            rewritten.append(token)
+            after_value = False
+        elif token in {"--add", "--remove", "--set"}:
+            rewritten.append(token)
+            after_value = True
+        elif token.startswith("+") and len(token) > 1:
+            rewritten.append("--add=" + token[1:])
+        elif token.startswith("-") and not token.startswith("--") and len(token) > 1 and token != "-h":
+            rewritten.append("--remove=" + token[1:])
+        else:
+            rewritten.append(token)
+    args = parser.parse_args(rewritten)
+    validate_target(target)
+    add, remove = parse_tags(args.add), parse_tags(args.remove)
+    replace = parse_tags([args.set_tags]) if args.set_tags is not None else None
+    if not add and not remove and replace is None:
+        raise ValueError("Give +tag, -tag, or --set a,b to change tags.")
+    ref = _load_library()["parse_draft_ref"](args.draft)
+    command = ["ssh", target, "tailplan-share", "tag", shlex.quote(ref)]
+    for option, tags in (("--add", add), ("--remove", remove)):
+        for tag in tags:
+            command.extend([option, shlex.quote(tag)])
+    if replace is not None:
+        command.extend(["--set", shlex.quote(",".join(replace))])
+    if args.json:
+        command.append("--json")
+    return subprocess.run(command, check=False).returncode
+
+
 def _remote_download(argv: list[str], target: str) -> int:
     parser = argparse.ArgumentParser(prog="tailplan download")
     parser.add_argument("draft")
@@ -432,14 +563,21 @@ def main() -> int:
             return 2
         target = argv[index + 1]
         argv = argv[:index] + argv[index + 2:]
+    if argv and argv[0] in {"list", "tag"}:
+        try:
+            handler = _remote_list if argv[0] == "list" else _remote_tag
+            return handler(argv[1:], target)
+        except (ValueError, RuntimeError, OSError) as exc:
+            print(f"tailplan: {exc}", file=sys.stderr)
+            return 2
     if argv and argv[0] in {
-        "list", "whoami", "history", "disable", "enable", "delete",
-        "favorite", "unfavorite", "keys", "themes", "typography",
+        "whoami", "history", "disable", "enable", "delete",
+        "favorite", "unfavorite", "archive", "unarchive", "keys", "themes", "typography",
     }:
         try:
             validate_target(target)
             forwarded = list(argv)
-            if forwarded[0] in {"history", "disable", "enable", "delete", "favorite", "unfavorite"}:
+            if forwarded[0] in {"history", "disable", "enable", "delete", "favorite", "unfavorite", "archive", "unarchive"}:
                 library = _load_library()
                 idx = 1
                 while idx < len(forwarded):
@@ -499,6 +637,9 @@ def main() -> int:
     parser.add_argument("--grant-tailscale", action="append", default=[], metavar="LOGIN")
     parser.add_argument("--grant-group", action="append", default=[], metavar="GROUP")
     parser.add_argument("--grant-role", choices=GRANT_ROLES, default=None)
+    parser.add_argument("--tag", action="append", default=[], metavar="TAG",
+                        help="Tag the draft, such as a project name (repeatable or comma-separated)")
+    parser.add_argument("--favorite", action="store_true", help="Pin the draft as a favorite")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     upload_sharing = [
@@ -511,6 +652,8 @@ def main() -> int:
         library = _load_library()
         source = Path(args.file).expanduser().resolve()
         validate_target(args.target)
+        explicit_tags = parse_tags(args.tag)
+        default_tags = default_tags_from_env()
         slug = args.slug.strip().lower() if args.slug is not None else None
         if args.new and slug is not None:
             raise ValueError("--new cannot be combined with --slug.")
@@ -550,7 +693,8 @@ def main() -> int:
                     description=args.description, json_output=True, metadata_path=metadata_path,
                     theme=args.theme, document_type=args.document_type, layout=args.layout,
                     typography=args.typography, slug=slug, files_json_path=files_json_path,
-                    sharing=upload_sharing,
+                    sharing=upload_sharing, favorite=args.favorite,
+                    tags=tags_for_upload(explicit_tags, default_tags, new_draft=args.new or not selected),
                 )
             except subprocess.CalledProcessError as exc:
                 try:
@@ -574,7 +718,8 @@ def main() -> int:
                     description=args.description, json_output=True, metadata_path=metadata_path,
                     theme=args.theme, document_type=args.document_type, layout=args.layout,
                     typography=args.typography, slug=slug, files_json_path=files_json_path,
-                    sharing=upload_sharing,
+                    sharing=upload_sharing, favorite=args.favorite,
+                    tags=tags_for_upload(explicit_tags, default_tags, new_draft=True),
                 )
             value = json.loads(result.stdout)
             if not isinstance(value, dict) or value.get("ok") is not True:
