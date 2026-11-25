@@ -582,6 +582,8 @@ for source in \
   tailplan_web/assets.py \
   tailplan_web/render.py \
   tailplan_web/static/tailplan-mark.svg \
+  tailplan_web/static/fonts/geist-sans.woff2 \
+  tailplan_web/static/fonts/geist-mono.woff2 \
   bin/run-tailplan \
   bin/tailplan-share \
   bin/tailplan \
@@ -597,7 +599,7 @@ find "$STAGE_DIR/tailplan_themes" -type d -name __pycache__ -prune -exec rm -rf 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_themes; tailplan_themes.catalog()'
 cp -a "$SCRIPT_DIR/tailplan_web" "$STAGE_DIR/tailplan_web"
 find "$STAGE_DIR/tailplan_web" -type d -name __pycache__ -prune -exec rm -rf {} +
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_web.assets as a, tailplan_web.render; assert a.lookup_asset(a.asset_url("", "tailplan-mark.svg")[len("/assets/"):])'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_web.assets as a, tailplan_web.render; a.check_ready()'
 install -m 755 "$SCRIPT_DIR/tailplan_server.py" "$STAGE_DIR/tailplan_server.py"
 install -m 755 "$SCRIPT_DIR/bin/run-tailplan" "$STAGE_DIR/bin/run-tailplan"
 install -m 755 "$SCRIPT_DIR/bin/tailplan-share" "$STAGE_DIR/bin/tailplan-share"
@@ -1247,8 +1249,8 @@ chmod 644 "$unit_tmp"
 mv -f -- "$unit_tmp" "$UNIT_FILE"
 
 if [[ "$INSTALL_SCOPE" == system ]]; then
-  chown -R root:root "$APP_DIR/tailplan_themes"
-  chown -R root:root "$APP_DIR/tailplan_web"
+  chown -R -P --no-dereference root:root "$APP_DIR/tailplan_themes"
+  chown -R -P --no-dereference root:root "$APP_DIR/tailplan_web"
   chown root:root \
     "$APP_DIR" \
     "$APP_DIR/bin" \
