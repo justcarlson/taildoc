@@ -3112,7 +3112,8 @@ AUDIT_TARGET_TYPES = ("draft", "account", "principal", "api_key", "device_code",
 AUDIT_ERROR_TYPES = ("denied", "failure")
 AUDIT_METHODS = ("oidc", "tailscale", "tailscale_header", "api_key", "device", "backchannel", "sign-out", "bootstrap")
 AUDIT_REASONS = ("state", "provider_error", "token", "no_matching_rule", "invalid_login")
-AUDIT_ACTIONS = ("delete", "disable", "enable")
+AUDIT_ACTIONS = ("delete", "disable", "enable", "favorite", "unfavorite", "archive", "unarchive", "add_tag",
+                 "remove_tag")
 AUDIT_ID_RE = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
 AUDIT_NAME_RE = re.compile(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){0,3}")
 AUDIT_BASE_KEYS = frozenset({
@@ -3121,7 +3122,7 @@ AUDIT_BASE_KEYS = frozenset({
 })
 AUDIT_DETAIL_KEYS = frozenset({
     "client.address", "auth_method", "reason", "action", "created", "draft_version", "visibility",
-    "workspace", "grant_count", "grant_type", "grant_role", "grant_hash", "session_count",
+    "workspace", "grant_count", "grant_type", "grant_role", "grant_hash", "session_count", "item_count",
 })
 # The redact rules of the log gateway read these as secrets. See the `logs` standard, section 3.
 AUDIT_SECRET_RE = re.compile(
@@ -3217,6 +3218,7 @@ def _audit_detail(detail: dict) -> dict:
         "grant_hash": audit_hash("grant:" + grant_value.strip().casefold())
         if isinstance(grant_value, str) and grant_value.strip() else None,
         "session_count": _audit_count(detail.get("sessions")),
+        "item_count": _audit_count(detail.get("count")),
     }
     return {key: value for key, value in flat.items() if value is not None}
 
@@ -3235,6 +3237,7 @@ AUDIT_DETAIL_CHECKS = {
     "grant_role": lambda v: v in WORKSPACE_ROLES,
     "grant_hash": lambda v: isinstance(v, str) and re.fullmatch(r"[0-9a-f]{16}", v) is not None,
     "session_count": lambda v: _audit_count(v) == v and not isinstance(v, bool),
+    "item_count": lambda v: _audit_count(v) == v and not isinstance(v, bool),
 }
 
 

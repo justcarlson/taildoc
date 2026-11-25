@@ -228,7 +228,8 @@ Each line has these fields:
 
 An event can add more fields. The server adds a field only when its value passes a check.
 The fields are `client.address`, `auth_method`, `reason`, `action`, `created`, `draft_version`, `visibility`, and `workspace`.
-The other fields are `grant_count`, `grant_type`, `grant_role`, `grant_hash`, and `session_count`.
+The other fields are `grant_count`, `grant_type`, `grant_role`, `grant_hash`, `session_count`, and `item_count`.
+A tag never appears on the line.
 `grant_hash` is the same kind of hash, of the grant value.
 The server drops every other detail field from the line.
 The server checks each row before it prints it.
