@@ -6,6 +6,17 @@ The project uses semantic version numbers.
 
 ## Unreleased
 
+- Add schema version 4. It adds draft tags, an archive state, and a full-text search index.
+  The index covers titles, slugs, descriptions, tags, and page text.
+  The server builds the index from existing drafts at start.
+- Add a search query language to `GET /api/drafts` and `/dashboard`.
+  It takes free words, quoted phrases, and the `is:`, `v:`, `tag:`, `repo:`, `vis:`, `ws:`, `after:`, `before:`, and `age:` operators.
+- Add `PATCH /api/drafts/<ref>` for `tags`, `archived`, and `favorite`. `POST /api/uploads` also takes `tags` and `favorite`.
+- Archive hides a draft from the active list only. Its links still work, and it keeps `updatedAt` and its star.
+- Add `POST /dashboard/bulk`, `POST /dashboard/theme`, and the `archive`, `unarchive`, and `tags` dashboard actions.
+  Row actions return JSON when asked, else they redirect to the row.
+- Add `draft.archive`, `draft.unarchive`, `draft.tag`, and `draft.bulk` audit events. They never hold page text or search text.
+
 ## 0.6.0 - 2026-11-25
 
 - Add the passive Tailscale viewer, `TAILPLAN_TAILSCALE_VIEWER=1` (`--tailscale-viewer`).

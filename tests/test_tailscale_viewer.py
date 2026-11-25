@@ -483,7 +483,7 @@ class MigrationTests(unittest.TestCase):
             store = server.Store(root)
 
             with closing(sqlite3.connect(store.db_path)) as connection:
-                self.assertEqual(3, connection.execute("PRAGMA user_version").fetchone()[0])
+                self.assertEqual(4, connection.execute("PRAGMA user_version").fetchone()[0])
                 kept = connection.execute(
                     "SELECT draft_id, principal_type, principal_value, role, granted_by, created_at "
                     "FROM draft_grants ORDER BY draft_id, principal_type").fetchall()

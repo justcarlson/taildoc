@@ -2535,6 +2535,77 @@ def upload_metadata(value: object) -> dict:
     return result
 
 
+TAG_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}")
+MAX_TAGS_PER_DRAFT = 10
+MAX_BULK_DRAFTS = 200
+SEARCH_TEXT_LIMIT = 65536
+
+
+def normalize_tags(value: object) -> list[str]:
+    """Return sorted, unique, lowercase tags. Raise ValueError for a bad tag or list."""
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("tags must be a list.")
+    tags: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError("Each tag must be text.")
+        tag = item.strip().lower()
+        if TAG_RE.fullmatch(tag) is None:
+            raise ValueError(
+                "A tag uses 1 to 32 characters: letters, digits, dot, underscore, or hyphen."
+            )
+        tags.add(tag)
+    if len(tags) > MAX_TAGS_PER_DRAFT:
+        raise ValueError(f"A draft holds at most {MAX_TAGS_PER_DRAFT} tags.")
+    return sorted(tags)
+
+
+class _SearchTextParser(HTMLParser):
+    """Collect visible text and skip script, style, noscript, and template content."""
+
+    _SKIPPED = frozenset({"script", "style", "noscript", "template"})
+
+    def __init__(self, limit: int):
+        super().__init__(convert_charrefs=True)
+        self.limit = limit
+        self.size = 0
+        self.parts: list[str] = []
+        self._depth = 0
+
+    @property
+    def full(self) -> bool:
+        return self.size >= self.limit
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag in self._SKIPPED:
+            self._depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIPPED and self._depth:
+            self._depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._depth or self.full:
+            return
+        piece = " ".join(data.split())
+        if piece:
+            self.parts.append(piece)
+            self.size += len(piece) + 1
+
+
+def extract_searchable_text(html_doc: str, limit: int = SEARCH_TEXT_LIMIT) -> str:
+    """Return the visible text of an HTML page, with collapsed spaces, capped at `limit`."""
+    parser = _SearchTextParser(limit)
+    try:
+        parser.feed(html_doc)
+        parser.close()
+    except Exception:  # A broken page still gives the text that parsed before the error.
+        pass
+    return " ".join(parser.parts)[:limit]
+
+
 def _validate_workspace_schema(data: dict) -> None:
     accounts = data.get("accounts", {})
     keys = data.get("apiKeys", {})
@@ -2570,6 +2641,17 @@ def _validate_workspace_schema(data: dict) -> None:
         favorited_at = draft.get("favoritedAt")
         if favorited_at is not None and (not isinstance(favorited_at, str) or not favorited_at):
             raise StorageError("Draft favorite timestamp is invalid.")
+        archived_at = draft.get("archivedAt")
+        if archived_at is not None and (not isinstance(archived_at, str) or not archived_at):
+            raise StorageError("Draft archive timestamp is invalid.")
+        tags = draft.get("tags")
+        if tags is not None:
+            try:
+                tags_valid = isinstance(tags, list) and normalize_tags(tags) == tags
+            except ValueError:
+                tags_valid = False
+            if not tags_valid:
+                raise StorageError("Draft tags are invalid.")
         workspace = draft.get("workspace")
         if workspace is not None and (not isinstance(workspace, str) or WORKSPACE_RE.fullmatch(workspace) is None):
             raise StorageError("Draft workspace is invalid.")
@@ -2940,6 +3022,23 @@ _SCHEMA_STATEMENTS: dict[int, tuple[str, ...]] = {
             WHERE issuer = 'tailscale' AND email IS NOT NULL
               AND substr(email, instr(email, '@') + 1) NOT LIKE '%.%'""",
     ),
+    # Version 4 adds the dashboard: archive state, tags, and a full-text index.
+    # The tag column holds lowercase text only. The index starts empty, and the
+    # server fills it from the draft files when it opens the database.
+    4: (
+        "ALTER TABLE drafts ADD COLUMN archived_at TEXT",
+        """CREATE TABLE draft_tags (
+            draft_id TEXT NOT NULL REFERENCES drafts (draft_id)
+                ON DELETE CASCADE ON UPDATE CASCADE,
+            tag TEXT NOT NULL CHECK (tag = lower(tag)),
+            PRIMARY KEY (draft_id, tag)
+        ) WITHOUT ROWID""",
+        "CREATE INDEX draft_tags_tag ON draft_tags (tag)",
+        """CREATE VIRTUAL TABLE draft_search USING fts5(
+            draft_id UNINDEXED, title, slug, description, tags, body,
+            tokenize = 'unicode61 remove_diacritics 2'
+        )""",
+    ),
 }
 SCHEMA_VERSION = max(_SCHEMA_STATEMENTS)
 _TOP_LEVEL_TABLE_KEYS = frozenset({"drafts", "accounts", "apiKeys", "idempotency"})
@@ -3078,7 +3177,61 @@ class Store:
         with self._connection() as connection:
             self._prepare_database(connection)
             self._rebase_database_paths_locked(connection)
+            self._backfill_search_locked(connection)
         os.chmod(self.db_path, 0o600)
+
+    SEARCH_BACKFILL_BATCH = 100
+
+    @staticmethod
+    def _search_row(draft: dict, body: str) -> tuple:
+        clean = Store._fts_text
+        return (
+            draft["draftId"], clean(draft.get("title") or ""), clean(draft.get("slug") or ""),
+            clean(draft.get("description") or ""), " ".join(draft.get("tags") or []), clean(body),
+        )
+
+    @classmethod
+    def _index_draft(cls, connection: sqlite3.Connection, draft: dict, body: str) -> None:
+        """Replace the search row of one draft. Call it inside a write transaction."""
+        connection.execute("DELETE FROM draft_search WHERE draft_id = ?", (draft["draftId"],))
+        connection.execute(
+            "INSERT INTO draft_search (draft_id, title, slug, description, tags, body)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            cls._search_row(draft, body),
+        )
+
+    def _read_search_body(self, draft: dict) -> str:
+        """Read the current page text for the index. An unreadable file gives an empty body."""
+        try:
+            path = Path(str(draft.get("currentObject") or ""))
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_HTML_BYTES:
+                return ""
+            return extract_searchable_text(path.read_bytes().decode("utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            return ""
+
+    def _backfill_search_locked(self, connection: sqlite3.Connection) -> None:
+        """Index live drafts that have no search row. Drop rows for drafts that are gone."""
+        indexed = {row[0] for row in connection.execute("SELECT draft_id FROM draft_search")}
+        live: dict[str, dict] = {}
+        for draft_id, doc in connection.execute(
+            "SELECT draft_id, doc FROM drafts WHERE deleted_at IS NULL ORDER BY rowid"
+        ):
+            live[draft_id] = json.loads(doc)
+        stale = sorted(indexed - live.keys())
+        missing = [draft_id for draft_id in live if draft_id not in indexed]
+        if not stale and not missing:
+            return
+        if stale:
+            with self._write_transaction(connection):
+                for draft_id in stale:
+                    connection.execute("DELETE FROM draft_search WHERE draft_id = ?", (draft_id,))
+        for start in range(0, len(missing), self.SEARCH_BACKFILL_BATCH):
+            batch = [(live[draft_id], self._read_search_body(live[draft_id]))
+                     for draft_id in missing[start:start + self.SEARCH_BACKFILL_BATCH]]
+            with self._write_transaction(connection):
+                for draft, body in batch:
+                    self._index_draft(connection, draft, body)
 
     def _rebase_database_paths_locked(self, connection: sqlite3.Connection) -> None:
         """Update stored object paths when a database moves to a new directory."""
@@ -3145,6 +3298,7 @@ class Store:
             self._remove_database_files(staging)
             raise
         self.meta.unlink(missing_ok=True)
+        self._open_database_locked()
 
     def _verify_import(self, connection: sqlite3.Connection, data: dict) -> None:
         connection.execute("BEGIN")
@@ -3250,7 +3404,7 @@ class Store:
         self._sync_table(
             connection, "drafts", "draft_id",
             ("account_id", "slug", "title", "latest_version", "created_at", "updated_at",
-             "deleted_at", "disabled_at", "favorited_at"),
+             "deleted_at", "disabled_at", "favorited_at", "archived_at"),
             {
                 draft_id: (
                     _text_or_none(draft.get("accountId", "local")),
@@ -3262,11 +3416,22 @@ class Store:
                     _text_or_none(draft.get("deletedAt")),
                     _text_or_none(draft.get("disabledAt")),
                     _text_or_none(draft.get("favoritedAt")),
+                    _text_or_none(draft.get("archivedAt")),
                     _json_text({k: v for k, v in draft.items() if k != "versions"}),
                 )
                 for draft_id, draft in drafts.items()
             },
         )
+        wanted_tags = {
+            (draft_id, tag)
+            for draft_id, draft in drafts.items()
+            for tag in draft.get("tags") or []
+        }
+        stored_tags = {(row[0], row[1]) for row in connection.execute("SELECT draft_id, tag FROM draft_tags")}
+        for draft_id, tag in wanted_tags - stored_tags:
+            connection.execute("INSERT INTO draft_tags (draft_id, tag) VALUES (?, ?)", (draft_id, tag))
+        for draft_id, tag in stored_tags - wanted_tags:
+            connection.execute("DELETE FROM draft_tags WHERE draft_id = ? AND tag = ?", (draft_id, tag))
         version_rows = {
             (draft_id, int(number)): (
                 _text_or_none(version.get("versionId")),
@@ -3463,7 +3628,12 @@ class Store:
         default_workspace: str | None = None,
         visibility: str | None = None,
         grants: list[dict] | None = None,
+        tags: list[str] | None = None,
+        favorite: bool | None = None,
     ) -> dict:
+        tags = normalize_tags(tags) if tags is not None else None
+        if favorite is not None and type(favorite) is not bool:
+            raise ValueError("favorite must be true or false.")
         if validation is None:
             raw_pages = (
                 [{"path": p["path"], "html": p["html"]} for p in files]
@@ -3482,7 +3652,7 @@ class Store:
                 account_id, description, metadata or {}, audit or {},
                 files=files, slug=slug, page_checks=page_checks,
                 workspace=workspace, default_workspace=default_workspace,
-                visibility=visibility, grants=grants,
+                visibility=visibility, grants=grants, tags=tags, favorite=favorite,
             )
 
     def _upsert_locked(
@@ -3504,6 +3674,8 @@ class Store:
         default_workspace: str | None = None,
         visibility: str | None = None,
         grants: list[dict] | None = None,
+        tags: list[str] | None = None,
+        favorite: bool | None = None,
     ) -> dict:
         data = self.load_meta()
         data.setdefault("drafts", {})
@@ -3553,6 +3725,8 @@ class Store:
             **({"grants": grants} if grants else {}),
             **({"workspace": workspace} if workspace is not None else {}),
             **({"visibility": visibility} if visibility is not None else {}),
+            **({"tags": tags} if tags is not None else {}),
+            **({"favorite": favorite} if favorite is not None else {}),
         }
         fingerprint = sha256_text(
             json.dumps(
@@ -3568,7 +3742,10 @@ class Store:
             legacy_match = False
             # Older receipts carry no sharing fields, so they match only an
             # upload that asks for no grants, workspace, or visibility.
-            plain_sharing = not grants and workspace is None and visibility is None
+            plain_sharing = (
+                not grants and workspace is None and visibility is None
+                and tags is None and favorite is None
+            )
             if (
                 plain_sharing
                 and account_id == "local"
@@ -3748,6 +3925,17 @@ class Store:
                 },
             }
 
+        stored_draft = data["drafts"][target_draft_id]
+        if tags is not None:
+            stored_draft["tags"] = tags
+        if favorite is True:
+            stored_draft["favoritedAt"] = stored_draft.get("favoritedAt") or stamp
+        elif favorite is False:
+            stored_draft["favoritedAt"] = None
+        search_body = extract_searchable_text(
+            " ".join(page["html"] for page in sorted(pages, key=lambda p: p["path"] != "index.html"))
+        )
+
         version_url = f"{base_url.rstrip('/')}/d/{target_draft_id}/v/{version}{'/' if multi_page else ''}"
         result = {
             "draftId": target_draft_id,
@@ -3784,9 +3972,14 @@ class Store:
                      account_id, stamp_now),
                 )
 
-        # The draft and its grants commit together, so a reader never sees
-        # the draft without the grants that the upload asked for.
-        self.save_meta(data, also=write_grants if grants else None)
+        def write_extras(connection: sqlite3.Connection) -> None:
+            self._index_draft(connection, data["drafts"][target_draft_id], search_body)
+            if grants:
+                write_grants(connection)
+
+        # The draft, its search row, and its grants commit together, so a
+        # reader never sees the draft without the grants that the upload asked for.
+        self.save_meta(data, also=write_extras)
         return {**result, "created": creating, "replayed": False}
 
     def get(self, draft_id: str, version: int | None = None) -> tuple[dict | None, str | None]:
@@ -3934,7 +4127,7 @@ class Store:
             raise KeyError("Draft not found.")
         return draft
 
-    def public_draft(self, draft: dict, base_url: str) -> dict:
+    def public_draft(self, draft: dict, base_url: str, *, version_count: int | None = None) -> dict:
         """Return the list form of one draft record."""
         draft_id = draft["draftId"]
         public_url = f"{base_url.rstrip('/')}/d/{draft.get('slug') or draft_id}"
@@ -3942,46 +4135,205 @@ class Store:
             **{key: draft.get(key) for key in (
                 "draftId", "slug", "title", "description", "repoHost", "repoOrg", "repoName",
                 "latestVersionNumber", "createdAt", "updatedAt", "disabledReason", "favoritedAt",
-                "workspace", "visibility", "accountId",
+                "archivedAt", "workspace", "visibility", "accountId",
             )},
             "favorite": bool(draft.get("favoritedAt")),
-            "versionCount": len(self._version_records(draft)),
+            "archived": bool(draft.get("archivedAt")),
+            "tags": list(draft.get("tags") or []),
+            "versionCount": len(self._version_records(draft)) if version_count is None else version_count,
             "latestVersionAt": draft["updatedAt"], "disabled": bool(draft.get("disabledAt")),
             "publicUrl": public_url, "rawUrl": public_url + "/raw",
             "shareUrl": public_url + "/share", "versionBaseUrl": f"{base_url.rstrip('/')}/d/{draft_id}",
         }
 
-    def list_drafts(self, account_id: str, base_url: str) -> list[dict]:
-        with STORE_LOCK:
-            data = self.load_meta()
-            drafts = [
-                self.public_draft(draft, base_url) for draft in data["drafts"].values()
-                if draft.get("accountId", "local") == account_id and not draft.get("deletedAt")
-            ]
-            drafts.sort(key=lambda item: item["updatedAt"], reverse=True)
-            drafts.sort(key=lambda item: not item["favorite"])
-            return drafts
+    def list_drafts(self, account_id: str, base_url: str, *, include_archived: bool = False) -> list[dict]:
+        """List owned live drafts from SQLite, favorites first, then newest first."""
+        sql = (
+            "SELECT d.doc, (SELECT COUNT(*) FROM draft_versions v WHERE v.draft_id = d.draft_id)"
+            " FROM drafts d WHERE COALESCE(d.account_id, 'local') = ? AND d.deleted_at IS NULL"
+            + ("" if include_archived else " AND d.archived_at IS NULL")
+            + " ORDER BY (d.favorited_at IS NULL), d.updated_at DESC, d.rowid"
+        )
+        with STORE_LOCK, self._connection() as connection:
+            rows = connection.execute(sql, (account_id,)).fetchall()
+            try:
+                result = []
+                for doc, count in rows:
+                    draft = json.loads(doc)
+                    # Only a legacy draft with no history rows reads its files.
+                    result.append(self.public_draft(draft, base_url, version_count=count or None))
+            except (ValueError, KeyError) as exc:
+                raise StorageError("Metadata is unreadable or malformed.") from exc
+            return result
 
     def draft_detail(self, account_id: str, ref: str, base_url: str) -> dict:
         with STORE_LOCK:
             draft = self._owned_draft(self.load_meta(), ref, account_id)
-            draft_id = draft["draftId"]
-            public = next(d for d in self.list_drafts(account_id, base_url) if d["draftId"] == draft_id)
+            public = self.public_draft(draft, base_url)
             versions = sorted(self._version_records(draft).values(),
                               key=lambda version: version["versionNumber"], reverse=True)
             return {"ok": True, "draft": public, "versions": versions}
 
+    def _edit_drafts(self, account_id: str, refs: list[str], apply) -> list[dict]:
+        """Change owned live drafts in one transaction, one row each.
+
+        `apply(doc, stamp)` edits the draft record in place. A missing or foreign
+        draft rolls back every change. The change never touches `updatedAt`.
+        """
+        def operation(connection: sqlite3.Connection) -> list[dict]:
+            stamp = now_iso()
+            changed: dict[str, dict] = {}
+            for ref in refs:
+                if not isinstance(ref, str):
+                    raise ValueError("Each draft ID must be text.")
+                row = connection.execute(
+                    "SELECT draft_id, doc FROM drafts WHERE deleted_at IS NULL"
+                    " AND COALESCE(account_id, 'local') = ? AND (draft_id = ? OR slug = ?)",
+                    (account_id, ref.lower(), ref.lower()),
+                ).fetchone()
+                if row is None:
+                    raise KeyError("Draft not found.")
+                draft_id, doc_text = row
+                if draft_id in changed:
+                    continue
+                doc = json.loads(doc_text)
+                apply(doc, stamp)
+                connection.execute(
+                    "UPDATE drafts SET doc = ?, favorited_at = ?, archived_at = ? WHERE draft_id = ?",
+                    (_json_text(doc), _text_or_none(doc.get("favoritedAt")),
+                     _text_or_none(doc.get("archivedAt")), draft_id),
+                )
+                self._sync_draft_tags(connection, draft_id, doc.get("tags") or [])
+                changed[draft_id] = doc
+            return list(changed.values())
+
+        return self._write(operation)
+
+    @staticmethod
+    def _sync_draft_tags(connection: sqlite3.Connection, draft_id: str, tags: list[str]) -> None:
+        stored = {row[0] for row in connection.execute(
+            "SELECT tag FROM draft_tags WHERE draft_id = ?", (draft_id,))}
+        wanted = set(tags)
+        if stored == wanted:
+            return
+        for tag in wanted - stored:
+            connection.execute("INSERT INTO draft_tags (draft_id, tag) VALUES (?, ?)", (draft_id, tag))
+        for tag in stored - wanted:
+            connection.execute("DELETE FROM draft_tags WHERE draft_id = ? AND tag = ?", (draft_id, tag))
+        connection.execute(
+            "UPDATE draft_search SET tags = ? WHERE draft_id = ?", (" ".join(tags), draft_id))
+
     def set_favorite(self, account_id: str, ref: str, favorite: bool) -> str:
-        """Pin or unpin an owned draft without bumping updatedAt."""
-        with STORE_LOCK:
-            data = self.load_meta()
-            draft = self._owned_draft(data, ref, account_id)
-            if favorite:
-                draft["favoritedAt"] = draft.get("favoritedAt") or now_iso()
+        """Pin or unpin an owned draft. It keeps updatedAt."""
+        def apply(doc: dict, stamp: str) -> None:
+            doc["favoritedAt"] = (doc.get("favoritedAt") or stamp) if favorite else None
+
+        return self._edit_drafts(account_id, [ref], apply)[0]["draftId"]
+
+    def set_archived(self, account_id: str, ref: str, archived: bool) -> str:
+        """Archive or restore an owned draft. It keeps updatedAt and favoritedAt."""
+        def apply(doc: dict, stamp: str) -> None:
+            doc["archivedAt"] = (doc.get("archivedAt") or stamp) if archived else None
+
+        return self._edit_drafts(account_id, [ref], apply)[0]["draftId"]
+
+    def set_tags(self, account_id: str, ref: str, tags: list[str]) -> tuple[str, list[str]]:
+        """Replace the tags of an owned draft. Raise ValueError for a bad tag."""
+        wanted = normalize_tags(tags)
+
+        def apply(doc: dict, stamp: str) -> None:
+            doc["tags"] = wanted
+
+        return self._edit_drafts(account_id, [ref], apply)[0]["draftId"], wanted
+
+    BULK_ACTIONS = ("favorite", "unfavorite", "archive", "unarchive", "add_tag", "remove_tag")
+
+    def bulk_update(self, account_id: str, draft_ids: list[str], *, action: str,
+                    tag: str | None = None) -> list[dict]:
+        """Apply one action to up to 200 owned drafts in one transaction.
+
+        It returns the new state of each draft. A bad ID or tag changes nothing.
+        """
+        if action not in self.BULK_ACTIONS:
+            raise ValueError("Unknown bulk action.")
+        if not isinstance(draft_ids, list) or not draft_ids:
+            raise ValueError("Send a list of draft IDs.")
+        if len(draft_ids) > MAX_BULK_DRAFTS:
+            raise ValueError(f"A bulk change takes at most {MAX_BULK_DRAFTS} drafts.")
+        wanted_tag = None
+        if action in {"add_tag", "remove_tag"}:
+            wanted_tag = (normalize_tags([tag]) if isinstance(tag, str) else None)
+            if not wanted_tag:
+                raise ValueError("Send one valid tag.")
+            wanted_tag = wanted_tag[0]
+
+        def apply(doc: dict, stamp: str) -> None:
+            if action == "favorite":
+                doc["favoritedAt"] = doc.get("favoritedAt") or stamp
+            elif action == "unfavorite":
+                doc["favoritedAt"] = None
+            elif action == "archive":
+                doc["archivedAt"] = doc.get("archivedAt") or stamp
+            elif action == "unarchive":
+                doc["archivedAt"] = None
+            elif action == "add_tag":
+                doc["tags"] = normalize_tags([*(doc.get("tags") or []), wanted_tag])
             else:
-                draft["favoritedAt"] = None
-            self.save_meta(data)
-            return draft["draftId"]
+                doc["tags"] = [item for item in doc.get("tags") or [] if item != wanted_tag]
+
+        return [
+            {"draftId": doc["draftId"], "favorite": bool(doc.get("favoritedAt")),
+             "archived": bool(doc.get("archivedAt")), "tags": list(doc.get("tags") or [])}
+            for doc in self._edit_drafts(account_id, draft_ids, apply)
+        ]
+
+    def granted_draft_ids(self, account_id: str) -> set[str]:
+        """Return the IDs of owned live drafts that have at least one sharing grant."""
+        return {row[0] for row in self._rows(
+            "SELECT DISTINCT g.draft_id FROM draft_grants g JOIN drafts d ON d.draft_id = g.draft_id"
+            " WHERE COALESCE(d.account_id, 'local') = ? AND d.deleted_at IS NULL",
+            (account_id,),
+        )}
+
+    @staticmethod
+    def _fts_text(value: str) -> str:
+        """Remove the two control characters that mark a match in a snippet."""
+        return value.replace("\x01", " ").replace("\x02", " ")
+
+    @staticmethod
+    def safe_snippet(raw: str) -> str:
+        """Escape a snippet, then turn the match markers into `<mark>` tags."""
+        return html.escape(raw).replace("\x01", "<mark>").replace("\x02", "</mark>")
+
+    def search_fts(self, account_id: str, fts_query: str, *,
+                   draft_ids: set[str] | None = None) -> dict[str, tuple[float, str]]:
+        """Run a safe FTS5 query. Return `{draft_id: (rank, snippet_html)}`, best rank first.
+
+        Without `draft_ids`, it searches the live drafts of `account_id`.
+        With `draft_ids`, the caller has already checked read access to them.
+        """
+        if not fts_query:
+            return {}
+        # The first weight is for the unindexed draft ID column.
+        sql = (
+            "SELECT draft_search.draft_id, bm25(draft_search, 0.0, 10.0, 8.0, 4.0, 6.0, 1.0),"
+            " snippet(draft_search, -1, char(1), char(2), '...', 16)"
+            " FROM draft_search JOIN drafts AS d ON d.draft_id = draft_search.draft_id"
+            " WHERE draft_search MATCH ? AND d.deleted_at IS NULL"
+            + ("" if draft_ids is not None else " AND COALESCE(d.account_id, 'local') = ?")
+            + " ORDER BY 2"
+        )
+        params = (fts_query,) if draft_ids is not None else (fts_query, account_id)
+        with STORE_LOCK, self._connection() as connection:
+            try:
+                rows = connection.execute(sql, params).fetchall()
+            except sqlite3.OperationalError:
+                return {}
+        return {
+            draft_id: (rank, self.safe_snippet(snippet or ""))
+            for draft_id, rank, snippet in rows
+            if draft_ids is None or draft_id in draft_ids
+        }
 
     def change_draft(self, account_id: str, ref: str, action: str, reason: str | None) -> None:
         with STORE_LOCK:
@@ -4004,7 +4356,12 @@ class Store:
             else:
                 raise ValueError("Unknown draft action.")
             draft["updatedAt"] = stamp
-            self.save_meta(data)
+            drop_search = (
+                (lambda connection: connection.execute(
+                    "DELETE FROM draft_search WHERE draft_id = ?", (draft["draftId"],)))
+                if action == "delete" else None
+            )
+            self.save_meta(data, also=drop_search)
 
     def account(self, account_id: str) -> dict | None:
         if account_id == "local":
@@ -5399,6 +5756,265 @@ class TailplanHTTPServer(ThreadingHTTPServer):
             self._handler_slots.release()
 
 
+DASHBOARD_VIEWS = ("active", "favorites", "living", "shared", "archived", "all")
+DASHBOARD_SORTS = ("updated", "living", "favorited", "created", "title", "relevance")
+DASHBOARD_GROUPS = ("time", "repo", "none")
+DASHBOARD_THEMES = ("light", "dark", "system")
+MAX_QUERY_CHARS = 500
+MAX_FTS_TERMS = 12
+_QUERY_TOKEN_RE = re.compile(r'(?:([A-Za-z]+):)?(?:"([^"]*)"|([^\s"]+))')
+_QUERY_IS_FLAGS = {
+    "fav": "favorite", "favorite": "favorite", "starred": "favorite", "living": "living", "archived": "archived",
+    "disabled": "disabled", "shared": "shared", "untagged": "untagged",
+}
+_QUERY_VERSION_RE = re.compile(r"(>=|<=|>|<)?([0-9]{1,9})")
+_QUERY_AGE_RE = re.compile(r"([<>])([0-9]{1,5})d")
+_QUERY_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_STEM_SUFFIX_RE = re.compile(r"(?:-(?:v?[0-9]+|draft|final|copy|wip|old|new|rev[0-9]*))+$")
+
+
+def _query_operator(parsed: dict, key: str, value: str) -> bool:
+    """Record one `key:value` operator. Return False when the pair is not an operator."""
+    value = value.strip()
+    if key == "is" and value.lower() in _QUERY_IS_FLAGS:
+        parsed["is"].add(_QUERY_IS_FLAGS[value.lower()])
+    elif key == "v" and (match := _QUERY_VERSION_RE.fullmatch(value)):
+        parsed["versions"].append((match[1] or "=", int(match[2])))
+    elif key == "tag" and TAG_RE.fullmatch(value.lower()):
+        parsed["tags"].append(value.lower())
+    elif key == "repo" and 0 < len(value) <= 100:
+        parsed["repos"].append(value.lower())
+    elif key == "vis" and value.lower() in VISIBILITIES:
+        parsed["vis"].append(value.lower())
+    elif key == "ws" and WORKSPACE_RE.fullmatch(value.lower()):
+        parsed["ws"].append(value.lower())
+    elif key in {"after", "before"} and _QUERY_DATE_RE.fullmatch(value):
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            return False
+        parsed[key] = value
+    elif key == "age" and (match := _QUERY_AGE_RE.fullmatch(value)):
+        parsed["ages"].append((match[1], int(match[2])))
+    else:
+        return False
+    return True
+
+
+def parse_dashboard_query(q: str) -> dict:
+    """Split a dashboard search into operators and a safe FTS5 query.
+
+    Free words and quoted phrases become quoted FTS5 terms, so no input can
+    break the MATCH syntax. An unknown operator is plain text.
+    """
+    parsed: dict = {
+        "is": set(), "versions": [], "tags": [], "repos": [], "vis": [], "ws": [],
+        "after": None, "before": None, "ages": [], "text": [], "fts": "",
+    }
+    terms: list[str] = []
+    for match in _QUERY_TOKEN_RE.finditer(q[:MAX_QUERY_CHARS] if isinstance(q, str) else ""):
+        key, quoted, word = match.groups()
+        value = quoted if quoted is not None else word
+        if key and _query_operator(parsed, key.lower(), value):
+            continue
+        phrase = key is None and quoted is not None
+        words = re.findall(r"[^\W_]+", value if key is None else match[0])
+        if not words or len(terms) >= MAX_FTS_TERMS:
+            continue
+        parsed["text"].append(" ".join(words))
+        terms.append('"' + " ".join(words) + ('"' if phrase else '"*'))
+    parsed["fts"] = " ".join(terms)
+    return parsed
+
+
+def _draft_stem(draft: dict) -> str | None:
+    base = re.sub(r"[^a-z0-9]+", "-", (draft.get("slug") or draft.get("title") or "").lower()).strip("-")
+    stem = _STEM_SUFFIX_RE.sub("", base).strip("-")
+    return stem if len(stem) >= 3 and TAG_RE.fullmatch(stem) else None
+
+
+def infer_suggested_tags(drafts: list[dict]) -> dict[str, str]:
+    """Suggest one tag per draft from a name stem that two or more drafts share.
+
+    A stem is the slug or title without version, date, and draft suffixes.
+    The result maps draft IDs to tags. The server never applies a suggestion.
+    """
+    groups: dict[str, list[dict]] = {}
+    for draft in drafts:
+        stem = _draft_stem(draft)
+        if stem:
+            groups.setdefault(stem, []).append(draft)
+    return {
+        draft["draftId"]: stem
+        for stem, members in groups.items() if len(members) >= 2
+        for draft in members if stem not in (draft.get("tags") or [])
+    }
+
+
+def _parse_stamp(value: object) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value) if isinstance(value, str) and value else None
+    except ValueError:
+        return None
+
+
+def _repo_label(draft: dict) -> str | None:
+    org, name = draft.get("repoOrg"), draft.get("repoName")
+    return f"{org}/{name}" if org and name else (name or org or None)
+
+
+def _matches_query(draft: dict, parsed: dict, *, granted: set[str], shared_view: bool, now: datetime) -> bool:
+    flags = parsed["is"]
+    if "favorite" in flags and not draft["favorite"]:
+        return False
+    if "living" in flags and draft["versionCount"] <= 1:
+        return False
+    if "disabled" in flags and not draft["disabled"]:
+        return False
+    if "untagged" in flags and draft["tags"]:
+        return False
+    if "shared" in flags and not shared_view and not (
+        draft["draftId"] in granted or draft["visibility"] != "private"
+    ):
+        return False
+    count = draft["versionCount"]
+    compare = {"=": count.__eq__, ">": count.__gt__, ">=": count.__ge__, "<": count.__lt__, "<=": count.__le__}
+    if any(not compare[op](number) for op, number in parsed["versions"]):
+        return False
+    if any(tag not in draft["tags"] for tag in parsed["tags"]):
+        return False
+    label = (_repo_label(draft) or "").lower()
+    for wanted in parsed["repos"]:
+        if bool(label) if wanted == "none" else wanted not in f"{draft.get('repoHost') or ''}/{label}".lower():
+            return False
+    if parsed["vis"] and draft["visibility"] not in parsed["vis"]:
+        return False
+    if parsed["ws"] and str(draft["workspace"]).lower() not in parsed["ws"]:
+        return False
+    updated = draft["updatedAt"] or ""
+    if parsed["after"] and updated[:10] < parsed["after"]:
+        return False
+    if parsed["before"] and updated[:10] >= parsed["before"]:
+        return False
+    if parsed["ages"]:
+        stamp = _parse_stamp(updated)
+        if stamp is None:
+            return False
+        days = (now - stamp).total_seconds() / 86400
+        if any((days >= number) if op == "<" else (days <= number) for op, number in parsed["ages"]):
+            return False
+    return True
+
+
+def query_dashboard(
+    store: Store,
+    auth: AuthConfig,
+    account_id: str,
+    base_url: str,
+    *,
+    view: str = "active",
+    q: str = "",
+    sort: str = "",
+    direction: str = "",
+    group: str = "time",
+    tag: str = "",
+    repo: str = "",
+    shared_drafts: list[dict] | None = None,
+) -> dict:
+    """Return the dashboard state: the drafts for one view, search, and sort, plus facets."""
+    view = view if view in DASHBOARD_VIEWS else "active"
+    group = group if group in DASHBOARD_GROUPS else "time"
+    parsed = parse_dashboard_query(q)
+    if tag.strip() and TAG_RE.fullmatch(tag.strip().lower()):
+        parsed["tags"].append(tag.strip().lower())
+    if repo.strip():
+        parsed["repos"].append(repo.strip().lower()[:100])
+    own = store.list_drafts(account_id, base_url, include_archived=True)
+    for draft in own:
+        draft["workspace"] = draft_workspace(draft, auth)
+        draft["visibility"] = effective_visibility(draft, auth)
+    # A reader sees neither the owner's tags nor the owner's archive state.
+    shared = [
+        {**draft, "tags": [], "archived": False, "archivedAt": None, "favorite": False, "favoritedAt": None}
+        for draft in shared_drafts or []
+    ]
+    counts = {
+        "active": sum(not draft["archived"] for draft in own),
+        "favorites": sum(draft["favorite"] and not draft["archived"] for draft in own),
+        "living": sum(draft["versionCount"] > 1 and not draft["archived"] for draft in own),
+        "shared": len(shared),
+        "archived": sum(draft["archived"] for draft in own),
+        "all": len(own),
+    }
+    archive_scope = "only" if view == "archived" or "archived" in parsed["is"] else (
+        "any" if view == "all" else "none")
+
+    def in_view(draft: dict) -> bool:
+        return not (
+            (archive_scope == "only" and not draft["archived"])
+            or (archive_scope == "none" and draft["archived"])
+            or (view == "favorites" and not draft["favorite"])
+            or (view == "living" and draft["versionCount"] <= 1)
+        )
+
+    shared_view = view == "shared"
+    pool = shared if shared_view else [draft for draft in own if in_view(draft)]
+    granted = store.granted_draft_ids(account_id) if "shared" in parsed["is"] and not shared_view else set()
+    now = datetime.now(UTC)
+    matched = [
+        draft for draft in pool
+        if _matches_query(draft, parsed, granted=granted, shared_view=shared_view, now=now)
+    ]
+    ranked = bool(parsed["fts"])
+    if ranked:
+        hits = store.search_fts(
+            account_id, parsed["fts"],
+            draft_ids={draft["draftId"] for draft in pool} if shared_view else None,
+        )
+        matched = [{**draft, "rank": hits[draft["draftId"]][0], "snippet": hits[draft["draftId"]][1]}
+                   for draft in matched if draft["draftId"] in hits]
+    sort = sort if sort in DASHBOARD_SORTS else ""
+    if sort == "relevance" and not ranked:
+        sort = "updated"
+    sort = sort or ("relevance" if ranked else "updated")
+    direction = direction if direction in {"asc", "desc"} else ("asc" if sort == "title" else "desc")
+    reverse = direction == "desc"
+    matched.sort(key=lambda draft: draft["updatedAt"] or "", reverse=True)
+    if sort == "favorited":
+        starred = sorted((d for d in matched if d["favoritedAt"]), key=lambda d: d["favoritedAt"], reverse=reverse)
+        matched = starred + [draft for draft in matched if not draft["favoritedAt"]]
+    elif sort != "updated" or not reverse:
+        keys = {
+            "updated": lambda d: d["updatedAt"] or "",
+            "living": lambda d: d["versionCount"],
+            "created": lambda d: d["createdAt"] or "",
+            "title": lambda d: (d["title"] or "").casefold(),
+            "relevance": lambda d: -d.get("rank", 0.0),
+        }
+        matched.sort(key=keys[sort], reverse=reverse)
+    tag_counts: dict[str, int] = {}
+    repo_counts: dict[str, int] = {}
+    for draft in pool:
+        for name in draft["tags"]:
+            tag_counts[name] = tag_counts.get(name, 0) + 1
+        if label := _repo_label(draft):
+            repo_counts[label] = repo_counts.get(label, 0) + 1
+    favorites = sorted((d for d in own if d["favorite"] and not d["archived"]),
+                       key=lambda d: d["updatedAt"] or "", reverse=True)
+    return {
+        "view": view, "q": q if isinstance(q, str) else "", "sort": sort, "direction": direction,
+        "group": group, "tag": tag.strip().lower(), "repo": repo.strip(),
+        "counts": counts,
+        "tags": [{"tag": name, "count": count}
+                 for name, count in sorted(tag_counts.items(), key=lambda item: (-item[1], item[0]))],
+        "repos": [{"repo": name, "count": count}
+                  for name, count in sorted(repo_counts.items(), key=lambda item: (-item[1], item[0]))],
+        "suggestedTags": infer_suggested_tags([draft for draft in own if not draft["archived"]]),
+        "favorites": favorites,
+        "drafts": matched,
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "Tailplan/1.0"
 
@@ -6344,6 +6960,18 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 self.send_json(400, {"ok": False, "error": "Idempotency-Key is invalid."})
                 return
+            tags = favorite = None
+            if payload.get("tags") is not None:
+                try:
+                    tags = normalize_tags(payload["tags"])
+                except ValueError as error:
+                    self.send_json(422, {"ok": False, "error": str(error)})
+                    return
+            if payload.get("favorite") is not None:
+                if type(payload["favorite"]) is not bool:
+                    self.send_json(400, {"ok": False, "error": "favorite must be true or false."})
+                    return
+                favorite = payload["favorite"]
             index_html = next(p["html"] for p in pages if p["path"] == "index.html")
             result = self.store.upsert(
                 index_html,
@@ -6365,6 +6993,8 @@ class Handler(BaseHTTPRequestHandler):
                 default_workspace=sharing.get("defaultWorkspace"),
                 visibility=sharing.get("visibility"),
                 grants=sharing.get("grants"),
+                tags=tags,
+                favorite=favorite,
             )
             created = result.pop("created")
             status = 201 if created else 200
@@ -6776,6 +7406,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         self.management_request("DELETE", self.route_path())
 
+    def do_PATCH(self) -> None:
+        self.management_request("PATCH", self.route_path())
+
+    def wants_json(self) -> bool:
+        """True when the caller sent JSON or asked for JSON, so it wants no redirect."""
+        return (self.headers.get_content_type() == "application/json"
+                or "application/json" in self.headers.get("Accept", ""))
+
     def management_request(self, method: str, path: str) -> None:
         try:
             if path.startswith("/auth/oidc/"):
@@ -6831,7 +7469,18 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_json(404, {"ok": False, "error": "Not found."})
         elif method == "GET" and path == "/api/drafts":
-            self.send_json(200, {"ok": True, "drafts": self.store.list_drafts(account_id, self.base_url)})
+            query = {key: values[-1] for key, values in parse_qs(urlparse(self.path).query).items()}
+            if not query.keys() & {"view", "q", "sort", "dir", "tag", "archived"}:
+                self.send_json(200, {"ok": True, "drafts": self.store.list_drafts(account_id, self.base_url)})
+                return
+            view = query.get("view") or ("all" if query.get("archived", "").lower() in {"1", "true", "yes"}
+                                         else "active")
+            result = query_dashboard(
+                self.store, self.auth, account_id, self.base_url, view=view, q=query.get("q", ""),
+                sort=query.get("sort", ""), direction=query.get("dir", ""), tag=query.get("tag", ""),
+                shared_drafts=self.shared_drafts(identity))
+            result.pop("favorites")
+            self.send_json(200, {"ok": True, **result})
         elif method == "GET" and path == "/api/api-keys":
             self.send_json(200, {"ok": True, "apiKeys": self.store.list_keys(account_id)})
         elif method == "POST" and path == "/api/api-keys":
@@ -6849,7 +7498,9 @@ class Handler(BaseHTTPRequestHandler):
             path,
         ):
             draft_ref, action = match.groups()
-            if method == "GET" and action in {None, "versions"}:
+            if method == "PATCH" and action is None:
+                self.send_json(200, self.patch_draft(identity, draft_ref, self.read_control_body()))
+            elif method == "GET" and action in {None, "versions"}:
                 self.send_json(200, self.store.draft_detail(account_id, draft_ref, self.base_url))
             elif method == "DELETE" and action is None:
                 self.store.change_draft(account_id, draft_ref, "delete", None)
@@ -6872,6 +7523,56 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(404, {"ok": False, "error": "Not found."})
         else:
             self.send_json(404, {"ok": False, "error": "Not found."})
+
+    def draft_edit(self, identity: dict, ref: str, payload: dict, *, actions: tuple[str, ...]) -> str:
+        """Apply favorite, archive, or tag changes to one owned draft. Return its ID.
+
+        The audit log keeps the action and tags. It never keeps draft content.
+        """
+        account_id = identity["accountId"]
+        draft_id = self.store.draft_detail(account_id, ref, self.base_url)["draft"]["draftId"]
+        for action in actions:
+            if action in {"favorite", "unfavorite"}:
+                self.store.set_favorite(account_id, draft_id, action == "favorite")
+            elif action in {"archive", "unarchive"}:
+                self.store.set_archived(account_id, draft_id, action == "archive")
+                self.audit_event("draft." + action, identity, "draft", draft_id)
+            elif action == "tags":
+                current = self.store.draft_detail(account_id, draft_id, self.base_url)["draft"]["tags"]
+                tags = payload.get("tags")
+                if isinstance(tags, str):
+                    tags = [part for part in re.split(r"[\s,]+", tags) if part]
+                if tags is None:
+                    tags = list(current)
+                    add, remove = payload.get("add_tag"), payload.get("remove_tag")
+                    if add:
+                        tags.append(str(add))
+                    if remove:
+                        tags = [tag for tag in tags if tag != str(remove).strip().lower()]
+                _id, saved = self.store.set_tags(account_id, draft_id, tags)
+                self.audit_event("draft.tag", identity, "draft", draft_id, detail={"tags": saved})
+        return draft_id
+
+    def patch_draft(self, identity: dict, ref: str, payload: dict) -> dict:
+        """Handle PATCH /api/drafts/<ref> with tags, archived, and favorite."""
+        keys = payload.keys() & {"tags", "archived", "favorite"}
+        if not keys:
+            raise ValueError("Send tags, archived, or favorite.")
+        for key in ("archived", "favorite"):
+            if key in payload and type(payload[key]) is not bool:
+                raise ValueError(f"{key} must be true or false.")
+        if "tags" in payload:
+            normalize_tags(payload["tags"])
+        actions: list[str] = []
+        if "favorite" in payload:
+            actions.append("favorite" if payload["favorite"] else "unfavorite")
+        if "archived" in payload:
+            actions.append("archive" if payload["archived"] else "unarchive")
+        if "tags" in payload:
+            actions.append("tags")
+        draft_id = self.draft_edit(identity, ref, payload, actions=tuple(actions))
+        detail = self.store.draft_detail(identity["accountId"], draft_id, self.base_url)
+        return {"ok": True, "draft": detail["draft"]}
 
     def device_api(self, path: str) -> None:
         """Start or poll a CLI device login. These calls need no credentials."""
@@ -6988,11 +7689,12 @@ class Handler(BaseHTTPRequestHandler):
         return self.annotate_drafts(shared)
 
     def management_web(self, method: str, path: str) -> None:
-        known = path in {"/dashboard", "/cli/auth", "/cli/auth/keys", "/cli/activate", "/auth/sign-in",
-                         "/auth/sign-out"}
+        known = path in {"/dashboard", "/dashboard/bulk", "/dashboard/theme", "/cli/auth", "/cli/auth/keys",
+                         "/cli/activate", "/auth/sign-in", "/auth/sign-out"}
         draft_match = re.fullmatch(
             r"/dashboard/drafts/([a-z0-9]{6,32})"
-            r"(?:/(disable|enable|delete|favorite|unfavorite|sharing|sharing/grants|sharing/revoke))?",
+            r"(?:/(disable|enable|delete|favorite|unfavorite|archive|unarchive|tags"
+            r"|sharing|sharing/grants|sharing/revoke))?",
             path,
         )
         key_match = re.fullmatch(r"/cli/auth/keys/([a-z0-9]{6,32})/revoke", path)
@@ -7043,10 +7745,32 @@ class Handler(BaseHTTPRequestHandler):
         account_id = session["accountId"]
         if method == "POST":
             payload = self.read_control_body()
+            if "csrf" not in payload and self.headers.get("X-CSRF-Token"):
+                payload["csrf"] = self.headers["X-CSRF-Token"]
             if not self.valid_form(payload, session):
                 self.send_json(403, {"ok": False, "error": "Invalid form token. Reload and retry."})
                 return
-            if path == "/auth/sign-out":
+            if path == "/dashboard/bulk":
+                ids = payload.get("draftIds", payload.get("ids"))
+                if not isinstance(ids, list):
+                    raise ValueError("draftIds must be a list.")
+                action, tag = payload.get("action"), payload.get("tag")
+                results = self.store.bulk_update(account_id, ids, action=action, tag=tag)
+                self.audit_event("draft.bulk", session, detail={
+                    "action": action, "count": len(results), **({"tag": tag} if tag else {})})
+                self.send_json(200, {"ok": True, "count": len(results), "drafts": results})
+            elif path == "/dashboard/theme":
+                theme = payload.get("theme")
+                if theme not in DASHBOARD_THEMES:
+                    raise ValueError("theme is invalid.")
+                cookie = f"tailplan_theme={theme}; Path=/; Max-Age=31536000; SameSite=Lax"
+                if urlparse(self.base_url).scheme == "https":
+                    cookie += "; Secure"
+                if self.wants_json():
+                    self.send_json(200, {"ok": True, "theme": theme}, {"Set-Cookie": cookie})
+                else:
+                    self.redirect(safe_next_path(str(payload.get("next") or "").split("#")[0]), cookie)
+            elif path == "/auth/sign-out":
                 if session.get("sid"):
                     self.store.revoke_session(session["sid"])
                 self.audit_event("auth.logout", session, "account", account_id, detail={"method": "sign-out"})
@@ -7074,9 +7798,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.change_sharing(session, draft_match[1], action, payload)
                 self.redirect(f"/dashboard/drafts/{draft_match[1]}")
             elif draft_match and draft_match[2]:
-                if draft_match[2] in {"favorite", "unfavorite"}:
-                    self.store.set_favorite(account_id, draft_match[1], draft_match[2] == "favorite")
-                    self.redirect("/dashboard")
+                if draft_match[2] in {"favorite", "unfavorite", "archive", "unarchive", "tags"}:
+                    draft_id = self.draft_edit(session, draft_match[1], payload, actions=(draft_match[2],))
+                    if self.wants_json():
+                        row = self.store.draft_detail(account_id, draft_id, self.base_url)["draft"]
+                        self.send_json(200, {"ok": True, "draftId": draft_id, "favorite": row["favorite"],
+                                             "archived": row["archived"], "tags": row["tags"]})
+                    else:
+                        target = safe_next_path(str(payload.get("next") or "").split("#")[0])
+                        self.redirect(f"{target}#d-{draft_id}")
                 else:
                     self.store.change_draft(account_id, draft_match[1], draft_match[2], payload.get("reason"))
                     self.audit_event("draft.change", session, "draft", draft_match[1],
@@ -7089,9 +7819,21 @@ class Handler(BaseHTTPRequestHandler):
         if method != "GET":
             self.send_not_found()
         elif path == "/dashboard":
-            drafts = self.annotate_drafts(self.store.list_drafts(account_id, self.base_url))
-            self.send_html(200, render_dashboard(self.base_url, session, drafts,
-                                                 shared=self.shared_drafts(session)), web=True)
+            query = {key: values[-1] for key, values in parse_qs(urlparse(self.path).query).items()}
+            shared = self.shared_drafts(session)
+            state = query_dashboard(
+                self.store, self.auth, account_id, self.base_url, view=query.get("view", "active"),
+                q=query.get("q", ""), sort=query.get("sort", ""), direction=query.get("dir", ""),
+                group=query.get("group", "time"), tag=query.get("tag", ""), repo=query.get("repo", ""),
+                shared_drafts=shared)
+            theme = self.cookie_value("tailplan_theme")
+            state["theme"] = theme if theme in DASHBOARD_THEMES else "system"
+            if query.get("format") == "json" or "application/json" in self.headers.get("Accept", ""):
+                self.send_json(200, {"ok": True, **state})
+            else:
+                owned = [] if state["view"] == "shared" else state["drafts"]
+                self.send_html(200, render_dashboard(self.base_url, session, owned,
+                                                     shared=shared, state=state), web=True)
         elif path == "/cli/activate":
             code = (parse_qs(urlparse(self.path).query).get("code") or [""])[0]
             info = self.store.device_login(code) if code else None
