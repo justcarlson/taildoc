@@ -2741,6 +2741,40 @@ def verify_readback(
         )
 
 
+TAILPLAN_UI_META_RE = re.compile(
+    r"<meta\b[^>]*\bname\s*=\s*[\"']?tailplan-ui\b[^>]*>", re.IGNORECASE
+)
+TAILPLAN_UI_OFF_RE = re.compile(r"\bcontent\s*=\s*[\"']?\s*(?:0|false)\b", re.IGNORECASE)
+
+
+def _opts_into_tailplan_ui(html: str) -> bool:
+    """Tell whether a page opts into Tailplan UI, so the server bundles its CSS at ingest."""
+    ui = _import_tailplan_ui()
+    if ui is not None:
+        try:
+            return bool(ui.is_opted_in(html))
+        except Exception:
+            pass
+    return any(not TAILPLAN_UI_OFF_RE.search(tag) for tag in TAILPLAN_UI_META_RE.findall(html))
+
+
+def _bundled_index_digest(expected: str, result: dict) -> str | None:
+    """Return the stored index.html digest when ingest bundled an opted-in page, else None.
+
+    Any other page stays under the byte-for-byte check. fileSha256 hashes the stored
+    index.html for single-page and multi-page uploads.
+    """
+    digest = result.get("fileSha256")
+    if (
+        isinstance(digest, str)
+        and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
+        and digest != hashlib.sha256(expected.encode("utf-8")).hexdigest()
+        and _opts_into_tailplan_ui(expected)
+    ):
+        return digest
+    return None
+
+
 def _emit_failure(
     category: str,
     error: str,
@@ -3109,7 +3143,12 @@ def _publish_locked(
             verify_url = result["publicUrl"]
             if result.get("pages"):
                 verify_url = verify_url.rstrip("/") + "/"
-            verify_function(verify_url, expected)
+            bundled_digest = _bundled_index_digest(expected, result) if verifier is None else None
+            if bundled_digest is not None:
+                # The server bundled the Tailplan UI CSS at ingest: check the stored page.
+                verify_function(verify_url, None, expected_sha256=bundled_digest)
+            else:
+                verify_function(verify_url, expected)
     except VerificationFailure as error:
         return _emit_failure(
             "verification",

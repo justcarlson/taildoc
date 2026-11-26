@@ -6,6 +6,10 @@ The project uses semantic version numbers.
 
 ## Unreleased
 
+- Fix `tailplan-share` publish of a page that opts into Tailplan UI.
+  The server adds the Tailplan UI style block at upload.
+  The client now checks the read-back against the stored page and no longer fails with a digest mismatch.
+  A page that does not opt in is still checked byte for byte.
 - Change the audit log lines on standard output to wide events.
   Each line is compact JSON with sorted keys and has `event` (`tailplan.` and the name), `event_version`, `run_id`, `started_at`, `duration_ms`, `outcome`, `error_type`, and `release`.
   The line has an `actor_hash` and an `actor_kind` in place of `actor_email`, and flat detail fields in place of `detail`.
