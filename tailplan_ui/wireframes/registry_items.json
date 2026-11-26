@@ -4,14 +4,7 @@
     "category": "wireframes",
     "chunk": "device-frame",
     "summary": "Container-queried device viewport frame. Set data-device to pick a size.",
-    "subslots": [
-      "device-screen",
-      "safari-pill",
-      "safari-strip",
-      "ruler-mark",
-      "pin",
-      "wire-box"
-    ],
+    "subslots": [],
     "variants": [
       "duo-folded",
       "duo-landscape",
@@ -169,11 +162,7 @@
     "category": "wireframes",
     "chunk": "app-shell",
     "summary": "App layout. One column with tab-bar on a narrow screen, sidebar from 620px of screen width.",
-    "subslots": [
-      "app-bar",
-      "sidebar",
-      "tab-bar"
-    ],
+    "subslots": [],
     "variants": [],
     "markup": "<div data-slot=\"app-shell\"><header data-slot=\"app-bar\">…</header><nav data-slot=\"sidebar\">…</nav><div data-part=\"body\">…</div><nav data-slot=\"tab-bar\">…</nav></div>",
     "zeroJs": true
@@ -263,9 +252,7 @@
     "category": "wireframes",
     "chunk": "app-layers",
     "summary": "Command palette over a device-screen.",
-    "subslots": [
-      "search"
-    ],
+    "subslots": [],
     "variants": [],
     "markup": "<div data-slot=\"command-palette\"><div data-slot=\"search\"><span data-part=\"placeholder\">Type a command</span></div><div data-part=\"item\" aria-selected=\"true\">New plan</div></div>",
     "zeroJs": true
@@ -294,17 +281,10 @@
     "slot": "mockup-stage",
     "category": "wireframes",
     "chunk": "mockup-stage",
-    "summary": "Zero-JS stage. Radio switches set fidelity, mode, viewport and before or after.",
-    "subslots": [
-      "device-frame"
-    ],
-    "variants": [
-      "fidelity",
-      "mode",
-      "viewport",
-      "view"
-    ],
-    "markup": "<div data-slot=\"mockup-stage\"><div data-part=\"controls\"><div data-part=\"group\"><span data-part=\"seg\"><label><input type=\"radio\" name=\"s-view\" data-ctl=\"view\" value=\"side\" checked>Side by side</label><label><input type=\"radio\" name=\"s-view\" data-ctl=\"view\" value=\"before\">Before</label></span></div></div><div data-part=\"preview\"><div data-part=\"panes\"><div data-part=\"pane\" data-pane=\"before\">…</div><div data-part=\"pane\" data-pane=\"after\">…</div></div></div></div>",
+    "summary": "Zero-JS stage. Radios with data-ctl=fidelity|mode|viewport|view and a value set the state. Put data-ui-theme=wire|graphite islands inside data-part=preview.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"mockup-stage\"><div data-part=\"controls\"><div data-part=\"group\"><span data-part=\"seg\"><label><input type=\"radio\" name=\"s-fidelity\" data-ctl=\"fidelity\" value=\"wire\" checked>Wire</label><label><input type=\"radio\" name=\"s-fidelity\" data-ctl=\"fidelity\" value=\"graphite\">Hi-fi</label></span></div><div data-part=\"group\"><span data-part=\"seg\"><label><input type=\"radio\" name=\"s-view\" data-ctl=\"view\" value=\"side\" checked>Side by side</label><label><input type=\"radio\" name=\"s-view\" data-ctl=\"view\" value=\"before\">Before</label></span></div></div><div data-part=\"preview\"><div data-part=\"panes\"><div data-part=\"pane\" data-pane=\"before\"><div data-ui-theme=\"wire\">…</div><div data-ui-theme=\"graphite\">…</div></div><div data-part=\"pane\" data-pane=\"after\"><div data-ui-theme=\"wire\">…</div><div data-ui-theme=\"graphite\">…</div></div></div></div></div>",
     "zeroJs": true
   }
 ]

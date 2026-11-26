@@ -45,9 +45,8 @@
     background: var(--background); color: var(--foreground); border-radius: calc(var(--radius, 4px) * 3);
   }
   :where([data-slot="device-frame"][data-device="browser"], [data-slot="browser"]) > :where([data-slot="device-screen"]) { border-radius: 0; }
-  :where([data-slot="device-screen"] > *) { grid-area: 1 / 1; }
-  /* data-safe-area insets the screen content by the 84pt Safari side strips in landscape. */
+  /* data-safe-area insets the screen content by the 84pt Safari side strips in landscape. The inset shrinks with the screen. */
   :where([data-slot="device-frame"][data-device="duo-landscape"][data-safe-area], [data-slot="duo-landscape"][data-safe-area]) {
-    --screen-inset: 84px;
+    --screen-inset: min(84px, 14.14cqw);
   }
 }

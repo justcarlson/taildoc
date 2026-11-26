@@ -38,25 +38,32 @@
   @container stage (min-width: 920px) {
     :where([data-slot="mockup-stage"] [data-part="panes"]) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
-  /* The rules below set state. They are plainer selectors on purpose, so they beat the frame display rule. */
-  [data-slot="mockup-stage"]:has([data-ctl="fidelity"][value="wire"]:checked) [data-variant="graphite"],
-  [data-slot="mockup-stage"]:has([data-ctl="fidelity"][value="graphite"]:checked) [data-variant="wire"] { display: none; }
-  [data-slot="mockup-stage"]:has([data-ctl="view"][value="before"]:checked) [data-pane="after"],
-  [data-slot="mockup-stage"]:has([data-ctl="view"][value="after"]:checked) [data-pane="before"] { display: none; }
-  [data-slot="mockup-stage"]:has([data-ctl="view"][value="before"]:checked) [data-part="panes"],
-  [data-slot="mockup-stage"]:has([data-ctl="view"][value="after"]:checked) [data-part="panes"] { grid-template-columns: minmax(0, 1fr); }
-  [data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-folded"]:checked) [data-device]:not([data-device="duo-folded"]),
-  [data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-landscape"]:checked) [data-device]:not([data-device="duo-landscape"]),
-  [data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-unfolded"]:checked) [data-device]:not([data-device="duo-unfolded"]),
-  [data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-wide"]:checked) [data-device]:not([data-device="duo-wide"]),
-  [data-slot="mockup-stage"]:has([data-ctl="viewport"][value="iphone"]:checked) [data-device]:not([data-device="iphone"]),
-  [data-slot="mockup-stage"]:has([data-ctl="viewport"][value="ipad"]:checked) [data-device]:not([data-device="ipad"]),
-  [data-slot="mockup-stage"]:has([data-ctl="viewport"][value="browser"]:checked) [data-device]:not([data-device="browser"]) { display: none; }
+  /* The rules below set state. They use :where(), so they add no specificity. They come last in the layer, so they win by order. */
+  /* Fidelity. A data-variant or a data-ui-theme island inside the preview hides when the other fidelity is on. */
+  :where([data-slot="mockup-stage"]:has([data-ctl="fidelity"][value="wire"]:checked) [data-part="preview"] :is([data-variant="graphite"], [data-ui-theme]:not([data-ui-theme="wire"]))),
+  :where([data-slot="mockup-stage"]:has([data-ctl="fidelity"][value="graphite"]:checked) [data-part="preview"] :is([data-variant="wire"], [data-ui-theme="wire"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="view"][value="before"]:checked) [data-pane="after"]), :where([data-slot="mockup-stage"]:has([data-ctl="view"][value="after"]:checked) [data-pane="before"]) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="view"][value="before"]:checked) [data-part="panes"]), :where([data-slot="mockup-stage"]:has([data-ctl="view"][value="after"]:checked) [data-part="panes"]) { grid-template-columns: minmax(0, 1fr); }
+  /* Viewport. Frames with data-device and alias frames hide unless they match. A plain device-frame takes its size from the radio. */
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-folded"]:checked) :is([data-device]:not([data-device="duo-folded"]), [data-slot="duo-landscape"], [data-slot="duo-unfolded"], [data-slot="duo-wide"], [data-slot="iphone"], [data-slot="ipad"], [data-slot="browser"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-landscape"]:checked) :is([data-device]:not([data-device="duo-landscape"]), [data-slot="duo-folded"], [data-slot="duo-unfolded"], [data-slot="duo-wide"], [data-slot="iphone"], [data-slot="ipad"], [data-slot="browser"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-unfolded"]:checked) :is([data-device]:not([data-device="duo-unfolded"]), [data-slot="duo-folded"], [data-slot="duo-landscape"], [data-slot="duo-wide"], [data-slot="iphone"], [data-slot="ipad"], [data-slot="browser"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-wide"]:checked) :is([data-device]:not([data-device="duo-wide"]), [data-slot="duo-folded"], [data-slot="duo-landscape"], [data-slot="duo-unfolded"], [data-slot="iphone"], [data-slot="ipad"], [data-slot="browser"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="iphone"]:checked) :is([data-device]:not([data-device="iphone"]), [data-slot="duo-folded"], [data-slot="duo-landscape"], [data-slot="duo-unfolded"], [data-slot="duo-wide"], [data-slot="ipad"], [data-slot="browser"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="ipad"]:checked) :is([data-device]:not([data-device="ipad"]), [data-slot="duo-folded"], [data-slot="duo-landscape"], [data-slot="duo-unfolded"], [data-slot="duo-wide"], [data-slot="iphone"], [data-slot="browser"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="browser"]:checked) :is([data-device]:not([data-device="browser"]), [data-slot="duo-folded"], [data-slot="duo-landscape"], [data-slot="duo-unfolded"], [data-slot="duo-wide"], [data-slot="iphone"], [data-slot="ipad"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-folded"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 382; --dh: 580; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-landscape"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 594; --dh: 368; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-unfolded"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 669; --dh: 867; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-wide"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 951; --dh: 585; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="iphone"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 390; --dh: 844; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="ipad"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 768; --dh: 1024; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="browser"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 1280; --dh: 800; }
   /* A wide device needs the whole row, so the panes stack. */
-  [data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-landscape"]:checked) [data-part="panes"],
-  [data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-wide"]:checked) [data-part="panes"],
-  [data-slot="mockup-stage"]:has([data-ctl="viewport"][value="ipad"]:checked) [data-part="panes"],
-  [data-slot="mockup-stage"]:has([data-ctl="viewport"][value="browser"]:checked) [data-part="panes"] { grid-template-columns: minmax(0, 1fr); }
-  [data-slot="mockup-stage"]:has([data-ctl="mode"][value="light"]:checked) [data-part="preview"] { color-scheme: light; }
-  [data-slot="mockup-stage"]:has([data-ctl="mode"][value="dark"]:checked) [data-part="preview"] { color-scheme: dark; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-landscape"]:checked) [data-part="panes"]),
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-wide"]:checked) [data-part="panes"]),
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="ipad"]:checked) [data-part="panes"]),
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="browser"]:checked) [data-part="panes"]) { grid-template-columns: minmax(0, 1fr); }
+  :where([data-slot="mockup-stage"]:has([data-ctl="mode"][value="light"]:checked) [data-part="preview"]) { color-scheme: light; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="mode"][value="dark"]:checked) [data-part="preview"]) { color-scheme: dark; }
 }

@@ -11,9 +11,9 @@
     box-shadow: var(--wf-shadow, none); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
     font-size: 0.8rem; line-height: 1.2; text-align: center;
   }
-  /* Safari 27.1 side strip, 84pt wide. Use data-side="end" for the other edge. */
+  /* Safari 27.1 side strip, 84pt wide. It scales down with a small screen. Use data-side="end" for the other edge. */
   :where([data-slot="safari-strip"]) {
-    position: absolute; top: 0; bottom: 0; left: 0; z-index: 2; box-sizing: border-box; width: 84px;
+    position: absolute; top: 0; bottom: 0; left: 0; z-index: 2; box-sizing: border-box; width: min(84px, 14.14cqw);
     display: grid; place-items: center; pointer-events: none; writing-mode: vertical-rl;
     background: repeating-linear-gradient(135deg, color-mix(in oklab, var(--foreground) 14%, transparent) 0 1px, transparent 1px 8px);
     border-right: 1px dashed var(--border-strong); color: var(--muted-foreground); font-size: 0.7rem;
