@@ -6410,8 +6410,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         form_policy = "'self'" if web else "'none'"
+        font_policy = "font-src 'self'; " if web else ""
         self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'none'; "
-                         "style-src 'unsafe-inline'; img-src https: data:; base-uri 'none'; "
+                         f"style-src 'unsafe-inline'; img-src https: data:; {font_policy}base-uri 'none'; "
                          f"frame-ancestors 'none'; form-action {form_policy}")
         self.send_header("Referrer-Policy", "same-origin" if web else "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
@@ -7017,7 +7018,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self.store.check_ready()
                 tailplan_themes.catalog()
-            except (StorageError, OSError, tailplan_themes.ThemeError) as exc:
+                web_assets.check_ready()
+            except (StorageError, OSError, tailplan_themes.ThemeError, web_assets.WebAssetError) as exc:
                 self.log_message("readiness storage error: %r", exc)
                 self.send_json(
                     503,
@@ -7730,7 +7732,8 @@ class Handler(BaseHTTPRequestHandler):
         )
         body = render_login(self.base_url, state["csrf"], safe_next_path(next_path), offer_tailscale,
                             api_key="api_key" in self.auth.modes,
-                            oidc="oidc" in self.auth.modes and self.auth.oidc is not None)
+                            oidc="oidc" in self.auth.modes and self.auth.oidc is not None,
+                            theme=self.web_theme())
         self.send_html(200, body, web=True, cookie=cookie)
 
     def valid_form(self, payload: dict, state: dict | None) -> bool:
@@ -8045,6 +8048,11 @@ class Handler(BaseHTTPRequestHandler):
         shared.sort(key=lambda item: item["updatedAt"] or "", reverse=True)
         return self.annotate_drafts(shared)
 
+    def web_theme(self) -> str:
+        """Return the dashboard theme from the theme cookie, or `system`."""
+        theme = self.cookie_value("tailplan_theme")
+        return theme if theme in DASHBOARD_THEMES else "system"
+
     def management_web(self, method: str, path: str) -> None:
         known = path in {"/dashboard", "/dashboard/bulk", "/dashboard/theme", "/cli/auth", "/cli/auth/keys",
                          "/cli/activate", "/auth/sign-in", "/auth/sign-out"}
@@ -8143,12 +8151,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.audit_event("device.approve" if approve else "device.deny", session, "device_code",
                                      normalize_user_code(payload.get("code")))
                 self.send_html(200 if result else 404, render_activate(
-                    self.base_url, session, None, None, result=result["status"] if result else "missing"), web=True)
+                    self.base_url, session, None, None, result=result["status"] if result else "missing",
+                    theme=self.web_theme()), web=True)
             elif path == "/cli/auth/keys":
                 if self.rate_allowed("keys:" + account_id, 10, 3600):
                     result = self.store.create_key(account_id, payload.get("name"))
                     self.audit_event("key.create", session, "api_key", result["apiKey"]["id"])
-                    self.send_html(200, render_key(self.base_url, session, result), web=True)
+                    self.send_html(200, render_key(self.base_url, session, result, theme=self.web_theme()), web=True)
             elif key_match:
                 self.store.revoke_key(account_id, key_match[1])
                 self.audit_event("key.revoke", session, "api_key", key_match[1])
@@ -8186,27 +8195,28 @@ class Handler(BaseHTTPRequestHandler):
                 q=query.get("q", ""), sort=query.get("sort", ""), direction=query.get("dir", ""),
                 group=query.get("group", "time"), tag=query.get("tag", ""), repo=query.get("repo", ""),
                 shared_drafts=shared)
-            theme = self.cookie_value("tailplan_theme")
-            state["theme"] = theme if theme in DASHBOARD_THEMES else "system"
+            state["theme"] = self.web_theme()
             if query.get("format") == "json" or "application/json" in self.headers.get("Accept", ""):
                 self.send_json(200, {"ok": True, **state})
             else:
                 owned = [] if state["view"] == "shared" else state["drafts"]
-                self.send_html(200, render_dashboard(self.base_url, session, owned,
-                                                     shared=shared, state=state), web=True)
+                self.send_html(200, render_dashboard(self.base_url, session, owned, shared=shared,
+                                                     state=state, theme=state["theme"]), web=True)
         elif path == "/cli/activate":
             code = (parse_qs(urlparse(self.path).query).get("code") or [""])[0]
             info = self.store.device_login(code) if code else None
-            self.send_html(200, render_activate(self.base_url, session, normalize_user_code(code), info), web=True)
+            self.send_html(200, render_activate(self.base_url, session, normalize_user_code(code), info,
+                                                theme=self.web_theme()), web=True)
         elif path == "/cli/auth":
-            self.send_html(200, render_keys(self.base_url, session,
-                           self.store.list_keys(account_id)), web=True)
+            self.send_html(200, render_keys(self.base_url, session, self.store.list_keys(account_id),
+                                            theme=self.web_theme()), web=True)
         elif draft_match and draft_match[2] is None:
             detail = self.store.draft_detail(account_id, draft_match[1], self.base_url)
             self.annotate_drafts([detail["draft"]])
             stored = self.store.resolve_draft(draft_match[1]) or {}
             sharing = self.sharing_payload({**stored, "draftId": detail["draft"]["draftId"]})
-            self.send_html(200, render_detail(self.base_url, session, detail, sharing=sharing), web=True)
+            self.send_html(200, render_detail(self.base_url, session, detail, sharing=sharing,
+                                              theme=self.web_theme()), web=True)
         else:
             self.send_not_found()
 

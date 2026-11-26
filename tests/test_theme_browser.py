@@ -239,11 +239,31 @@ def _server_pages():
                'createdAt': '2026-11-14T10:00:00Z', 'fileSize': 12345, 'ciRunUrl': link,
                'fileSha256': 'b' * 64, 'requestId': 'r' * 32}
     key = {'id': 'k1', 'name': 'Laptop agent ' * 3, 'createdAt': '2026-11-14T10:00:00Z', 'lastUsedAt': None}
+    rows = [dict(draft, draftId=f'r{i}', tags=['a-very-long-tag-name-without-breaks', 'ops', 'notes', 'extra'],
+                 workspace='team-with-a-long-name', visibility='authenticated', archived=False,
+                 updatedAt=f'2026-{11 - i % 3:02d}-14T10:00:00Z') for i in range(6)]
+    rows.append(dict(draft, draftId='r9', favorite=False, tags=[], repoOrg=None, repoName=None))
+    counts = {'active': 7, 'favorites': 6, 'living': 2, 'shared': 3, 'archived': 1}
+    tags = [{'tag': 'a-very-long-tag-name-without-breaks', 'count': 6}, {'tag': 'ops', 'count': 6}]
+    state = {'view': 'active', 'q': '', 'sort': 'updated', 'direction': 'desc', 'group': 'time', 'tag': '',
+             'repo': '', 'counts': counts, 'tags': tags, 'repos': [{'repo': 'org/repo', 'count': 6}],
+             'suggestedTags': {'r9': 'quarterly-plan'}, 'favorites': rows[:6], 'drafts': rows}
+    shared = [dict(draft, draftId=f's{i}', favorite=False, workspace='team', visibility='workspace') for i in range(3)]
+    snippet = 'a long passage ' * 6 + '<mark>' + 'unbrokenmatch' * 6 + '</mark> and more'
+    dash = lambda **change: server.render_dashboard(base, session, rows, shared=shared, state=dict(state, **change),
+                                                    theme='dark')
     return {
         'home': server.home(base),
         'not-found': server.not_found(),
         'login': server.render_login(base, 'c' * 40, '/dashboard', True),
         'dashboard': server.render_dashboard(base, session, [draft, dict(draft, draftId='d2', slug=None, favorite=False, repoOrg=None, repoName=None, disabled=True)]),
+        'dash-active': dash(),
+        'dash-favorites': dash(view='favorites', drafts=rows[:6]),
+        'dash-archived': dash(view='archived', drafts=[dict(rows[0], archived=True)]),
+        'dash-shared': dash(view='shared', drafts=shared),
+        'dash-group-tag': dash(group='tag'),
+        'dash-search': dash(q='unbrokenmatch', sort='relevance', tag='ops',
+                            drafts=[dict(r, snippet=snippet) for r in rows]),
         'detail': server.render_detail(base, session, {'draft': draft, 'versions': [version, dict(version, versionNumber=2)]}),
         'keys': server.render_keys(base, session, [key]),
         'new-key': server.render_key(base, session, {'apiKey': {'name': 'Laptop'}, 'token': 'tp_' + 'z' * 60}),
