@@ -132,8 +132,9 @@ def test_pinned_alias_and_light_mode_turn_off_dark_mode():
 
 def test_nested_themes_get_scoped_rules_and_island_paint():
     css = ui_css(B.bundle(page('<aside data-ui-theme="wire"><p data-ui-accent="cobalt">x</p></aside>'))[0])
-    assert '[data-ui-theme="wire"]{' in css
-    assert '[data-ui-theme="wire"] [data-ui-accent="cobalt"]' in css
+    assert ':where(:not(:root))[data-ui-theme="wire"]{' in css
+    assert ('@scope ([data-ui-theme="wire"]:not(:root)) to ([data-ui-theme],[data-ui-surface])'
+            '{:scope[data-ui-accent="cobalt"],[data-ui-accent="cobalt"]{') in css
     assert ':where([data-ui-theme],[data-ui-surface]):not(:root)' in css
     assert '--line:dashed' in css
 
@@ -225,3 +226,238 @@ def test_cli_solve_prints_both_modes():
                             cwd=ROOT, capture_output=True, text=True, check=True)
     data = json.loads(result.stdout)
     assert set(data) == {'light', 'dark'}
+
+
+# Round 1 review fixes.
+
+STAMP = '<style id="tp-ui" data-tailplan-ui="1.0.0">a{}</style>'
+
+
+def test_package_exports_scan_and_opt_in():
+    assert tailplan_ui.scan is B.scan
+    assert tailplan_ui.is_opted_in is B.is_opted_in
+
+
+@pytest.mark.parametrize('content,expected', [('theme=nord', True), ('', True), ('0', False), ('false', False),
+                                              (' FALSE ', False)])
+def test_meta_tag_opts_in_unless_off(content, expected):
+    doc = page(head=f'<meta name="tailplan-ui" content="{content}">')
+    assert B.scan(doc).opted_in is expected
+    assert B.is_opted_in(doc) is expected
+
+
+def test_no_meta_tag_does_not_opt_in():
+    assert B.is_opted_in(page(html_attrs=' data-ui-theme="nord"')) is False
+
+
+def test_strip_removes_only_the_real_stamp():
+    meta = '<meta name="theme-color" content="#fff" data-tailplan-ui>'
+    assert B.strip_stamp(page(head=meta + STAMP)) == page()
+
+
+@pytest.mark.parametrize('keep', [
+    '<style id="tp-ui-custom" data-tailplan-ui>a{}</style>',
+    '<style data-id="tp-ui" data-tailplan-ui>a{}</style>',
+    '<style id="tp-ui">a{}</style>',
+    '<meta name="description" content="About data-tailplan-ui">',
+    '<!-- ' + STAMP + ' -->',
+    '<script>var s = \'' + STAMP + '\';</script>',
+])
+def test_strip_keeps_look_alike_markup(keep):
+    doc = page(head=keep)
+    assert B.strip_stamp(doc) == doc
+
+
+@pytest.mark.parametrize('tag', ['title', 'textarea'])
+def test_strip_and_scan_skip_rcdata_text(tag):
+    text = f'<{tag}>{STAMP}<style>p{{--tp-hue:1}}</style></{tag}>'
+    doc = page(text) if tag == 'textarea' else page(head=text)
+    assert B.strip_stamp(doc) == doc
+    f = B.scan(doc)
+    assert not f.tp_hue_sheet and not f.custom_css
+
+
+def test_tp_hue_in_a_comment_is_not_a_use():
+    out, meta = B.bundle(page('<div style="color:red /* --tp-hue */">x</div>',
+                              head='<style>/* --tp-hue: 20 */ p{color:red}</style>'))
+    assert '--tp-hue,' not in ui_css(out)
+    assert meta['warnings'] == []
+
+
+def test_hue_envelope_never_lands_on_root():
+    out, meta = B.bundle(page('<div data-ui-hue-var>x</div>', head='<style>div{--tp-hue:20}</style>'))
+    css = ui_css(out)
+    assert '[data-ui-hue-var],[style*="--tp-hue"]{--primary:oklch(' in css
+    assert not re.search(r':root[^{]*\{--primary:oklch', css)
+    assert meta['warnings'] == []
+
+
+def test_sheet_tp_hue_without_the_opt_in_attribute_warns():
+    out, meta = B.bundle(page('<div class="x">x</div>', head='<style>.x{--tp-hue:20}</style>'))
+    assert '--tp-hue,' not in ui_css(out)
+    assert any('data-ui-hue-var' in w for w in meta['warnings'])
+
+
+def test_hover_tokens_follow_the_envelope_selector():
+    css = ui_css(B.bundle(page('<div style="--tp-hue:20">x</div>'))[0])
+    hover = re.search(r'([^{}]*)\{--primary-hover:', css).group(1)
+    assert hover.endswith('[data-ui-hue-var],[style*="--tp-hue"]')
+
+
+def test_root_attributes_never_take_island_paint():
+    doc = page('<div data-ui-theme="nord">x</div>', html_attrs=' data-ui-theme="nord" data-ui-accent="cobalt"')
+    css = ui_css(B.bundle(doc)[0])
+    assert ':where(:not(:root))[data-ui-theme="nord"]{' in css
+    assert '\n[data-ui-theme="nord"]{' not in css and '}[data-ui-theme="nord"]{' not in css
+    cobalt = T_ACCENT('theme', 'nord', 'cobalt')
+    root = re.search(r':root\{color-scheme:light dark;([^}]*)\}', css).group(1)
+    assert f'--primary:{cobalt}' in root
+
+
+def T_ACCENT(kind, ident, accent):
+    from tailplan_ui.color import tokens as T
+    light = T.accent_tokens(kind, ident, accent, S.LIGHT)['primary']
+    dark = T.accent_tokens(kind, ident, accent, S.DARK)['primary']
+    return f'light-dark({light},{dark})'
+
+
+def test_island_modifiers_sit_in_a_donut_scope():
+    doc = page('<aside data-ui-theme="nord" data-ui-accent="amber"><section data-ui-surface="slate">'
+               '<p data-ui-accent="cobalt">x</p></section></aside>')
+    css = ui_css(B.bundle(doc)[0])
+    nord = '@scope ([data-ui-theme="nord"]:not(:root)) to ([data-ui-theme],[data-ui-surface]){'
+    slate = '@scope ([data-ui-surface="slate"]:not(:root)) to ([data-ui-theme],[data-ui-surface]){'
+    assert nord + ':scope[data-ui-accent="amber"],[data-ui-accent="amber"]{' in css
+    assert slate + ':scope[data-ui-accent="cobalt"],[data-ui-accent="cobalt"]{' in css
+    assert '[data-ui-theme="nord"] [data-ui-accent' not in css
+
+
+def test_root_contrast_more_gets_normal_overrides():
+    doc = page('<p data-ui-contrast="normal" data-ui-accent="amber">x</p>', html_attrs=' data-ui-contrast="more"')
+    css = ui_css(B.bundle(doc)[0])
+    rule = re.search(r'\[data-ui-contrast="normal"\]\[data-ui-accent="amber"\][^{]*\{([^}]*)\}', css).group(1)
+    ink = re.search(r'--primary-ink:light-dark\((#[0-9a-f]{6}),', rule).group(1)
+    assert S.contrast_ratio(ink, '#faf6ee') < S.MORE_TARGET
+
+
+def test_contrast_matching_the_root_adds_no_rules():
+    doc = page('<p data-ui-contrast="more">x</p>', html_attrs=' data-ui-contrast="more"')
+    assert 'data-ui-contrast=' not in ui_css(B.bundle(doc)[0])
+
+
+def test_ancestor_contrast_reaches_an_accent_below_it():
+    doc = page('<div data-ui-contrast="more"><p data-ui-accent="amber">x</p></div>')
+    css = ui_css(B.bundle(doc)[0])
+    assert '[data-ui-contrast="more"] [data-ui-accent="amber"]' in css
+
+
+def test_ancestor_contrast_reaches_an_island_root():
+    doc = page('<div data-ui-contrast="more"><aside data-ui-theme="nord" data-ui-accent="amber">x</aside></div>')
+    css = ui_css(B.bundle(doc)[0])
+    scope = re.search(r'@scope \(\[data-ui-theme="nord"\]:not\(:root\)\)[^{]*\{(.*)', css).group(1)
+    assert '[data-ui-contrast="more"] :scope[data-ui-accent="amber"]' in scope
+
+
+@pytest.mark.parametrize('attr,value', [('seed', '#fff\n'), ('seed', '#ffff'), ('hue', '120\n'),
+                                        ('hue', '١٢٠'), ('hue', '361')])
+def test_strict_seed_and_hue_values_warn(attr, value):
+    _, meta = B.bundle(page(f'<p data-ui-{attr}="{value}">x</p>'))
+    assert len(meta['warnings']) == 1
+
+
+@pytest.mark.parametrize('seed', ['12abc', '١٢٠', '#ffff', '400'])
+def test_cli_solve_rejects_bad_seeds(seed):
+    result = subprocess.run([sys.executable, '-m', 'tailplan_ui', 'solve', seed],
+                            cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 2
+    assert 'seed must be a hex color or a hue' in result.stderr
+
+
+def test_cli_solve_takes_a_decimal_hue():
+    result = subprocess.run([sys.executable, '-m', 'tailplan_ui', 'solve', '212.5'],
+                            cwd=ROOT, capture_output=True, text=True, check=True)
+    assert set(json.loads(result.stdout)) == {'light', 'dark'}
+
+
+@pytest.mark.parametrize('wrap', ['<template>{}</template>', '<noscript>{}</noscript>'])
+def test_first_style_ignores_inert_head_styles(wrap):
+    doc = page(head=wrap.format('<style>a{}</style>') + '<style>p{color:red}</style>')
+    out, _ = B.bundle(doc)
+    assert out.index('id="tp-ui"') < out.index('<style>p{color:red}')
+    assert out.index('id="tp-ui"') > out.index('<style>a{}')
+
+
+def test_svg_styles_do_not_place_the_stamp():
+    out, _ = B.bundle(page('<svg><style>a{}</style></svg>'))
+    assert out.index('id="tp-ui"') < out.index('</head>') < out.index('<svg>')
+
+
+def test_body_styles_do_not_pull_the_stamp_out_of_head():
+    out, _ = B.bundle(page('<style>p{color:red}</style><p>x</p>'))
+    head = out[:out.index('</head>')]
+    assert 'id="tp-ui"' in head
+    assert head.count('name="theme-color"') == 2
+
+
+def test_root_warnings_are_not_repeated():
+    _, meta = B.bundle(page(head='<meta name="tailplan-ui" content="theme=nope">',
+                            html_attrs=' data-ui-accent="nope"'))
+    assert meta['warnings'] == ['Unknown root data-ui-theme: nope', 'Unknown data-ui-accent: nope']
+
+
+def test_unknown_meta_keys_and_bad_root_values_warn_and_fall_back():
+    doc = page(head='<meta name="tailplan-ui" content="theme=nord colour=red contrast=max mode=sepia">')
+    out, meta = B.bundle(doc)
+    assert meta['warnings'] == ['Unknown tailplan-ui meta key: colour', 'Unknown root data-ui-contrast: max',
+                                'Unknown root data-ui-mode: sepia']
+    assert ':root{color-scheme:light dark;' in ui_css(out)
+    assert meta['uiTheme'] == 'nord'
+
+
+def test_minify_keeps_string_literals():
+    css = B.minify('a::after { content: " > : ; }  /* x */"; } b { content: \'/* no */\'; }')
+    assert css == 'a::after{content:" > : ; }  /* x */"}b{content:\'/* no */\'}'
+
+
+def test_minify_drops_comments_with_quotes():
+    assert B.minify('/* it\'s "x" */ a { b: c; }') == 'a{b:c}'
+
+
+def make_ui_dir(tmp_path):
+    import shutil
+    shutil.copytree(ROOT / 'tailplan_ui' / 'css', tmp_path / 'css')
+    for layer, name, text in [
+            ('primitives', 'b.css', '/* @chunk tabs when=slot:tabs|tab */ @layer tp.primitives { x { a: b; } }'),
+            ('primitives', 'a.css', '@layer tp.primitives { y { a: b; } }'),
+            ('blocks', 'card.css', '/* @chunk card when=attr:data-card */ @layer tp.blocks { z { a: b; } }'),
+            ('wireframes', 'w.css', '@layer tp.wireframes { w { a: b; } }')]:
+        (tmp_path / layer).mkdir(exist_ok=True)
+        (tmp_path / layer / name).write_text(text, encoding='utf-8')
+    return tmp_path
+
+
+def test_chunks_are_found_in_layer_order(tmp_path):
+    ui = make_ui_dir(tmp_path)
+    found = [(name, ident, cond) for name, ident, cond, _ in B.chunks(ui)]
+    tail = found[-4:]
+    assert tail == [('a.css', 'a', 'always'), ('b.css', 'tabs', 'slot:tabs|tab'),
+                    ('card.css', 'card', 'attr:data-card'), ('w.css', 'w', 'always')]
+
+
+@pytest.mark.parametrize('body,want', [('<p data-slot="tab">x</p>', True), ('<p data-slot="tabs">x</p>', True),
+                                       ('<p data-slot="other">x</p>', False)])
+def test_slot_conditions_take_alternatives(body, want):
+    assert B.Composer(B.scan(page(body)), 'standalone').wants('slot:tabs|tab') is want
+
+
+def test_attr_conditions_take_any_attribute():
+    composer = B.Composer(B.scan(page('<div data-card>x</div>')), 'standalone')
+    assert composer.wants('attr:data-card') is True
+    assert composer.wants('attr:data-other') is False
+    with pytest.raises(ValueError):
+        composer.wants('attr:')
+
+
+def test_real_chunk_dirs_load_when_present():
+    names = [name for name, *_ in B.chunks()]
+    assert names[:1] == ['layers.css']

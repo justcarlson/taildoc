@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 
-from .bundler import TARGETS, bundle
+from .bundler import TARGETS, bundle, is_hue
 from .color import solve as S
 
 
@@ -29,7 +29,12 @@ def _bundle(args) -> int:
 
 
 def _solve(args) -> int:
-    seed = float(args.seed) if args.seed.replace(".", "", 1).isdigit() else args.seed
+    if is_hue(args.seed):
+        seed = float(args.seed)
+    elif S.is_hex(args.seed):
+        seed = args.seed
+    else:
+        args.parser.error(f"seed must be a hex color or a hue from 0 to 360: {args.seed!r}")
     result = S.solve_accent(seed, args.light_bg, args.dark_bg, contrast=args.contrast)
     json.dump(result, sys.stdout, indent=2)
     print()
@@ -50,7 +55,7 @@ def main(argv=None) -> int:
     s.add_argument("--light-bg", default="#faf6ee")
     s.add_argument("--dark-bg", default="#1c1b18")
     s.add_argument("--contrast", choices=("normal", "more"), default="normal")
-    s.set_defaults(func=_solve)
+    s.set_defaults(func=_solve, parser=s)
     args = parser.parse_args(argv)
     return args.func(args)
 

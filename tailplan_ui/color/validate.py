@@ -31,7 +31,7 @@ def check_mode(tokens: dict[str, str], *, contrast: str = "normal", label: str =
             _check(failures, f"{label}{ink}/{plane}", tokens[ink], tokens[plane], text)
     _check(failures, f"{label}code", tokens["code-foreground"], tokens["code-background"], text)
     _check(failures, f"{label}solid", tokens["primary-foreground"], tokens["primary"], S.TEXT_MIN)
-    for plane in ("background", "card", "accent", "accent-surface"):
+    for plane in ("background", "card", "muted", "accent", "accent-surface"):
         _check(failures, f"{label}primary-ink/{plane}", tokens["primary-ink"], tokens[plane], text)
     for plane in ("background", "card"):
         _check(failures, f"{label}primary-edge/{plane}", tokens["primary-edge"], tokens[plane], S.EDGE_MIN)
@@ -84,8 +84,10 @@ def validate_all() -> list[str]:
                 tokens = T.mode_tokens(kind, ident, mode, contrast=contrast)
                 failures += check_mode(tokens, contrast=contrast, label=f"{kind}:{ident}:{mode}:{contrast}:")
             for accent in T.accents():
-                tokens = T.mode_tokens(kind, ident, mode, accent=accent)
-                failures += check_mode(tokens, label=f"{kind}:{ident}:{mode}:{accent}:")
+                for contrast in T.CONTRASTS:
+                    tokens = T.mode_tokens(kind, ident, mode, accent=accent, contrast=contrast)
+                    failures += check_mode(tokens, contrast=contrast,
+                                           label=f"{kind}:{ident}:{mode}:{accent}:{contrast}:")
             for viz in T.viz_sets():
                 tokens = T.mode_tokens(kind, ident, mode, viz=viz)
                 failures += check_mode(tokens, label=f"{kind}:{ident}:{mode}:{viz}:")

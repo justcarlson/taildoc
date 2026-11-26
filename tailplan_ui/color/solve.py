@@ -7,6 +7,7 @@ It measures WCAG 2.1 contrast and simulates color vision deficiency.
 from __future__ import annotations
 
 import math
+import re
 from functools import lru_cache
 
 LIGHT = "light"
@@ -23,6 +24,8 @@ EDGE_TARGET = 3.05
 INK_FLIP_Y = 0.179
 GAMUT_MARGIN = 0.92
 EPS = 1e-7
+CONTRASTS = ("normal", "more")
+HEX_RE = re.compile(r"#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?\Z")
 
 
 # sRGB transfer functions and hex helpers.
@@ -53,13 +56,7 @@ def parse_hex(value: str) -> tuple[float, float, float]:
 
 def is_hex(value: object) -> bool:
     """Return True when the value is a #rgb or #rrggbb string."""
-    if not isinstance(value, str) or not value.startswith("#"):
-        return False
-    try:
-        parse_hex(value)
-    except ValueError:
-        return False
-    return True
+    return isinstance(value, str) and HEX_RE.fullmatch(value) is not None
 
 
 def to_hex(rgb: tuple[float, float, float]) -> str:
@@ -140,7 +137,7 @@ def _max_chroma(L: float, H: float) -> float:
     lo, hi = 0.0, 0.5
     for _ in range(32):
         mid = (lo + hi) / 2
-        if in_gamut(L, mid, H, eps=0):
+        if in_gamut(L, mid, H, eps=1e-6):
             lo = mid
         else:
             hi = mid
@@ -308,8 +305,8 @@ def _seed_solid(seed) -> str:
             raise ValueError(f"Hue must be 0..360: {seed!r}")
         return solid_from_hue(float(seed))
     if is_hex(seed):
-        L, C, H = hex_to_oklch(seed)
-        return oklch_hex(L, C, H, margin=1.0)
+        # A valid hex is already in sRGB. Keep it exact.
+        return normalize_hex(seed)
     raise ValueError(f"Seed must be a hex color or a hue: {seed!r}")
 
 
@@ -322,16 +319,26 @@ def _soft(solid: str, background: str, mode: str) -> tuple[str, str, str]:
             mix_oklab(background, solid, 0.45))
 
 
+def _check_contrast(contrast: str) -> None:
+    if contrast not in CONTRASTS:
+        raise ValueError("contrast must be normal or more")
+
+
 def solve_mode(seed, background: str, card: str | None = None, *, mode: str = LIGHT,
-               contrast: str = "normal") -> dict[str, str]:
-    """Solve the accent tokens for one mode and one surface."""
+               contrast: str = "normal", muted: str | None = None) -> dict[str, str]:
+    """Solve the accent tokens for one mode and one surface.
+
+    The ink must pass on the background, card, muted, accent, and accent-surface planes.
+    """
+    _check_contrast(contrast)
     card = card or background
+    muted = muted or card
     solid = _seed_solid(seed)
     toward = DARK if mode == LIGHT else LIGHT
     edge = solve_lightness(solid, [background, card], EDGE_TARGET, toward=toward)
     accent, accent_surface, accent_border = _soft(solid, background, mode)
     target = MORE_SOLVE if contrast == "more" else TEXT_TARGET
-    ink = solve_lightness(solid, [background, card, accent, accent_surface], target, toward=toward)
+    ink = solve_lightness(solid, [background, card, muted, accent, accent_surface], target, toward=toward)
     return {
         "primary": solid,
         "primary-foreground": solid_ink(solid),
@@ -353,18 +360,21 @@ def solve_accent(
     contrast: str = "normal",
     card_light: str | None = None,
     card_dark: str | None = None,
+    muted_light: str | None = None,
+    muted_dark: str | None = None,
 ) -> dict[str, dict[str, str]]:
     """Solve the accent tokens for light and dark modes.
 
     The seed is a hex color or a hue in degrees.
     A dict with light and dark keys gives a different seed for each mode.
     """
-    if contrast not in ("normal", "more"):
-        raise ValueError("contrast must be normal or more")
+    _check_contrast(contrast)
     seeds = seed_or_hue if isinstance(seed_or_hue, dict) else {LIGHT: seed_or_hue, DARK: seed_or_hue}
     return {
-        LIGHT: solve_mode(seeds[LIGHT], surface_light_bg, card_light, mode=LIGHT, contrast=contrast),
-        DARK: solve_mode(seeds[DARK], surface_dark_bg, card_dark, mode=DARK, contrast=contrast),
+        LIGHT: solve_mode(seeds[LIGHT], surface_light_bg, card_light, mode=LIGHT, contrast=contrast,
+                          muted=muted_light),
+        DARK: solve_mode(seeds[DARK], surface_dark_bg, card_dark, mode=DARK, contrast=contrast,
+                         muted=muted_dark),
     }
 
 
@@ -372,7 +382,7 @@ def solve_accent(
 HUE_ENVELOPE = {
     "primary": ((0.50, 0.075), (0.50, 0.075)),
     "primary-edge": ((0.50, 0.075), (0.70, 0.08)),
-    "primary-ink": ((0.46, 0.075), (0.80, 0.07)),
+    "primary-ink": ((0.42, 0.07), (0.83, 0.065)),
     "accent": ((0.95, 0.02), (0.30, 0.03)),
     "accent-surface": ((0.97, 0.012), (0.26, 0.022)),
     "accent-border": ((0.86, 0.04), (0.42, 0.05)),

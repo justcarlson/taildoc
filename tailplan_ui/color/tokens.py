@@ -51,7 +51,6 @@ INK_KEYS = ("foreground", "card-foreground", "popover-foreground", "secondary-fo
 
 
 @lru_cache(maxsize=1)
-@lru_cache(maxsize=1)
 def presets() -> dict[str, dict]:
     """Return the designer presets keyed by id."""
     out = {}
@@ -203,7 +202,8 @@ def _accent_tokens(kind: str, ident: str, spec_key, mode: str, contrast: str) ->
     seed = _accent_seed(spec)
     seed = seed[mode] if isinstance(seed, dict) else seed
     neutral = neutral_tokens(kind, ident, mode)
-    return S.solve_mode(seed, neutral["background"], neutral["card"], mode=mode, contrast=contrast)
+    return S.solve_mode(seed, neutral["background"], neutral["card"], mode=mode, contrast=contrast,
+                        muted=neutral["muted"])
 
 
 def accent_tokens(kind: str, ident: str, spec, mode: str, contrast: str = "normal") -> dict[str, str]:
@@ -354,10 +354,11 @@ def context_decls(kind: str, ident: str, *, pinned: str | None = None, with_viz:
     return decls
 
 
-def contrast_decls(kind: str, ident: str, accent=None, pinned: str | None = None) -> list[str]:
-    """Return the ink declarations for data-ui-contrast="more"."""
-    light = mode_tokens(kind, ident, S.LIGHT, accent=accent, contrast="more")
-    dark = mode_tokens(kind, ident, S.DARK, accent=accent, contrast="more")
+def contrast_decls(kind: str, ident: str, accent=None, pinned: str | None = None,
+                   contrast: str = "more") -> list[str]:
+    """Return the ink declarations for one data-ui-contrast value."""
+    light = mode_tokens(kind, ident, S.LIGHT, accent=accent, contrast=contrast)
+    dark = mode_tokens(kind, ident, S.DARK, accent=accent, contrast=contrast)
     keys = list(INK_KEYS) + ["primary-ink", "accent-foreground", "ring"]
     return declarations(light, dark, keys, pinned)
 

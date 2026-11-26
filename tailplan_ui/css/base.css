@@ -1,16 +1,17 @@
 /* tp.base: warm editorial type, links, focus, prose, and print. */
-/* Headings use a serif stack at weight 600. Georgia is a late fallback. */
+/* Headings use --font-heading, a serif stack at weight 600. Georgia is a late fallback. */
 /* @chunk base when=always */
 @layer tp.base {
   :root {
     --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
     --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-heading: var(--font-serif);
     --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     --heading-weight: 600;
     --leading: 1.6;
   }
   body { font-family: var(--font-sans); line-height: var(--leading); }
-  :where(h1, h2, h3, h4) { font-family: var(--font-serif); font-weight: var(--heading-weight); line-height: 1.2; color: var(--heading); text-wrap: balance; }
+  :where(h1, h2, h3, h4, h5, h6) { font-family: var(--font-heading); font-weight: var(--heading-weight); line-height: 1.2; color: var(--heading); text-wrap: balance; }
   :where(code, kbd, samp, pre) { font-family: var(--font-mono); font-size: 0.9em; }
   :where(a) { color: var(--primary-ink); text-underline-offset: 0.18em; }
   :where(a:hover) { color: var(--primary-hover-ink); }
@@ -22,10 +23,10 @@
 @layer tp.base {
   :where([data-ui-theme], [data-ui-surface]):not(:root) { background-color: var(--background); color: var(--foreground); }
 }
-/* Donut scope: prose rules stop at nested themes and device screens. */
+/* Donut scope: prose rules stop at nested themes, surfaces, and device screens. */
 /* @chunk prose when=slot:prose */
 @layer tp.base {
-  @scope ([data-slot="prose"]) to ([data-ui-theme], [data-slot="device-screen"]) {
+  @scope ([data-slot="prose"]) to ([data-ui-theme], [data-ui-surface], [data-slot="device-screen"]) {
     :scope { max-width: var(--measure); }
     :where(p, ul, ol, blockquote, pre, table, figure) { margin-block: 0 var(--space); }
     :where(h2, h3) { margin-block: 1.6em 0.5em; }

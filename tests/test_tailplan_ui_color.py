@@ -280,6 +280,81 @@ def test_base_type_rules():
     assert '--heading-weight: 600' in text
     assert '700' not in text and 'bold' not in text
     assert not re.search(r'h2[^{]*\{[^}]*border-bottom', text)
-    assert '@scope ([data-slot="prose"]) to ([data-ui-theme], [data-slot="device-screen"])' in text
+    assert ('@scope ([data-slot="prose"]) to ([data-ui-theme], [data-ui-surface], '
+            '[data-slot="device-screen"])') in text
     assert ':where(a) { color: var(--primary-ink); }' in text
     assert '@media print' in text
+
+
+def test_headings_use_the_font_heading_token():
+    text = CSS['base.css']
+    assert '--font-heading: var(--font-serif);' in text
+    assert ':where(h1, h2, h3, h4, h5, h6) { font-family: var(--font-heading);' in text
+
+
+# Round 1 review fixes.
+
+@pytest.mark.parametrize('value', ['#fff\n', '#ffff', '#12345', '#ggg', '#\uff11\uff12\uff13', 'fff', '#fff '])
+def test_is_hex_rejects_near_misses(value):
+    assert not S.is_hex(value)
+
+
+@pytest.mark.parametrize('seed', ['#0000ff', '#000080', '#00F'])
+def test_exact_hex_seeds_stay_exact(seed):
+    assert S.solve_mode(seed, '#ffffff')['primary'] == S.normalize_hex(seed)
+    assert S.solve_mode(seed, '#000000', mode=S.DARK)['primary'] == S.normalize_hex(seed)
+
+
+def test_max_chroma_uses_a_tight_gamut_check():
+    for H in range(0, 360, 15):
+        for L in (0.2, 0.5, 0.8):
+            top = S.max_srgb_chroma(L, H)
+            assert S.in_gamut(L, top, H, eps=1e-6)
+
+
+def test_solve_mode_rejects_unknown_contrast():
+    with pytest.raises(ValueError):
+        S.solve_mode('#1d4ed8', '#ffffff', contrast='max')
+
+
+def test_primary_ink_passes_on_the_muted_plane():
+    # A dark muted plane under light ink was the failing case.
+    out = S.solve_mode('#eab308', '#1c1b18', '#24231f', mode=S.DARK, muted='#3a3830')
+    assert S.contrast_ratio(out['primary-ink'], '#3a3830') >= S.TEXT_MIN
+
+
+@pytest.mark.parametrize('ident', sorted(T.presets()))
+def test_context_primary_ink_passes_on_muted(ident):
+    for mode in S.MODES:
+        tokens = T.mode_tokens('theme', ident, mode)
+        assert S.contrast_ratio(tokens['primary-ink'], tokens['muted']) >= S.TEXT_MIN, mode
+
+
+@pytest.mark.parametrize('contrast', T.CONTRASTS)
+@pytest.mark.parametrize('accent', sorted(T.accents()))
+def test_every_accent_passes_at_both_contrasts(accent, contrast):
+    for mode in S.MODES:
+        tokens = T.mode_tokens('theme', T.DEFAULT_THEME, mode, accent=accent, contrast=contrast)
+        for plane in ('background', 'card', 'muted'):
+            assert S.contrast_ratio(tokens['primary-ink'], tokens[plane]) >= target(contrast), plane
+
+
+@pytest.mark.parametrize('H', range(0, 360, 10))
+def test_hue_envelope_ink_passes_on_muted(H):
+    for mode in S.MODES:
+        ink = S.hue_envelope_hex(H, mode)['primary-ink']
+        for ident in T.presets():
+            muted = T.neutral_tokens('theme', ident, mode)['muted']
+            assert S.contrast_ratio(ink, muted) >= S.TEXT_MIN, (ident, mode)
+
+
+def test_validator_checks_muted_and_both_contrasts():
+    source = Path(V.__file__).read_text(encoding='utf-8')
+    assert '"muted"' in source and 'T.CONTRASTS' in source
+
+
+def test_contrast_decls_take_a_contrast_value():
+    normal = T.contrast_decls('theme', T.DEFAULT_THEME, contrast='normal')
+    more = T.contrast_decls('theme', T.DEFAULT_THEME)
+    assert normal != more
+    assert normal == T.contrast_decls('theme', T.DEFAULT_THEME, contrast='normal')
