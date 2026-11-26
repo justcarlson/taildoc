@@ -2155,5 +2155,136 @@ class CliContractTests(unittest.TestCase):
                 stop_process(process)
 
 
+UI_OPT_IN = '<meta name="tailplan-ui" content="1">'
+
+
+def ui_page(title: str = "UI page", *, opt: bool = True, body: str = "<p>ui-marker-31c7</p>") -> str:
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f'{UI_OPT_IN if opt else ""}<title>{title}</title></head><body>{body}</body></html>'
+    )
+
+
+class BundledReadbackTests(unittest.TestCase):
+    """Publish through a live local server: ingest bundles opted-in pages, so read-back must follow."""
+
+    @contextlib.contextmanager
+    def live_server(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = root / "home"
+            token_path = home / ".tailplan" / "token"
+            token_path.parent.mkdir(parents=True)
+            token_path.write_text("cli-token\n", encoding="utf-8")
+            data_dir = root / "data"
+            data_dir.mkdir()
+            with socket.socket() as sock:
+                sock.bind(("127.0.0.1", 0))
+                port = sock.getsockname()[1]
+            base_url = f"http://127.0.0.1:{port}"
+            process = subprocess.Popen(
+                [
+                    sys.executable, str(ROOT / "tailplan_server.py"),
+                    "--host", "127.0.0.1", "--port", str(port),
+                    "--data-dir", str(data_dir), "--token-file", str(token_path),
+                    "--base-url", base_url,
+                ],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            try:
+                for _ in range(100):
+                    try:
+                        with urllib.request.urlopen(base_url + "/healthz", timeout=1):
+                            break
+                    except urllib.error.URLError:
+                        if process.poll() is not None:
+                            self.fail("isolated Tailplan server exited during startup")
+                        time.sleep(0.05)
+                else:
+                    self.fail("isolated Tailplan server did not become healthy")
+                yield root, home, base_url
+            finally:
+                stop_process(process)
+
+    def publish(self, source: Path, home: Path, base_url: str) -> dict:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(share.Path, "home", return_value=home):
+            exit_code = share.publish(
+                source, base_url, home=home, stdout=stdout, stderr=stderr, json_output=True,
+            )
+        self.assertEqual("", stderr.getvalue())
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(0, exit_code, result)
+        self.assertIs(result["ok"], True)
+        return result
+
+    def stored(self, result: dict, path: str = "") -> str:
+        url = result["publicUrl"].rstrip("/") + "/" + path
+        request = urllib.request.Request(url, headers={"Authorization": "Bearer cli-token"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.read().decode("utf-8")
+
+    def test_unbundled_opt_in_page_publishes_and_verifies_the_bundled_page(self) -> None:
+        with self.live_server() as (root, home, base_url):
+            source = root / "ui.html"
+            raw = ui_page()
+            source.write_text(raw, encoding="utf-8")
+            result = self.publish(source, home, base_url)
+            self.assertNotEqual(hashlib.sha256(raw.encode("utf-8")).hexdigest(), result["fileSha256"])
+            stored = self.stored(result)
+            self.assertIn('<style id="tp-ui"', stored)
+            self.assertEqual(hashlib.sha256(stored.encode("utf-8")).hexdigest(), result["fileSha256"])
+
+    def test_opt_in_folder_publish_verifies_the_bundled_index(self) -> None:
+        with self.live_server() as (root, home, base_url):
+            folder = root / "site"
+            folder.mkdir()
+            (folder / "index.html").write_text(ui_page("Home"), encoding="utf-8")
+            (folder / "about.html").write_text(ui_page("About"), encoding="utf-8")
+            result = self.publish(folder, home, base_url)
+            self.assertTrue(result.get("pages"))
+            self.assertIn('<style id="tp-ui"', self.stored(result))
+
+    def test_plain_page_still_verifies_byte_for_byte(self) -> None:
+        with self.live_server() as (root, home, base_url):
+            source = root / "plain.html"
+            raw = ui_page("Plain", opt=False)
+            source.write_text(raw, encoding="utf-8")
+            calls = []
+            real = share.verify_readback
+
+            def spy(url, expected, **kwargs):
+                calls.append((expected, kwargs))
+                return real(url, expected, **kwargs)
+
+            with patch.object(share, "verify_readback", spy):
+                self.publish(source, home, base_url)
+            self.assertEqual([(raw, {})], calls)
+
+    def test_a_mutated_plain_page_fails_readback(self) -> None:
+        raw = ui_page("Plain", opt=False)
+        result = {"fileSha256": hashlib.sha256(b"server changed it").hexdigest()}
+        self.assertIsNone(share._bundled_index_digest(raw, result))
+
+    def test_bundled_digest_needs_an_opt_in_page_a_changed_hash_and_a_valid_digest(self) -> None:
+        raw = ui_page()
+        other = hashlib.sha256(b"bundled").hexdigest()
+        self.assertEqual(other, share._bundled_index_digest(raw, {"fileSha256": other}))
+        same = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        self.assertIsNone(share._bundled_index_digest(raw, {"fileSha256": same}))
+        for bad in (None, 5, "short", other.upper(), other[:-1] + "g"):
+            with self.subTest(digest=bad):
+                self.assertIsNone(share._bundled_index_digest(raw, {"fileSha256": bad}))
+        off = raw.replace('content="1"', 'content="0"')
+        self.assertIsNone(share._bundled_index_digest(off, {"fileSha256": other}))
+
+    def test_opt_in_detection_falls_back_to_a_meta_check_without_tailplan_ui(self) -> None:
+        with patch.object(share, "_import_tailplan_ui", return_value=None):
+            self.assertTrue(share._opts_into_tailplan_ui(ui_page()))
+            self.assertFalse(share._opts_into_tailplan_ui(ui_page(opt=False)))
+            self.assertFalse(share._opts_into_tailplan_ui(ui_page().replace('content="1"', 'content="false"')))
+
+
 if __name__ == "__main__":
     unittest.main()
