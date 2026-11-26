@@ -90,8 +90,44 @@ class ThemeShell(unittest.TestCase):
             self.assertIn('class="top"', page)
         for page in pages[:-1]:
             self.assertIn(">Sign out</button>", page)
+        for page in pages[:3] + pages[4:5]:
             self.assertIn(f'action="{BASE}/dashboard/theme"', page)
         self.assertNotIn("Sign out", pages[-1])
+
+    def test_one_time_key_page_has_no_theme_switch(self) -> None:
+        page = render.render_key(BASE, SESSION, {"apiKey": {"name": "k"}, "token": "tp_secret"})
+        self.assertIn('value="tp_secret"', page)
+        self.assertNotIn("/dashboard/theme", page)
+        self.assertIn(">Sign out</button>", page)
+
+    def test_activation_theme_switch_keeps_the_code(self) -> None:
+        page = render.render_activate(BASE, SESSION, "ABCD-EFGH", None)
+        self.assertIn('name="next" value="/cli/activate?code=ABCD-EFGH"', page)
+        page = render.render_activate(BASE, SESSION, "A&B", None)
+        self.assertIn('name="next" value="/cli/activate?code=A%26B"', page)
+        page = render.render_activate(BASE, SESSION, None, None)
+        self.assertIn('name="next" value="/cli/activate"', page)
+
+    def test_fonts_fall_back_when_an_asset_is_missing(self) -> None:
+        with patch.dict(assets._SOURCE_TO_HASHED, clear=True):
+            page = render.web_page("T", "", BASE)
+        self.assertNotIn("@font-face", page)
+        self.assertIn("<style>", page)
+
+    def test_danger_colors_meet_wcag_aa(self) -> None:
+        def luminance(hex_color: str) -> float:
+            channels = [int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+            linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+            return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+        def ratio(a: str, b: str) -> float:
+            high, low = sorted((luminance(a), luminance(b)), reverse=True)
+            return (high + 0.05) / (low + 0.05)
+
+        for tokens, bg in ((render._LIGHT, "#ffffff"), (render._DARK, "#0a0a0a")):
+            values = dict(part.split(":", 1) for part in tokens.split(";") if part.startswith("--"))
+            self.assertGreaterEqual(ratio(values["--danger"], bg), 4.5)
+            self.assertGreaterEqual(ratio(values["--danger-bg"], "#ffffff"), 4.5)
 
 
 class Dashboard(unittest.TestCase):
@@ -113,7 +149,7 @@ class Dashboard(unittest.TestCase):
         self.assertIn(f'href="{BASE}/dashboard?sort=title&amp;group=repo" aria-current="page"', page)
 
     def test_time_groups_skip_empty_buckets(self) -> None:
-        rows = [draft("a1", "Now"), draft("b1", "Old", updatedAt=stamp(days=90))]
+        rows = [draft("a1", "Now", updatedAt=stamp(seconds=0)), draft("b1", "Old", updatedAt=stamp(days=90))]
         page = render.render_dashboard(BASE, SESSION, rows, state=state(rows))
         self.assertEqual(["Today", "Earlier"], sections(page))
 
@@ -159,7 +195,7 @@ class Dashboard(unittest.TestCase):
         page = render.render_dashboard(BASE, SESSION, rows, state=value)
         self.assertIn("<h2>Favorites</h2>", page)
         self.assertIn(f'href="{BASE}/dashboard?view=favorites">View all <span class="num">10</span>', page)
-        self.assertEqual(8, page.count('<article class="pin">'))
+        self.assertEqual(8, page.count('<article class="pin" '))
         for change in ({"q": "x"}, {"view": "favorites"}, {"tag": "dawn"}):
             self.assertNotIn("<h2>Favorites</h2>", render.render_dashboard(BASE, SESSION, rows,
                                                                             state={**value, **change}))
@@ -204,7 +240,59 @@ class Dashboard(unittest.TestCase):
         self.assertIn('<input type="hidden" name="tag" value="dawn">', page)
         self.assertIn("<kbd", page)
         self.assertIn('<option value="none">Flat</option>', page)
-        self.assertIn('name="dir" value="asc"', page)
+        self.assertIn('class="button secondary dir" href="https://tailnet.example/tailplan/dashboard?view=living&amp;tag=dawn&amp;dir=asc"', page)
+        self.assertNotIn('name="dir"', page)
+
+    def test_updated_sort_is_empty_without_a_query(self) -> None:
+        page = render.render_dashboard(BASE, SESSION, [], state=state([]))
+        self.assertIn('<option value="" selected>Updated</option>', page)
+        self.assertNotIn('value="relevance"', page)
+        page = render.render_dashboard(BASE, SESSION, [], state=state([], q="x", sort="updated"))
+        self.assertIn('<option value="updated" selected>Updated</option>', page)
+        self.assertIn('<option value="relevance">Relevance</option>', page)
+
+    def test_one_dir_value_per_submit(self) -> None:
+        page = render.render_dashboard(BASE, SESSION, [], state=state([], direction="asc"))
+        self.assertEqual(1, page.count('name="dir"'))
+        self.assertIn(f'<a class="button secondary dir" href="{BASE}/dashboard" ', page)
+        self.assertNotIn('<button class="secondary dir"', page)
+
+    def test_external_link_refuses_credentials_and_escapes_class(self) -> None:
+        for url in ("https://:secret@host.example/p", "https://user@host.example/p",
+                    "https://user:pw@host.example/p", "javascript:alert(1)"):
+            self.assertEqual("label", render.external_link(url, "label"))
+        link = render.external_link("https://host.example/p", "x", css='a" onclick="b')
+        self.assertIn('class="a&quot; onclick=&quot;b"', link)
+
+    def test_snippet_with_raw_html_is_escaped(self) -> None:
+        rows = [draft("a1", "A", snippet='<img src=x onerror=alert(1)> <mark>hit</mark>')]
+        page = render.render_dashboard(BASE, SESSION, rows, state=state(rows, q="hit"))
+        self.assertIn('&lt;img src=x onerror=alert(1)&gt; &lt;mark&gt;hit&lt;/mark&gt;', page)
+        self.assertNotIn("<img src=x", page)
+
+    def test_favorite_cards_carry_draft_ids(self) -> None:
+        rows = [draft("f1x", "Fav", favorite=True)]
+        page = render.render_dashboard(BASE, SESSION, rows, state=state(rows, favorites=rows))
+        self.assertIn('<article class="pin" data-draft-id="f1x" data-favorite="1">', page)
+
+    def test_base_url_is_escaped_once(self) -> None:
+        page = render.render_dashboard("https://h.example/a&b", SESSION, [], state=state([], q="x"))
+        self.assertIn('href="https://h.example/a&amp;b/dashboard">Clear</a>', page)
+        self.assertNotIn("&amp;amp;", page)
+
+
+class Ids(unittest.TestCase):
+    def test_sharing_and_key_ids_are_escaped(self) -> None:
+        sharing = {"draftId": 'd"1', "workspace": "team", "visibility": "private", "allowedVisibilities": ["private"],
+                   "shareUrl": f"{BASE}/d/x/share", "publicUrl": f"{BASE}/d/x", "grants": []}
+        self.assertIn("/dashboard/drafts/d&quot;1/sharing", render.render_sharing(BASE, SESSION, sharing))
+        key = {"id": 'k"1', "name": "n", "createdAt": "2026-11-14T10:00:00Z", "lastUsedAt": None}
+        self.assertIn("/cli/auth/keys/k&quot;1/revoke", render.render_keys(BASE, SESSION, [key]))
+
+    def test_no_keys_shows_a_note_not_a_table(self) -> None:
+        page = render.render_keys(BASE, SESSION, [])
+        self.assertIn('<p class="muted">No active API keys.</p>', page)
+        self.assertNotIn("<table", page)
 
 
 class Detail(unittest.TestCase):

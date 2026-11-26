@@ -21,13 +21,13 @@ THEMES = ("system", "light", "dark")
 
 _LIGHT = (
     "--bg:#ffffff;--surface:#fafafa;--hover:#f5f5f5;--border:rgba(0,0,0,.08);--border-strong:rgba(0,0,0,.14);"
-    "--text:#171717;--muted:#666666;--accent:#0070f3;--star:#d97706;--danger:#e5484d;"
+    "--text:#171717;--muted:#666666;--accent:#0070f3;--star:#d97706;--danger:#c92a2a;--danger-bg:#c92a2a;"
     "--mark-bg:rgba(0,112,243,.14);--focus:rgba(0,112,243,.45);color-scheme:light"
 )
 _DARK = (
     "--bg:#0a0a0a;--surface:#111111;--hover:#181818;--border:rgba(255,255,255,.09);"
     "--border-strong:rgba(255,255,255,.16);--text:#ededed;--muted:#888888;--accent:#3291ff;"
-    "--star:#f59e0b;--danger:#ff6166;--mark-bg:rgba(50,145,255,.22);--focus:rgba(50,145,255,.55);color-scheme:dark"
+    "--star:#f59e0b;--danger:#ff6b6b;--danger-bg:#d92d20;--mark-bg:rgba(50,145,255,.22);--focus:rgba(50,145,255,.55);color-scheme:dark"
 )
 
 _BASE_CSS = """
@@ -76,7 +76,7 @@ button,.button{font:inherit;font-size:14px;font-weight:500;background:var(--text
 button:hover,.button:hover{opacity:.88;text-decoration:none}
 button.secondary,.button.secondary{background:var(--bg);color:var(--text);border-color:var(--border-strong)}
 button.secondary:hover,.button.secondary:hover{background:var(--hover);opacity:1}
-button.danger{background:var(--danger);border-color:var(--danger);color:#fff}
+button.danger{background:var(--danger-bg);border-color:var(--danger-bg);color:#fff}
 button.sm,.button.sm{min-height:28px;padding:0 10px;font-size:13px}
 input,select{font:inherit;font-size:14px;padding:0 10px;height:36px;border:1px solid var(--border-strong);border-radius:6px;width:100%%;max-width:600px;background:var(--bg);color:var(--text)}
 input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--mark-bg)}
@@ -159,12 +159,13 @@ _DASH_CSS = """
 .pin-meta{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);margin-top:2px;min-width:0;flex-wrap:wrap}
 .pin .details{font-size:13px;color:var(--muted);padding-left:8px}
 .list{border:1px solid var(--border);border-radius:var(--radius)}
-.draft-row{display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:0 8px;padding:1px 12px 1px 0;min-height:46px;border-bottom:1px solid var(--border)}
+.draft-row{display:grid;grid-template-columns:44px minmax(0,1fr) fit-content(58%%);align-items:center;gap:0 8px;padding:1px 12px 1px 0;min-height:46px;border-bottom:1px solid var(--border)}
 .draft-row:last-child{border-bottom:0}
 .draft-row:hover{background:var(--surface)}
 .draft-row:target{background:var(--hover)}
 .draft-row form{margin:0}
-.draft-row.shared{padding-left:16px;grid-template-columns:minmax(0,1fr) auto}
+.draft-row.shared{padding-left:16px;grid-template-columns:minmax(0,1fr) fit-content(58%%)}
+.draft-row:has(>.row-select:not([hidden])){grid-template-columns:28px 44px minmax(0,1fr) fit-content(58%%)}
 .row-main{min-width:0;padding:6px 0}
 .row-title{font-size:14px;font-weight:500;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
 .row-desc{margin:1px 0 0;font-size:13px;color:var(--muted);display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
@@ -175,12 +176,12 @@ _DASH_CSS = """
 .vis{display:inline-flex;align-items:center;gap:6px}
 .vis .badge{border:0;padding:0;background:none}
 .draft-row .badge.ws{display:none}
-.row-select{width:16px;height:16px;margin:0 0 0 14px;accent-color:var(--text)}
+.row-select{width:16px;height:16px;margin:0 0 0 12px;accent-color:var(--text)}
 .empty{border:1px dashed var(--border-strong);border-radius:var(--radius);padding:32px 20px;text-align:center;color:var(--muted)}
 .empty p{margin:6px 0}
 @media(min-width:720px){.shelf-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(min-width:1100px){.shelf-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.draft-row .badge.ws{display:inline-flex}}
-@media(max-width:899px){.draft-row{grid-template-columns:44px minmax(0,1fr)}.draft-row .row-meta{grid-column:2;justify-content:flex-start;padding:0 0 8px;gap:4px 6px}.draft-row.shared{grid-template-columns:minmax(0,1fr)}.draft-row.shared .row-meta{grid-column:1}.row-meta time{text-align:left;min-width:0}.row-main{padding:8px 0 2px}}
+@media(max-width:899px){.draft-row{grid-template-columns:44px minmax(0,1fr)}.draft-row:has(>.row-select:not([hidden])){grid-template-columns:28px 44px minmax(0,1fr)}.draft-row:has(>.row-select:not([hidden])) .row-meta{grid-column:3}.draft-row .row-meta{grid-column:2;justify-content:flex-start;padding:0 0 8px;gap:4px 6px}.draft-row.shared{grid-template-columns:minmax(0,1fr)}.draft-row.shared .row-meta{grid-column:1}.row-meta time{text-align:left;min-width:0}.row-main{padding:8px 0 2px}}
 @media(max-width:639px){.search input{font-size:16px}.search kbd{display:none}.search input{padding-right:10px}.toolbar{position:static}.field{flex:1 1 120px}.field select{flex:1;width:100%%}.draft-row .row-desc{display:none}.draft-row .pill.slug,.draft-row .vis,.draft-row form.archive{display:none}.tab{padding:8px 7px;font-size:13px;gap:4px}.toolbar .apply{flex:0 0 auto}}
 @media(hover:none){.search kbd{display:none}}
 .detail-head{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 4px;align-items:start;margin-bottom:8px}
@@ -228,7 +229,11 @@ def csrf_field(value: str) -> str:
 def _font_faces(base_url: str) -> str:
     faces = ""
     for family, name in (("Geist", "geist-sans.woff2"), ("Geist Mono", "geist-mono.woff2")):
-        faces += (f'@font-face{{font-family:"{family}";src:url("{esc(asset_url(base_url, name))}") format("woff2");'
+        try:
+            url = asset_url(base_url, name)
+        except KeyError:
+            continue  # The page falls back to system fonts. /readyz reports the missing asset.
+        faces += (f'@font-face{{font-family:"{family}";src:url("{esc(url)}") format("woff2");'
                   'font-weight:100 900;font-style:normal;font-display:swap}')
     return faces
 
@@ -246,7 +251,7 @@ def _theme_form(base_url: str, session: dict, theme: str, next_path: str) -> str
 
 
 def web_page(title: str, body: str, base_url: str, session: dict | None = None, *, theme: str = "system",
-             nav: str = "", next_path: str = "/dashboard", main_attrs: str = "") -> str:
+             nav: str = "", next_path: str | None = "/dashboard", main_attrs: str = "") -> str:
     """Wrap `body` in the shared Geist page shell with fonts, header, and theme."""
     theme = theme if theme in THEMES else "system"
     base = esc(base_url.rstrip("/"))
@@ -258,7 +263,8 @@ def web_page(title: str, body: str, base_url: str, session: dict | None = None, 
     header = (f'<header class="top"><div class="wrap"><a class="brand" href="{base}/dashboard">{_MARK_SVG}'
               f'<span>Tailplan</span></a><nav class="nav" aria-label="Main">{nav_html}</nav>')
     if session:
-        header += f'<div class="account">{_theme_form(base_url, session, theme, next_path)}'
+        switch = _theme_form(base_url, session, theme, next_path) if next_path is not None else ""
+        header += f'<div class="account">{switch}'
         header += f'<span class="who">{esc(session["accountName"])}</span>'
         header += (f'<form method="post" action="{base}/auth/sign-out">{csrf_field(session["csrf"])}'
                    '<button class="secondary sm">Sign out</button></form></div>')
@@ -297,11 +303,12 @@ def render_login(base_url: str, csrf: str, next_path: str, tailscale: bool, *,
 def external_link(url: object, label: str, *, css: str = "") -> str:
     try:
         parsed = urlparse(str(url))
-        if parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username:
+        if (parsed.scheme not in {"https", "http"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None):
             return esc(label)
     except ValueError:
         return esc(label)
-    css_attr = f' class="{css}"' if css else ""
+    css_attr = f' class="{esc(css)}"' if css else ""
     return f'<a href="{esc(url)}"{css_attr} target="_blank" rel="noopener noreferrer">{esc(label)}</a>'
 
 
@@ -444,6 +451,12 @@ def _star_form(base: str, draft: dict, csrf: str, next_path: str) -> str:
             f'aria-pressed="{"true" if is_fav else "false"}" title="{label}">{"★" if is_fav else "☆"}</button></form>')
 
 
+def _snippet_html(snippet: object) -> str:
+    """Return the server snippet when it holds only text and <mark> tags. Otherwise escape it."""
+    text = str(snippet)
+    return text if not re.search(r"[<>]", re.sub(r"</?mark>", "", text)) else esc(text)
+
+
 def _version_chip(draft: dict) -> str:
     count = draft.get("versionCount") or 1
     number = draft.get("latestVersionNumber") or count
@@ -479,8 +492,7 @@ def _render_dashboard_row(base_url: str, session: dict, draft: dict, *, show_rep
     row += _star_form(base, draft, csrf, next_path)
     row += f'<div class="row-main"><h3 class="row-title">{external_link(draft.get("shareUrl"), draft.get("title") or "Untitled")}</h3>'
     if draft.get("snippet"):
-        # The server escaped the snippet and added only <mark> tags.
-        row += f'<p class="row-desc">{draft["snippet"]}</p>'
+        row += f'<p class="row-desc">{_snippet_html(draft["snippet"])}</p>'
     elif draft.get("description"):
         row += f'<p class="row-desc">{esc(draft["description"])}</p>'
     row += '</div><div class="row-meta">'
@@ -521,7 +533,7 @@ def _render_shared_row(draft: dict, *, now: datetime | None = None) -> str:
            f' data-s="{esc(_search_text(draft))}">')
     row += f'<div class="row-main"><h3 class="row-title">{external_link(draft.get("shareUrl"), draft.get("title") or "Untitled")}</h3>'
     if draft.get("snippet"):
-        row += f'<p class="row-desc">{draft["snippet"]}</p>'
+        row += f'<p class="row-desc">{_snippet_html(draft["snippet"])}</p>'
     elif draft.get("description"):
         row += f'<p class="row-desc">{esc(draft["description"])}</p>'
     visibility = str(draft.get("visibility") or "")
@@ -557,13 +569,13 @@ def _group_drafts(drafts: list[dict], group: str, now: datetime) -> list[tuple[s
     return [(label, sections[label]) for label in ("Today", "This week", "This month", "Earlier") if label in sections]
 
 
-def _tabs(base: str, state: dict) -> str:
+def _tabs(raw: str, state: dict) -> str:
     counts = state.get("counts") or {}
     current = state.get("view") or "active"
     html_tabs = '<nav class="tabs" aria-label="Views">'
     for view, label in (("active", "Active"), ("favorites", "Favorites"), ("living", "Living"),
                         ("shared", "Shared"), ("archived", "Archived")):
-        href = base + _dash_path({"sort": state.get("sort"), "direction": state.get("direction"),
+        href = raw + _dash_path({"sort": state.get("sort"), "direction": state.get("direction"),
                                   "group": state.get("group")}, view=view)
         aria = ' aria-current="page"' if view == current else ""
         html_tabs += (f'<a class="tab" href="{esc(href)}"{aria}>{label}'
@@ -571,7 +583,8 @@ def _tabs(base: str, state: dict) -> str:
     return html_tabs + '</nav>'
 
 
-def _toolbar(base: str, state: dict) -> str:
+def _toolbar(raw: str, state: dict) -> str:
+    base = esc(raw)
     q = state.get("q") or ""
     sort = state.get("sort") or "updated"
     direction = state.get("direction") or _default_dir(sort)
@@ -588,25 +601,28 @@ def _toolbar(base: str, state: dict) -> str:
     if q:
         sorts.insert(0, ("relevance", "Relevance"))
     form += '<label class="field" for="dash-sort">Sort<select id="dash-sort" name="sort">'
-    form += "".join(f'<option value="{value}"{" selected" if value == sort else ""}>{label}</option>'
-                    for value, label in sorts)
+    for value, label in sorts:
+        # Without a query, Updated sends an empty sort, so a new search ranks by relevance.
+        sent = "" if value == "updated" and not q else value
+        form += f'<option value="{sent}"{" selected" if value == sort else ""}>{label}</option>'
     form += '</select></label>'
     if direction != _default_dir(sort):
         form += f'<input type="hidden" name="dir" value="{esc(direction)}">'
     flipped = "asc" if direction == "desc" else "desc"
     arrow, word = ("↓", "descending") if direction == "desc" else ("↑", "ascending")
-    form += (f'<button class="secondary dir" type="submit" name="dir" value="{flipped}" '
-             f'title="Sorted {word}. Select to reverse." aria-label="Sorted {word}. Reverse order">{arrow}</button>')
+    # A link, not a submit button: Enter in the search box must not reverse the order.
+    form += (f'<a class="button secondary dir" href="{esc(raw + _dash_path(state, dir=flipped))}" '
+             f'title="Sorted {word}. Select to reverse." aria-label="Sorted {word}. Reverse order">{arrow}</a>')
     form += '<label class="field" for="dash-group">Group<select id="dash-group" name="group">'
     form += "".join(f'<option value="{value}"{" selected" if value == group else ""}>{label}</option>'
                     for value, label in (("time", "Time"), ("tag", "Tag"), ("repo", "Repo"), ("none", "Flat")))
     form += '</select></label><button class="apply" type="submit">Apply</button>'
     if q or state.get("tag") or state.get("repo"):
-        form += f'<a class="clear" href="{esc(base + _dash_path(state, q="", tag="", repo=""))}">Clear</a>'
+        form += f'<a class="clear" href="{esc(raw + _dash_path(state, q="", tag="", repo=""))}">Clear</a>'
     return form + '</form>'
 
 
-def _facets(base: str, state: dict) -> str:
+def _facets(raw: str, state: dict) -> str:
     if (state.get("view") or "active") == "shared":
         return ""
     strips = ""
@@ -618,25 +634,26 @@ def _facets(base: str, state: dict) -> str:
         for item in items[:12]:
             value = str(item.get(key) or "")
             on = value.lower() == selected.lower()
-            href = base + _dash_path(state, **{key: "" if on else value})
+            href = raw + _dash_path(state, **{key: "" if on else value})
             strips += (f'<a class="pill{" on" if on else ""}" href="{esc(href)}"'
                        f'{_CURRENT_TRUE if on else ""}>{esc(value)}'
                        f'<span class="num">{int(item.get("count") or 0)}</span></a>')
     return f'<div class="facets">{strips}</div>' if strips else ""
 
 
-def _favorites_shelf(base: str, session: dict, state: dict, next_path: str) -> str:
+def _favorites_shelf(raw: str, session: dict, state: dict, next_path: str) -> str:
+    base = esc(raw)
     favorites = state.get("favorites") or []
     if (state.get("view") or "active") != "active" or not favorites or state.get("q") or state.get("tag") \
             or state.get("repo"):
         return ""
     count = (state.get("counts") or {}).get("favorites") or len(favorites)
     shelf = ('<section class="shelf" aria-label="Favorites"><div class="section-head"><h2>Favorites</h2>'
-             f'<a href="{esc(base + _dash_path(state, view="favorites"))}">View all <span class="num">{int(count)}</span></a>'
+             f'<a href="{esc(raw + _dash_path(state, view="favorites"))}">View all <span class="num">{int(count)}</span></a>'
              '</div><div class="shelf-grid">')
     for draft in favorites[:8]:
         label = (draft.get("tags") or [None])[0] or _repo_label(draft)
-        shelf += (f'<article class="pin">{_star_form(base, draft, session["csrf"], next_path)}<div class="pin-body">'
+        shelf += (f'<article class="pin" data-draft-id="{esc(draft["draftId"])}" data-favorite="1">{_star_form(base, draft, session["csrf"], next_path)}<div class="pin-body">'
                   f'<div class="pin-title">{external_link(draft.get("shareUrl"), draft.get("title") or "Untitled")}</div>'
                   f'<div class="pin-meta">{_version_chip(draft)}{f"<span>{esc(label)}</span>" if label else ""}</div></div>'
                   f'<a class="details" href="{base}/dashboard/drafts/{esc(draft["draftId"])}">Details</a></article>')
@@ -650,7 +667,8 @@ def render_dashboard(base_url: str, session: dict, drafts: list[dict], *, shared
     if state is None:
         state = _default_state(drafts, shared)
     theme = theme if theme != "system" or not state.get("theme") else state["theme"]
-    base = esc(base_url.rstrip("/"))
+    raw = base_url.rstrip("/")
+    base = esc(raw)
     view = state.get("view") or "active"
     group = state.get("group") or "time"
     next_path = _dash_path(state)
@@ -663,13 +681,13 @@ def render_dashboard(base_url: str, session: dict, drafts: list[dict], *, shared
 
     body = (f'<div class="page-head"><h1>My drafts <span class="count">{total}</span></h1>'
             '<span class="muted">Publish with <code>tailplan upload plan.html</code></span></div>')
-    body += _tabs(base, state) + _toolbar(base, state) + _facets(base, state)
-    body += _favorites_shelf(base, session, state, next_path)
+    body += _tabs(raw, state) + _toolbar(raw, state) + _facets(raw, state)
+    body += _favorites_shelf(raw, session, state, next_path)
 
     if not rows_source:
         if filtered:
             body += (f'<div class="empty"><p>No drafts match this search.</p>'
-                     f'<p><a href="{esc(base + _dash_path(state, q="", tag="", repo=""))}">Clear filters</a></p></div>')
+                     f'<p><a href="{esc(raw + _dash_path(state, q="", tag="", repo=""))}">Clear filters</a></p></div>')
         elif view == "shared":
             body += '<div class="empty"><p>No one has shared a draft with you yet.</p></div>'
         elif view == "active" and not total:
@@ -691,7 +709,7 @@ def render_dashboard(base_url: str, session: dict, drafts: list[dict], *, shared
 
     if view == "active" and shared and not filtered:
         body += _section("Shared with me", "".join(_render_shared_row(draft, now=now) for draft in shared[:5]),
-                         len(shared), link=(base + _dash_path(state, view="shared"), "View all"))
+                         len(shared), link=(raw + _dash_path(state, view="shared"), "View all"))
 
     main_attrs = (f' id="dashboard-root" data-base="{base}" data-csrf="{esc(session["csrf"])}"'
                   f' data-view="{esc(view)}" data-sort="{esc(state.get("sort") or "updated")}"'
@@ -717,7 +735,7 @@ VISIBILITY_LABELS = {
 
 
 def render_sharing(base_url: str, session: dict, sharing: dict) -> str:
-    action_base = esc(base_url.rstrip("/")) + "/dashboard/drafts/" + sharing["draftId"] + "/sharing"
+    action_base = esc(base_url.rstrip("/")) + "/dashboard/drafts/" + esc(sharing["draftId"]) + "/sharing"
     csrf = csrf_field(session["csrf"])
     body = '<section class="card" aria-labelledby="sharing-title"><h2 id="sharing-title">Sharing</h2>'
     body += (f'<p class="muted">Workspace <span class="badge ws">{esc(sharing["workspace"])}</span> · '
@@ -760,7 +778,8 @@ def render_sharing(base_url: str, session: dict, sharing: dict) -> str:
 def render_activate(base_url: str, session: dict, code: str | None, info: dict | None, *,
                     result: str | None = None, theme: str = "system") -> str:
     base = esc(base_url.rstrip("/"))
-    page = {"theme": theme, "nav": "cli", "next_path": "/cli/activate"}
+    next_path = f"/cli/activate?code={quote(code, safe='')}" if code else "/cli/activate"
+    page = {"theme": theme, "nav": "cli", "next_path": next_path}
     if result is not None:
         message = {
             "approved": ("CLI approved", "Return to your terminal. The CLI finishes sign-in."),
@@ -871,13 +890,17 @@ def render_keys(base_url: str, session: dict, keys: list[dict], *, theme: str = 
              '<div><label for="name">Key name</label>'
              '<input id="name" name="name" maxlength="255" placeholder="Laptop agent" required></div>'
              '<button>Generate API key</button></form>')
-    body += ('<div class="section-head"><h2>Active keys</h2></div><div class="table-wrap"><table><thead><tr><th>Name</th>'
+    body += '<div class="section-head"><h2>Active keys</h2></div>'
+    if not keys:
+        body += '<p class="muted">No active API keys.</p>'
+        return web_page("CLI setup", body, base_url, session, theme=theme, nav="cli", next_path="/cli/auth")
+    body += ('<div class="table-wrap"><table><thead><tr><th>Name</th>'
              '<th>Created</th><th>Last used</th><th>Action</th></tr></thead><tbody>')
     for key in keys:
         body += (f'<tr><td data-label="Name">{esc(key["name"])}</td>'
                  f'<td data-label="Created" class="mono"><time>{esc(key["createdAt"][:16])}</time></td>'
                  f'<td data-label="Last used" class="mono"><time>{esc((key["lastUsedAt"] or "Never")[:16])}</time></td>')
-        body += (f'<td data-label="Action"><form method="post" action="{base}/{key["id"]}/revoke" class="flush">'
+        body += (f'<td data-label="Action"><form method="post" action="{base}/{esc(key["id"])}/revoke" class="flush">'
                  f'{csrf_field(session["csrf"])}<button class="secondary sm">Revoke</button></form></td></tr>')
     body += '</tbody></table></div>'
     return web_page("CLI setup", body, base_url, session, theme=theme, nav="cli", next_path="/cli/auth")
@@ -890,4 +913,5 @@ def render_key(base_url: str, session: dict, result: dict, *, theme: str = "syst
              f'<input id="key" readonly value="{esc(result["token"])}">')
     body += '<p class="after">Paste the key into <code>tailplan auth login</code>.</p></div>'
     body += f'<p><a href="{esc(base_url.rstrip("/"))}/cli/auth">← Back to CLI setup</a></p></div>'
-    return web_page("New API key", body, base_url, session, theme=theme, nav="cli", next_path="/cli/auth")
+    # No theme switch: it posts away from this page, and the key is shown only once.
+    return web_page("New API key", body, base_url, session, theme=theme, nav="cli", next_path=None)
