@@ -1,7 +1,8 @@
 """Hashed static assets for the web pages, loaded once at import time.
 
-Each file in ``static/`` is served as ``/assets/<stem>.<sha8><ext>``. The lookup uses an
-exact dictionary, so a request path never reaches the filesystem.
+Each file under ``static/`` is served as ``/assets/<stem>.<sha8><ext>``.
+Files in subfolders, such as ``fonts/``, use the same flat URL scheme.
+The lookup uses an exact dictionary, so a request path never reaches the filesystem.
 """
 from __future__ import annotations
 
@@ -15,9 +16,17 @@ CONTENT_TYPES = {
     ".svg": "image/svg+xml",
     ".woff2": "font/woff2",
 }
+REQUIRED = ("tailplan-mark.svg", "geist-sans.woff2", "geist-mono.woff2")
+
+
+class WebAssetError(RuntimeError):
+    """A required static asset is missing, or two assets share one name."""
+
 
 _SOURCE_TO_HASHED: dict[str, str] = {}
+_RELATIVE: dict[str, str] = {}
 _HASHED: dict[str, tuple[bytes, str, str]] = {}
+_DUPLICATES: list[str] = []
 
 
 def _load() -> None:
@@ -27,11 +36,17 @@ def _load() -> None:
         content_type = CONTENT_TYPES.get(path.suffix)
         if content_type is None or not path.is_file() or path.is_symlink():
             continue
+        if any((STATIC_DIR / part).is_symlink() for part in path.relative_to(STATIC_DIR).parents):
+            continue
+        name = path.name
+        if name in _SOURCE_TO_HASHED:
+            _DUPLICATES.append(name)
+            continue
         body = path.read_bytes()
         sha8 = hashlib.sha256(body).hexdigest()[:8]
-        name = path.relative_to(STATIC_DIR).as_posix()
-        hashed = f"{path.relative_to(STATIC_DIR).with_suffix('').as_posix()}.{sha8}{path.suffix}"
+        hashed = f"{path.stem}.{sha8}{path.suffix}"
         _SOURCE_TO_HASHED[name] = hashed
+        _RELATIVE[path.relative_to(STATIC_DIR).as_posix()] = name
         _HASHED[hashed] = (body, content_type, f'"{sha8}"')
 
 
@@ -39,13 +54,22 @@ _load()
 
 
 def asset_url(base_url: str, name: str) -> str:
-    """Return the hashed URL for a static file, such as ``tailplan-mark.svg``."""
-    return f"{base_url.rstrip('/')}/assets/{_SOURCE_TO_HASHED[name]}"
+    """Return the hashed URL for a static file name or its path, such as ``fonts/geist-sans.woff2``."""
+    return f"{base_url.rstrip('/')}/assets/{_SOURCE_TO_HASHED[_RELATIVE.get(name, name)]}"
 
 
 def lookup_asset(rel_path: str) -> tuple[bytes, str, str] | None:
     """Return ``(body, content_type, etag)`` for a hashed path, or ``None``."""
     return _HASHED.get(rel_path)
+
+
+def check_ready() -> None:
+    """Raise ``WebAssetError`` when a required asset is missing or a file name repeats."""
+    missing = [name for name in REQUIRED if name not in _SOURCE_TO_HASHED]
+    if missing:
+        raise WebAssetError("Missing web assets: " + ", ".join(missing))
+    if _DUPLICATES:
+        raise WebAssetError("Duplicate web asset names: " + ", ".join(sorted(set(_DUPLICATES))))
 
 
 def assets_digest() -> str:
