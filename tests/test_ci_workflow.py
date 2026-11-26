@@ -49,7 +49,7 @@ def test_browser_lane_is_cross_engine_and_keeps_failure_evidence():
     assert set(job['strategy']['matrix']['browser']) == {'chromium', 'webkit'}
     script = commands(job)
     for required in ('--browser', '--tracing retain-on-failure', '--screenshot only-on-failure',
-                     '--junitxml=test-results/browser.xml', 'check_junit.py', '--minimum 136'):
+                     '--junitxml=test-results/browser.xml', 'check_junit.py', '--minimum 410'):
         assert required in script
     run = next(step for step in job['steps'] if 'tests/test_theme_browser.py' in step.get('run', ''))
     assert 'tests/test_duo_themes.py' in run['run'] and 'tests/test_oidc_browser.py' in run['run']

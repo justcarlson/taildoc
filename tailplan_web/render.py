@@ -37,7 +37,7 @@ _BASE_CSS = """
 :root[data-theme=dark]{%(dark)s}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
-html{-webkit-text-size-adjust:100%%;text-size-adjust:100%%}
+html{-webkit-text-size-adjust:100%%;text-size-adjust:100%%;background:var(--bg);scroll-padding-top:64px}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 var(--sans);-webkit-font-smoothing:antialiased;font-feature-settings:"ss01"}
 a{color:inherit;text-decoration:none;overflow-wrap:anywhere}
 a:hover{text-decoration:underline;text-underline-offset:3px}
@@ -71,7 +71,7 @@ time,.num,.count{font-variant-numeric:tabular-nums}
 .theme-switch button:hover{color:var(--text)}
 .theme-switch button[aria-pressed=true]{background:var(--hover);color:var(--text);box-shadow:inset 0 0 0 1px var(--border)}
 .theme-switch svg{width:15px;height:15px}
-main{display:block;width:100%%;max-width:1200px;margin:0 auto;padding:32px 24px 96px}
+main{display:block;width:100%%;max-width:1200px;margin:0 auto;padding:32px 24px calc(64px + env(safe-area-inset-bottom, 0px))}
 .narrow{max-width:560px}
 .lead{margin-top:8px}.after{margin-top:12px}.flush{margin:0}.crumb{margin:0 0 12px}.pin-body{min-width:0}
 button,.button{font:inherit;font-size:14px;font-weight:500;background:var(--text);color:var(--bg);border:1px solid var(--text);border-radius:6px;padding:0 14px;min-height:36px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;line-height:1}
@@ -127,7 +127,13 @@ a.pill:hover{color:var(--text);border-color:var(--border-strong);text-decoration
 .dot.vis-authenticated,.dot.vis-workspace{background:var(--accent)}
 mark{background:var(--mark-bg);color:inherit;border-radius:3px;padding:0 1px}
 kbd{font-size:11px;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:0 5px;line-height:18px;background:var(--surface)}
-@media(max-width:600px){.wrap{padding:0 16px}main{padding:20px 16px 72px}.table-wrap{border:0;border-radius:0}.table-wrap table,.table-wrap tbody,.table-wrap tr,.table-wrap td{display:block;width:100%%}.table-wrap thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%%)}.table-wrap tr{border:1px solid var(--border);border-radius:var(--radius);margin-bottom:10px}.table-wrap td{max-width:none;min-width:0;border-bottom:0}.table-wrap td+td{border-top:1px solid var(--border)}.table-wrap td[data-label]::before{content:attr(data-label);display:block;font-size:12px;font-weight:500;color:var(--muted);font-family:var(--sans)}}
+@media(max-width:700px){.wrap{padding:0 16px}main{padding:20px 16px calc(64px + env(safe-area-inset-bottom, 0px))}.table-wrap{border:0;border-radius:0}.table-wrap table,.table-wrap tbody,.table-wrap tr,.table-wrap td{display:block;width:100%%}.table-wrap thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%%)}.table-wrap tr{border:1px solid var(--border);border-radius:var(--radius);margin-bottom:10px}.table-wrap td{max-width:none;min-width:0;border-bottom:0}.table-wrap td+td{border-top:1px solid var(--border)}.table-wrap td[data-label]::before{content:attr(data-label);display:block;font-size:12px;font-weight:500;color:var(--muted);font-family:var(--sans)}}
+[id^="d-"]{scroll-margin-top:8px}
+@media(max-width:700px),(max-height:480px){html{scroll-padding-top:8px}.top{border-bottom:0;box-shadow:inset 0 -1px 0 var(--border)}.top .wrap{flex-wrap:nowrap;min-height:44px;padding:4px 12px;gap:8px}.brand{flex:none;white-space:nowrap}.nav{flex-wrap:nowrap;gap:2px;flex:none}.nav a{padding:6px 8px;white-space:nowrap}.account{flex-wrap:nowrap;gap:6px;flex:0 1 auto;min-width:0}.account .sm{white-space:nowrap}.theme-switch button{min-height:0;width:30px;height:30px}.who{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;max-height:20px;min-width:0;overflow-wrap:anywhere}main{padding:4px 12px calc(64px + env(safe-area-inset-bottom, 0px))}}
+@media(max-width:480px),(max-height:480px){.who{display:none}}
+@media(max-width:480px),(max-width:700px) and (max-height:480px){.brand span{display:none}}
+@media(max-width:400px){.nav a[aria-current=page]{display:none}}
+@media(max-width:480px),(hover:none),(pointer:coarse){input,select,textarea{font-size:16px}}
 """
 
 _DASH_CSS = """
@@ -141,8 +147,8 @@ _DASH_CSS = """
 .toolbar{position:sticky;top:0;z-index:5;background:var(--bg);display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 12px;padding:8px 0}
 .search{position:relative;flex:1 1 280px;min-width:0;display:flex;align-items:center}
 .search svg{position:absolute;left:10px;width:15px;height:15px;color:var(--muted);pointer-events:none}
-.search input{max-width:none;padding-left:32px;padding-right:44px}
-.search kbd{position:absolute;right:8px}
+.search input{max-width:none;padding-left:32px;padding-right:10px}
+.search kbd{position:absolute;right:8px;display:none}
 .field{display:inline-flex;align-items:center;gap:6px;margin:0;font-weight:400;color:var(--muted);font-size:13px}
 .field select{width:auto;max-width:none;height:36px;padding:0 8px}
 .dir{width:36px;padding:0;min-height:36px}
@@ -150,6 +156,20 @@ _DASH_CSS = """
 .facets{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 20px}
 .facets .label{font-size:12px;color:var(--muted);margin-right:2px}
 .facets .label+.label,.facets .pill+.label{margin-left:10px}
+.views-more,.filters-menu,.sheet-facets,.shortcut-hints{display:none}
+.filters-sheet{display:contents}
+.views-more>summary,.filters-menu>summary{list-style:none;width:44px;height:44px;display:grid;place-items:center;color:var(--muted);border-radius:6px;position:relative}
+.views-more>summary::-webkit-details-marker,.filters-menu>summary::-webkit-details-marker{display:none}
+.views-more>summary:hover,.filters-menu>summary:hover,.views-more[open]>summary,.filters-menu[open]>summary{color:var(--text);background:var(--hover)}
+.filters-menu>summary{border:1px solid var(--border-strong)}
+.filters-menu svg{width:18px;height:18px}
+.filters-count{position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--text);color:var(--bg);font-size:11px;font-weight:600;line-height:18px;text-align:center}
+.views-sheet{position:absolute;right:0;top:100%%;z-index:20;min-width:180px;display:flex;flex-direction:column;padding:4px;background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius);box-shadow:0 10px 40px rgba(0,0,0,.18)}
+.more-view{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;padding:0 12px;border-radius:6px;color:var(--text)}
+.more-view:hover{background:var(--hover);text-decoration:none}
+.more-view .num{color:var(--muted);font-size:12px}
+.shortcut-hints{flex-wrap:wrap;gap:4px 14px;margin:24px 0 0;color:var(--muted);font-size:12px}
+.shortcut-hints span{display:inline-flex;align-items:center;gap:4px}
 .section-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:24px 0 8px}
 .section-head .num{color:var(--muted);font-weight:400;font-size:13px;margin-left:4px}
 .section-head a{color:var(--muted);font-size:13px}
@@ -210,14 +230,12 @@ dialog[open]{display:flex;flex-direction:column}
 .shortcuts dl{grid-template-columns:auto 1fr;gap:8px 16px;overflow-y:auto}
 .shortcuts dt{color:var(--text);white-space:nowrap}
 .shortcuts .actions{justify-content:flex-end}
-@media(max-width:639px){.has-bulk .toasts{bottom:128px}.bulk-bar{width:auto;left:16px;right:16px;transform:none}}
 .empty{border:1px dashed var(--border-strong);border-radius:var(--radius);padding:32px 20px;text-align:center;color:var(--muted)}
 .empty p{margin:6px 0}
-@media(min-width:720px){.shelf-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(min-width:481px){.shelf-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(min-width:1100px){.shelf-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.draft-row .badge.ws{display:inline-flex}}
 @media(max-width:899px){.draft-row{grid-template-columns:44px minmax(0,1fr)}.draft-row:has(>.row-select:not([hidden])){grid-template-columns:28px 44px minmax(0,1fr)}.draft-row:has(>.row-select:not([hidden])) .row-meta{grid-column:3}.draft-row .row-meta{grid-column:2;justify-content:flex-start;padding:0 0 8px;gap:4px 6px}.draft-row.shared{grid-template-columns:minmax(0,1fr)}.draft-row.shared .row-meta{grid-column:1}.row-meta time{text-align:left;min-width:0}.row-main{padding:8px 0 2px}}
-@media(max-width:639px){.pill,.badge{white-space:normal;height:auto;min-height:22px;overflow-wrap:anywhere}.search input{font-size:16px}.search kbd{display:none}.search input{padding-right:10px}.toolbar{position:static}.field{flex:1 1 120px}.field select{flex:1;width:100%%}.draft-row .row-desc{display:none}.draft-row .pill.slug,.draft-row .vis,.draft-row form.archive,.draft-row .copy-url{display:none}.tab{padding:8px 7px;font-size:13px;gap:4px}.toolbar .apply{flex:0 0 auto}}
-@media(hover:none){.search kbd{display:none}}
+@media(max-width:700px){.pill,.badge{white-space:normal;height:auto;min-height:22px;overflow-wrap:anywhere}.draft-row .row-desc{display:none}.draft-row .pill.slug,.draft-row .vis,.draft-row form.archive,.draft-row .copy-url{display:none}}
 .detail-head{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 4px;align-items:start;margin-bottom:8px}
 .detail-head h1{padding-top:6px;overflow-wrap:anywhere}
 .detail-head form{margin:0}
@@ -231,7 +249,26 @@ dialog[open]{display:flex;flex-direction:column}
 @media(max-width:600px){.detail-sub,.tag-editor,.links{margin-left:0}.tag-editor input{font-size:16px}}
 """
 
-WEB_CSS = (_BASE_CSS + _DASH_CSS).strip() % {"light": _LIGHT, "dark": _DARK}
+# Adaptive density: the layout is a function of width, height, and pointer.
+# Compact is <= 480px, narrow is 481-700px, desktop is >= 701px. Short is <= 480px high.
+# These bands stay clear of the widths that a Safari side strip toggles between (382-466, 594-678).
+_ADAPTIVE_CSS = """
+@media(max-width:700px),(max-height:480px){.page-head{margin-bottom:8px}.tabs{flex-wrap:nowrap;gap:0;margin-bottom:4px;align-items:stretch}.tab{min-height:44px;padding:0 8px;font-size:13px;gap:4px;flex:none;white-space:nowrap}.tab[data-more]{display:none}.views-more{display:block;position:relative;flex:none;margin:0 0 -1px auto}.toolbar{position:relative;flex-wrap:nowrap;gap:8px;min-height:48px;padding:2px 0;margin:0 0 4px}.search{flex:1 1 auto}.search input{height:44px;font-size:16px}.filters-menu{display:block;flex:none;margin:0}.filters-sheet{display:none}.filters-menu[open]+.filters-sheet{display:grid;grid-template-columns:minmax(0,1fr) 44px;align-items:end;gap:10px 8px;position:absolute;top:calc(100%% + 4px);right:0;z-index:20;width:min(340px,100%%);max-height:min(65svh,360px);overflow-y:auto;padding:12px;background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius);box-shadow:0 10px 40px rgba(0,0,0,.18)}.filters-sheet>*{grid-column:1/-1}.filters-sheet .field{display:flex;flex-direction:column;align-items:stretch;gap:4px;margin:0}.filters-sheet .field:first-of-type{grid-column:1}.filters-sheet .field select{width:100%%;height:44px;font-size:16px}.filters-sheet .dir{grid-column:2;width:44px;min-height:44px}.filters-sheet .sheet-facets{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.filters-sheet .sheet-facets .label{width:100%%;font-size:12px;color:var(--muted)}.filters-sheet .apply,.filters-sheet .clear{min-height:44px}.filters-sheet .clear{display:flex;align-items:center;justify-content:center}.list{container-type:inline-size}.draft-row,.draft-row.shared,.draft-row:has(>.row-select:not([hidden])){min-height:48px;padding-top:0;padding-bottom:0}.draft-row{grid-template-columns:44px minmax(0,1fr) auto}.draft-row.shared{grid-template-columns:minmax(0,1fr) auto}.draft-row:has(>.row-select:not([hidden])){grid-template-columns:32px 44px minmax(0,1fr) auto}.draft-row .row-meta,.draft-row.shared .row-meta,.draft-row:has(>.row-select:not([hidden])) .row-meta{grid-column:auto;flex-wrap:nowrap;justify-content:flex-end;padding:0;gap:8px}.row-main{padding:0}.draft-row .row-meta>:not(time):not(.details){display:none}.draft-row .row-meta .pill{height:22px;min-height:0;max-width:160px;overflow:hidden}.row-meta time{white-space:nowrap;text-align:right}}
+@container(min-width:520px){.list .draft-row .row-meta>a.pill:first-child{display:inline-flex}}
+@container(min-width:720px){.list .draft-row .row-meta>.ver,.list .draft-row .row-meta>.vis{display:inline-flex}}
+@media(max-width:480px),(max-height:480px){.page-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%%);white-space:nowrap;border:0}.tab:not([aria-current]) .num{display:none}.facets{margin:0 0 4px}.facets:not(:has(.pill.on)),.facets .label,.facets .pill:not(.on){display:none}.section-head{margin:8px 0 4px}.shelf{display:flex;align-items:center;gap:8px;margin:0 0 4px;min-width:0}.shelf .section-head{display:contents}.shelf h2{flex:none;font-size:13px}.shelf .section-head a{order:2;flex:none;font-size:13px;white-space:nowrap}}
+@media(max-width:480px) and (min-height:481px){.shelf{min-height:40px;max-height:44px}.shelf-grid{order:1;display:flex;flex:1 1 auto;min-width:0;gap:6px}.pin{display:block;flex:0 1 auto;min-width:0;min-height:0;height:32px;padding:0 10px;border-radius:999px}.pin:nth-child(n+3),.pin form,.pin .pin-meta,.pin .details{display:none}.pin-title{font-size:13px;line-height:30px;max-height:30px}}
+@media(min-width:481px) and (max-width:700px) and (min-height:481px){main{padding-top:16px}.pin:nth-child(n+5){display:none}}
+@media(min-width:701px) and (max-height:640px){.shelf-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.pin:nth-child(n+4){display:none}}
+@media(max-height:480px){.shelf{height:32px}.shelf-grid{display:none}#dashboard-root{display:flex;flex-wrap:wrap;align-items:flex-start;column-gap:8px}#dashboard-root>*{flex:1 1 100%%;min-width:0}#dashboard-root>.tabs{flex:0 0 auto;border-bottom:0;margin:0}#dashboard-root>.toolbar{flex:1 1 200px;margin:0}.draft-row,.draft-row.shared,.draft-row:has(>.row-select:not([hidden])){min-height:44px}.section-head{margin:4px 0 2px}}
+@media(max-height:480px) and (min-width:560px){.shelf{position:absolute;top:0;left:50%%;transform:translateX(-50%%);z-index:6;height:44px;margin:0;max-width:calc(100vw - 400px)}}
+@media(hover:none),(pointer:coarse){.tab{min-height:44px}.search input,.field select,.bulk-bar input{height:44px}.dir{width:44px;min-height:44px}main button:not(.pill),main .button,.bulk-bar button,.toast button{min-height:44px}}
+@media(hover:hover) and (pointer:fine) and (min-width:701px){.search kbd{display:inline-block}.search input{padding-right:44px}}
+@media(hover:hover) and (pointer:fine) and (min-width:1024px){.shortcut-hints{display:flex}}
+@media(max-width:700px),(max-height:500px),(hover:none),(pointer:coarse){.bulk-bar{top:0;bottom:auto;left:0;right:0;transform:none;width:auto;max-width:none;border-width:0 0 1px;border-radius:0;padding:calc(6px + env(safe-area-inset-top, 0px)) 12px 6px;box-shadow:0 6px 24px rgba(0,0,0,.14)}.toasts,.has-bulk .toasts{bottom:calc(64px + env(safe-area-inset-bottom, 0px))}}
+"""
+
+WEB_CSS = (_BASE_CSS + _DASH_CSS + _ADAPTIVE_CSS).strip() % {"light": _LIGHT, "dark": _DARK}
 
 _MARK_SVG = ('<svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="currentColor"/>'
              '<path d="M9 10.5h14M16 10.5v12" fill="none" stroke="var(--bg)" stroke-width="3" stroke-linecap="round"/></svg>')
@@ -245,7 +282,12 @@ _ICON = {
             '<path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"/></svg>',
     "search": '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">'
               '<circle cx="7" cy="7" r="4.75"/><path d="m10.5 10.5 3.75 3.75"/></svg>',
+    "filters": '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"'
+               ' aria-hidden="true"><path d="M2 4h7M12 4h2M2 12h2M7 12h7M2 8h3M8 8h6"/><circle cx="10.5" cy="4" r="1.5"/>'
+               '<circle cx="5.5" cy="12" r="1.5"/><circle cx="6.5" cy="8" r="1.5"/></svg>',
 }
+# The browser bar color for each theme. It matches --bg, so the Safari side strip blends in.
+THEME_COLORS = {"light": "#ffffff", "dark": "#0a0a0a"}
 
 
 _CURRENT_PAGE = ' aria-current="page"'
@@ -295,6 +337,14 @@ def _script_tag(base_url: str, script_nonce: str | None) -> str:
     return f'<script type="module" nonce="{esc(script_nonce)}" src="{esc(url)}" defer></script>'
 
 
+def _theme_color_meta(theme: str) -> str:
+    """Return the theme-color metas: one per scheme for system, else one fixed color."""
+    if theme in THEME_COLORS:
+        return f'<meta name="theme-color" content="{THEME_COLORS[theme]}">'
+    return "".join(f'<meta name="theme-color" media="(prefers-color-scheme: {scheme})" content="{color}">'
+                   for scheme, color in THEME_COLORS.items())
+
+
 def web_page(title: str, body: str, base_url: str, session: dict | None = None, *, theme: str = "system",
              nav: str = "", next_path: str | None = "/dashboard", main_attrs: str = "",
              script_nonce: str | None = None) -> str:
@@ -322,6 +372,7 @@ def web_page(title: str, body: str, base_url: str, session: dict | None = None, 
     return (f'<!doctype html><html lang="en"{data_theme}><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<meta name="color-scheme" content="light dark">'
+            f'{_theme_color_meta(theme)}'
             f'<title>{esc(title)} · Tailplan</title><style>{_font_faces(base_url)}{WEB_CSS}</style>'
             f'{_script_tag(base_url, script_nonce)}</head>'
             f'<body>{header}<main{main_attrs}>{body}</main></body></html>')
@@ -639,18 +690,43 @@ def _group_drafts(drafts: list[dict], group: str, now: datetime) -> list[tuple[s
     return [(label, sections[label]) for label in ("Today", "This week", "This month", "Earlier") if label in sections]
 
 
+# Shown only with a fine pointer on wide screens. Touch screens have no keyboard shortcuts.
+_SHORTCUT_HINTS = (("jk", "move"), ("f", "star"), ("e", "archive"), ("x", "select"), ("?", "shortcuts"))
+
+
 def _tabs(raw: str, state: dict) -> str:
     counts = state.get("counts") or {}
     current = state.get("view") or "active"
+    views = (("active", "Active"), ("favorites", "Favorites"), ("living", "Living"),
+             ("shared", "Shared"), ("archived", "Archived"))
+    # Compact screens show three tabs. The current view always takes the third slot.
+    primary = {"active", "favorites", current if current in {"shared", "archived"} else "living"}
     html_tabs = '<nav class="tabs" aria-label="Views">'
-    for view, label in (("active", "Active"), ("favorites", "Favorites"), ("living", "Living"),
-                        ("shared", "Shared"), ("archived", "Archived")):
-        href = raw + _dash_path({"sort": state.get("sort"), "direction": state.get("direction"),
-                                  "group": state.get("group")}, view=view)
+    more = ""
+    for view, label in views:
+        href = esc(raw + _dash_path({"sort": state.get("sort"), "direction": state.get("direction"),
+                                      "group": state.get("group")}, view=view))
         aria = ' aria-current="page"' if view == current else ""
-        html_tabs += (f'<a class="tab" data-view="{view}" href="{esc(href)}"{aria}>{label}'
-                      f'<span class="num">{int(counts.get(view, 0) or 0)}</span></a>')
+        num = int(counts.get(view, 0) or 0)
+        extra = "" if view in primary else " data-more"
+        html_tabs += (f'<a class="tab" data-view="{view}" href="{href}"{aria}{extra}>{label}'
+                      f'<span class="num">{num}</span></a>')
+        if extra:
+            more += f'<a class="more-view" data-more-view="{view}" href="{href}">{label}<span class="num">{num}</span></a>'
+    html_tabs += ('<details class="views-more"><summary aria-label="More views" title="More views">•••</summary>'
+                  f'<div class="views-sheet">{more}</div></details>')
     return html_tabs + '</nav>'
+
+
+def _filter_count(state: dict) -> int:
+    """Count the filters that differ from the defaults. The filters badge shows this number."""
+    ranked = state.get("ranked", bool(state.get("q")))
+    sort = state.get("sort") or "updated"
+    direction = state.get("direction") or _default_dir(sort)
+    return sum((sort not in {"updated", "relevance" if ranked else "updated"},
+                direction != _default_dir(sort),
+                (state.get("group") or "time") != "time",
+                bool(state.get("tag")), bool(state.get("repo"))))
 
 
 def _toolbar(raw: str, state: dict) -> str:
@@ -667,6 +743,13 @@ def _toolbar(raw: str, state: dict) -> str:
     form += (f'<div class="search">{_ICON["search"]}<label class="sr-only" for="dash-q">Search drafts</label>'
              f'<input id="dash-q" type="search" name="q" value="{esc(q)}" autocomplete="off" maxlength="500"'
              ' placeholder="Search drafts or try is:living, tag:dawn…"><kbd aria-hidden="true">⌘K</kbd></div>')
+    # Compact screens fold the controls into a sheet. Desktop shows the sheet inline (display:contents).
+    active = _filter_count(state)
+    badge = f'<span class="filters-count">{active}</span>' if active else ""
+    name = f"Filters, {active} active" if active else "Filters"
+    form += (f'<details class="filters-menu"><summary aria-label="{name}" title="Filters"'
+             f' aria-controls="dash-filters">{_ICON["filters"]}{badge}</summary></details>'
+             '<div class="filters-sheet" id="dash-filters">')
     sorts = [("updated", "Updated"), ("living", "Living"), ("favorited", "Favorited"),
              ("created", "Created"), ("title", "Title")]
     if ranked:
@@ -690,10 +773,14 @@ def _toolbar(raw: str, state: dict) -> str:
     form += '</select></label><button class="apply" type="submit">Apply</button>'
     if q or state.get("tag") or state.get("repo"):
         form += f'<a class="clear" href="{esc(raw + _dash_path(state, q="", tag="", repo=""))}">Clear</a>'
-    return form + '</form>'
+    return form + _facet_strips(raw, state, "sheet-facets") + '</div></form>'
 
 
 def _facets(raw: str, state: dict) -> str:
+    return _facet_strips(raw, state, "facets")
+
+
+def _facet_strips(raw: str, state: dict, css: str) -> str:
     if (state.get("view") or "active") == "shared":
         return ""
     strips = ""
@@ -709,7 +796,7 @@ def _facets(raw: str, state: dict) -> str:
             strips += (f'<a class="pill{" on" if on else ""}" data-facet="{key}" href="{esc(href)}"'
                        f'{_CURRENT_TRUE if on else ""}>{esc(value)}'
                        f'<span class="num">{int(item.get("count") or 0)}</span></a>')
-    return f'<div class="facets">{strips}</div>' if strips else ""
+    return f'<div class="{css}">{strips}</div>' if strips else ""
 
 
 def _favorites_shelf(raw: str, session: dict, state: dict, next_path: str) -> str:
@@ -785,6 +872,9 @@ def render_dashboard(base_url: str, session: dict, drafts: list[dict], *, shared
     if view == "active" and shared and not filtered:
         body += _section("Shared with me", "".join(_render_shared_row(draft, now=now) for draft in shared[:5]),
                          len(shared), link=(raw + _dash_path(state, view="shared"), "View all"))
+    body += ('<p class="shortcut-hints" aria-hidden="true">'
+             + "".join(f'<span>{"".join(f"<kbd>{key}</kbd>" for key in keys)} {action}</span>'
+                     for keys, action in _SHORTCUT_HINTS) + '</p>')
 
     main_attrs = (f' id="dashboard-root" data-base="{base}" data-csrf="{esc(session["csrf"])}"'
                   f' data-view="{esc(view)}" data-sort="{esc(state.get("sort") or "updated")}"'

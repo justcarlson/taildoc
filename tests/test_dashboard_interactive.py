@@ -256,7 +256,8 @@ def real_errors(dash):
 
 def test_unstar_from_the_shelf_removes_the_pin_and_holds_the_page(page, dash):
     favorite(dash, "alpha-plan")
-    page.set_viewport_size({"width": 1280, "height": 420})
+    # 520px is short enough to scroll, but above the 480px band where the shelf folds into a bar.
+    page.set_viewport_size({"width": 1280, "height": 520})
     open_dashboard(page, dash)
     assert pin(page, dash, "alpha-plan").is_visible()
     # Scroll so the shelf is at the top, then hold the first list section in place.
@@ -410,4 +411,77 @@ def test_palette_labels_facets_with_a_repo_filter(page, dash):
     assert "Repo: ops" not in labels
     page.keyboard.type("zzzz-no-match")
     assert page.locator("#pal-list").evaluate("() => document.querySelector('dialog.palette input').hasAttribute('aria-activedescendant')") is False
+    assert not dash.errors
+
+
+def device_page(new_context, page, dash, width, height, *, touch=True, **options):
+    """Open a second context with the dashboard session, sized and typed as a device."""
+    context = new_context(viewport={"width": width, "height": height}, has_touch=touch, is_mobile=touch, **options)
+    context.add_cookies(page.context.cookies())
+    other = context.new_page()
+    other.on("pageerror", lambda error: dash.errors.append(str(error)))
+    return other
+
+
+PAINT = """() => ({html: getComputedStyle(document.documentElement).backgroundColor,
+  body: getComputedStyle(document.body).backgroundColor,
+  metas: [...document.querySelectorAll('meta[name="theme-color"]')].map((m) => [m.media, m.content])})"""
+RGB = {"#ffffff": "rgb(255, 255, 255)", "#0a0a0a": "rgb(10, 10, 10)"}
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_theme_color_follows_the_live_theme_toggle(new_context, page, dash, scheme):
+    phone = device_page(new_context, page, dash, 382, 580, color_scheme=scheme)
+    open_dashboard(phone, dash)
+    paint = phone.evaluate(PAINT)
+    assert paint["html"] == paint["body"] == RGB["#ffffff" if scheme == "light" else "#0a0a0a"]
+    assert sorted(paint["metas"]) == [["(prefers-color-scheme: dark)", "#0a0a0a"],
+                                      ["(prefers-color-scheme: light)", "#ffffff"]]
+    for theme, color in (("dark", "#0a0a0a"), ("light", "#ffffff")):
+        phone.locator(f'.theme-switch button[value="{theme}"]').click()
+        paint = phone.evaluate(PAINT)
+        assert paint["metas"] == [["", color]], paint
+        assert paint["html"] == paint["body"] == RGB[color], paint
+    phone.locator('.theme-switch button[value="system"]').click()
+    assert len(phone.evaluate(PAINT)["metas"]) == 2
+    phone.wait_for_timeout(200)
+    assert not dash.errors
+
+
+def test_the_bulk_bar_docks_at_the_top_on_a_folded_phone(new_context, page, dash):
+    phone = device_page(new_context, page, dash, 382, 580)
+    open_dashboard(phone, dash)
+    row(phone, dash, "alpha-plan").locator(".row-select").check()
+    bar = phone.locator(".bulk-bar")
+    expect(bar).to_be_visible()
+    box = bar.bounding_box()
+    assert box["y"] <= 16 and box["x"] == 0 and box["width"] == 382, box
+    assert phone.evaluate("document.documentElement.scrollWidth") == 382
+    assert not dash.errors
+
+
+def test_the_filters_menu_submits_without_javascript(new_context, page, dash):
+    phone = device_page(new_context, page, dash, 382, 580, java_script_enabled=False)
+    phone.goto(f"{dash.base}/dashboard")
+    assert phone.locator("#dash-sort").is_hidden()
+    phone.locator(".filters-menu > summary").click()
+    phone.locator("#dash-sort").select_option(label="Title")
+    with phone.expect_navigation():
+        phone.locator(".filters-sheet .apply").click()
+    assert "/dashboard?" in phone.url and "sort=title" in phone.url
+    assert phone.locator('.filters-menu > summary').get_attribute("aria-label") == "Filters, 1 active"
+
+
+def test_the_filters_menu_closes_on_escape_and_outside_clicks(new_context, page, dash):
+    phone = device_page(new_context, page, dash, 382, 580)
+    open_dashboard(phone, dash)
+    menu = phone.locator("details.filters-menu")
+    phone.locator(".filters-menu > summary").click()
+    expect(menu).to_have_attribute("open", "")
+    phone.keyboard.press("Escape")
+    expect(menu).not_to_have_attribute("open", "")
+    phone.locator(".filters-menu > summary").click()
+    phone.locator("#dash-sort").focus()
+    phone.mouse.click(200, 560)
+    expect(menu).not_to_have_attribute("open", "")
     assert not dash.errors

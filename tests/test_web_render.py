@@ -233,6 +233,50 @@ class Dashboard(unittest.TestCase):
         self.assertIn("Shared with me", page)
         self.assertIn("Roadmap", page)
 
+    def test_compact_views_menu_keeps_the_current_view_in_the_third_slot(self) -> None:
+        page = render.render_dashboard(BASE, SESSION, [], state=state([]))
+        self.assertIn('<details class="views-more"><summary aria-label="More views"', page)
+        self.assertIn('class="tab" data-view="shared" href="', page)
+        self.assertRegex(page, r'data-view="shared" href="[^"]*" data-more>')
+        self.assertRegex(page, r'data-view="archived" href="[^"]*" data-more>')
+        self.assertNotRegex(page, r'data-view="living" href="[^"]*" data-more>')
+        self.assertIn('<a class="more-view" data-more-view="shared"', page)
+        page = render.render_dashboard(BASE, SESSION, [], state=state([], view="archived"))
+        self.assertRegex(page, r'data-view="archived" href="[^"]*" aria-current="page">')
+        self.assertRegex(page, r'data-view="living" href="[^"]*" data-more>')
+        self.assertIn('<a class="more-view" data-more-view="living"', page)
+        self.assertNotIn('data-more-view="archived"', page)
+        for view in ("active", "favorites", "living", "shared", "archived"):
+            self.assertEqual(1, page.count(f'class="tab" data-view="{view}"'))
+
+    def test_filters_menu_wraps_the_controls_and_counts_active_filters(self) -> None:
+        page = render.render_dashboard(BASE, SESSION, [], state=state([]))
+        self.assertIn('<details class="filters-menu"><summary aria-label="Filters" title="Filters"', page)
+        self.assertNotIn('class="filters-count"', page)
+        sheet = page.split('<div class="filters-sheet" id="dash-filters">', 1)[1].split('</form>', 1)[0]
+        for hook in ('name="sort"', 'name="group"', 'class="button secondary dir"', '<button class="apply" type="submit">'):
+            self.assertIn(hook, sheet)
+        tags = [{"tag": "dawn", "count": 2}]
+        page = render.render_dashboard(BASE, SESSION, [], state=state(
+            [], tags=tags, tag="dawn", group="tag", sort="title", direction="desc"))
+        self.assertIn('aria-label="Filters, 4 active"', page)
+        self.assertIn('<span class="filters-count">4</span>', page)
+        self.assertIn('<div class="sheet-facets">', page)
+        self.assertEqual(1, page.count('<div class="facets">'))
+        page = render.render_dashboard(BASE, SESSION, [], state=state([], q="x", sort="relevance"))
+        self.assertNotIn('class="filters-count"', page)
+
+    def test_theme_color_matches_the_page_background(self) -> None:
+        self.assertIn("html{-webkit-text-size-adjust:100%;text-size-adjust:100%;background:var(--bg)", render.WEB_CSS)
+        page = render.render_dashboard(BASE, SESSION, [], theme="system")
+        self.assertIn('<meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff">', page)
+        self.assertIn('<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0a0a0a">', page)
+        for theme, color in (("light", "#ffffff"), ("dark", "#0a0a0a")):
+            page = render.render_dashboard(BASE, SESSION, [], theme=theme)
+            self.assertEqual(1, page.count('name="theme-color"'))
+            self.assertIn(f'<meta name="theme-color" content="{color}">', page)
+        self.assertIn("24px calc(64px + env(safe-area-inset-bottom, 0px))}", render.WEB_CSS)
+
     def test_search_toolbar_is_a_get_form(self) -> None:
         page = render.render_dashboard(BASE, SESSION, [], state=state([], tag="dawn", view="living"))
         self.assertIn(f'<form class="toolbar" method="get" action="{BASE}/dashboard" role="search">', page)
