@@ -38,6 +38,7 @@ The name Tailplan does not mean a checklist or an agent plan mode.
    `shareUrl` and fall back to `publicUrl`.
 9. Verify the URL with `curl -fsS` from a tailnet device.
 10. Open the published page at 390px, 768px, and 1280px with the `agent-browser` UAT tool when publishing custom HTML or layout changes.
+    Also check the folded iPhone at 382x580 (portrait) and 594x368 (landscape).
 11. Return the URL and one short description.
 12. If step 5 created a durable repository document, report its repository path.
 
@@ -176,6 +177,7 @@ h2 { font-size: 22px; }  /* no underline rule under h2 */
   Avoid emojis and patronizing metaphors.
 - Pass a phone glance check at 390px, not only zero horizontal scroll.
   Verify readable typography, generous spacing, and responsive diagram reflow at 390px, 768px, and 1280px.
+  Also check the folded iPhone viewports, 382x580 portrait and 594x368 landscape.
 
 The server stores resolved HTML and theme metadata in each published version.
 Palette updates do not change stored documents.
@@ -190,6 +192,11 @@ Keep the page inside a 320px screen with no sideways scroll.
 Stack wide tables and grids into one column below 640px.
 Check the published page at 390px before you share it.
 Also check 768px and 1280px. Keep prose near 690px wide on large screens.
+Also check 382x580 (folded portrait) and 594x368 (folded landscape).
+Set the `html` background and `<meta name="theme-color">` to the page background.
+Then the Safari side strip matches the page.
+Leave space for the floating URL pills at the bottom of the screen.
+Use `padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px))`.
 Let wide tables and grids use more width on tablets and desktops.
 Tailplan warns when an HTML upload has no viewport meta tag.
 Use readable full-width prose on phones with modest padding. Generated Markdown
@@ -239,6 +246,7 @@ Read `docs/briefs.md` in the repository for the full format.
    ```
 
 7. Open the URL at 390px wide in light and dark palettes. Check that nothing scrolls sideways.
+   Repeat at 382x580 and 594x368, the folded iPhone viewports.
 
 Mark caption times as approximate in the `note` field.
 Do not invent times, quotes, or verdicts. Use `Unverified` when a check is not complete.

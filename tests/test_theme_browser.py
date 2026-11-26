@@ -332,3 +332,92 @@ def test_server_pages_fit_tablet_and_desktop(page, name, width):
     # Server tables stack only on phones.
     if page.locator('table').count():
         assert page.locator('table').first.evaluate('(e) => getComputedStyle(e).display') == 'table'
+
+
+# Adaptive density: the dashboard layout follows width, height, and pointer.
+# Touch viewports emulate a phone (hover:none, pointer:coarse). The others use a fine pointer.
+ADAPTIVE_VIEWPORTS = [
+    (320, 568, True), (382, 580, True), (390, 844, True), (594, 368, True), (669, 867, True),
+    (768, 1024, True), (951, 585, True), (1280, 900, False),
+]
+STRICT_PHONES = {(320, 568), (382, 580), (390, 844), (594, 368)}
+# The first row and how many rows sit fully above the bottom URL pills (56px), for the folded iPhone.
+FOLD_BUDGETS = {(382, 580): (240, 6), (594, 368): (165, 4)}
+ADAPTIVE_CHECK = """() => {
+  const box = (s) => { const e = document.querySelector(s); return e && e.getClientRects().length ? e.getBoundingClientRect().toJSON() : null; };
+  const shown = (s) => { const e = document.querySelector(s); return Boolean(e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden'); };
+  const rows = [...document.querySelectorAll('section.group .draft-row')].map((e) => e.getBoundingClientRect());
+  const small = [];
+  for (const e of document.querySelectorAll('.tab, .draft-row .star, .views-more > summary, .filters-menu > summary')) {
+    const b = e.getBoundingClientRect();
+    if (b.width && b.height && (b.width < 44 || b.height < 44)) small.push(`${e.className} ${Math.round(b.width)}x${Math.round(b.height)}`);
+  }
+  const fonts = [...document.querySelectorAll('main input:not([type=checkbox]):not([type=hidden]), main select')]
+    .filter((e) => e.getClientRects().length).map((e) => parseFloat(getComputedStyle(e).fontSize));
+  const bg = (e) => getComputedStyle(e).backgroundColor;
+  return {top: box('.top'), tabs: box('.tabs'), toolbar: box('.toolbar'), shelf: box('.shelf'),
+    first: rows[0] ? rows[0].top : null, above: rows.filter((b) => b.bottom <= innerHeight - 56).length,
+    kbd: shown('.search kbd'), hints: shown('.shortcut-hints'), small, fonts,
+    html: bg(document.documentElement), body: bg(document.body)};
+}"""
+
+
+def _adaptive_dashboard(theme='dark'):
+    base = 'https://tailnet.example/tailplan'
+    session = {'csrf': 'c' * 40, 'accountName': 'someone-with-a-long-login-name@example.com'}
+    rows = [{'draftId': f'r{i}', 'slug': f'plan-{i}', 'favorite': i < 8, 'title': f'Quarterly rollout plan {i} ' * 2,
+             'description': 'Description ' * 8, 'shareUrl': f'{base}/d/plan-{i}/share', 'disabled': False,
+             'latestVersionNumber': 2, 'versionCount': 2, 'updatedAt': '2026-11-14T10:00:00Z',
+             'repoHost': 'github.com', 'repoOrg': 'org', 'repoName': 'repo', 'tags': ['ops', 'notes'],
+             'workspace': 'team', 'visibility': 'authenticated', 'archived': False} for i in range(12)]
+    counts = {'active': 12, 'favorites': 8, 'living': 2, 'shared': 3, 'archived': 1}
+    state = {'view': 'active', 'q': '', 'sort': 'updated', 'direction': 'desc', 'group': 'time', 'tag': '',
+             'repo': '', 'counts': counts, 'tags': [{'tag': 'ops', 'count': 12}],
+             'repos': [{'repo': 'org/repo', 'count': 12}], 'suggestedTags': {}, 'favorites': rows[:8], 'drafts': rows}
+    doc = server.render_dashboard(base, session, rows, state=state, theme=theme)
+    return doc.replace('<html lang', '<html class="js-ready" lang', 1).replace(
+        '" hidden aria-label="Select', '" aria-label="Select')
+
+
+@pytest.mark.parametrize('width,height,touch', ADAPTIVE_VIEWPORTS)
+def test_dashboard_adapts_to_width_height_and_pointer(new_context, width, height, touch):
+    context = new_context(viewport={'width': width, 'height': height}, has_touch=touch, is_mobile=touch)
+    page = context.new_page()
+    page.set_content(_adaptive_dashboard())
+    fit = page.evaluate(PHONE_CHECK)
+    assert fit['scroll'] == width and not fit['escaped'] and not fit['sideways'], fit
+    m = page.evaluate(ADAPTIVE_CHECK)
+    assert m['html'] == m['body'], m
+    if touch:
+        # Touch screens have no keyboard hints, 16px fields that do not zoom, and 44px targets.
+        assert not m['kbd'] and not m['hints'], m
+        assert m['fonts'] and min(m['fonts']) >= 16, m
+        assert not m['small'], m
+    else:
+        assert m['kbd'] and m['hints'], m
+    if width <= 700 or height <= 480:
+        assert m['top']['height'] <= 44, m
+        assert m['tabs']['height'] <= 44 and m['toolbar']['height'] <= 48, m
+    if (width, height) in FOLD_BUDGETS:
+        first, rows = FOLD_BUDGETS[(width, height)]
+        assert m['first'] <= first and m['above'] >= rows, m
+    if height <= 480:
+        assert m['tabs']['top'] == m['toolbar']['top'], m
+
+
+@pytest.mark.parametrize('width,height', [(382, 580), (594, 368)])
+def test_compact_menus_open_inside_the_screen(new_context, width, height):
+    context = new_context(viewport={'width': width, 'height': height}, has_touch=True, is_mobile=True)
+    page = context.new_page()
+    page.set_content(_adaptive_dashboard())
+    assert page.locator('.tab[data-view="shared"]').is_hidden()
+    page.locator('.views-more > summary').click()
+    assert page.locator('.more-view[data-more-view="shared"]').is_visible()
+    page.locator('.views-more > summary').click()
+    page.locator('.filters-menu > summary').click()
+    sheet = page.locator('.filters-sheet')
+    assert sheet.is_visible() and page.locator('#dash-sort').is_visible()
+    box = sheet.bounding_box()
+    assert box['x'] >= 0 and box['x'] + box['width'] <= width and box['height'] <= min(0.65 * height, 360) + 1
+    fit = page.evaluate(PHONE_CHECK)
+    assert fit['scroll'] == width and not fit['escaped'] and not fit['sideways'], fit

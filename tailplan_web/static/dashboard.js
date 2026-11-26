@@ -92,9 +92,19 @@ async function setTheme(theme) {
   const apply = (value) => {
     if (value === 'system') delete html.dataset.theme; else html.dataset.theme = value;
     $$('.theme-switch button[name=theme]').forEach((b) => b.setAttribute('aria-pressed', String(b.value === value)));
+    syncThemeColor(value);
   };
   apply(theme);
   try { await post(`${base}/dashboard/theme`, { theme }); } catch (err) { apply(before); fail(err); }
+}
+
+// The browser bar color follows the theme. System gets one meta per color scheme.
+const THEME_COLORS = { light: '#ffffff', dark: '#0a0a0a' };
+function syncThemeColor(value) {
+  $$('meta[name="theme-color"]').forEach((meta) => meta.remove());
+  const metas = value in THEME_COLORS ? [{ content: THEME_COLORS[value] }]
+    : Object.entries(THEME_COLORS).map(([scheme, content]) => ({ media: `(prefers-color-scheme: ${scheme})`, content }));
+  for (const attrs of metas) document.head.append(el('meta', { name: 'theme-color', ...attrs }));
 }
 
 // Rows, counts, and sections.
@@ -124,7 +134,7 @@ if (search && !isMac) { const kbd = $('.search kbd'); if (kbd) kbd.textContent =
 
 function bump(key, delta) {
   if (!delta) return;
-  const nums = [$(`.tab[data-view="${key}"] .num`)];
+  const nums = [$(`.tab[data-view="${key}"] .num`), $(`.more-view[data-more-view="${key}"] .num`)];
   if (key === 'favorites') nums.push($('.shelf .section-head .num'));
   for (const num of nums) if (num) num.textContent = Math.max(0, (parseInt(num.textContent, 10) || 0) + delta);
 }
@@ -322,7 +332,7 @@ async function acceptSuggestion(form) {
 document.addEventListener('submit', (event) => {
   const form = event.target;
   const item = form.closest('.draft-row, .pin');
-  if (form === toolbar) { event.preventDefault(); clearTimeout(timer); remoteSearch(); return; }
+  if (form === toolbar) { event.preventDefault(); closeMenus(); clearTimeout(timer); remoteSearch(); return; }
   if (!item) return;
   if (form.matches('.star-form')) { event.preventDefault(); toggleFavorite(item.dataset.draftId, item); }
   else if (form.matches('.archive-form')) { event.preventDefault(); archiveRows([item], item.dataset.archived !== '1'); }
@@ -390,6 +400,7 @@ function setDesc(row, draft) {
   if (old) old.replaceWith(...(next ? [next] : [])); else if (next) main.append(next);
 }
 async function remoteSearch() {
+  syncBadge();
   const mine = ++seq;
   const qs = params().toString();
   const page = `${base}/dashboard${qs ? `?${qs}` : ''}`;
@@ -422,7 +433,7 @@ async function remoteSearch() {
 // Links that the server built for the old query get the new one.
 function syncLinks() {
   const q = search.value.trim();
-  for (const a of $$('a.dir, .facets a.pill, .row-meta > a.pill')) {
+  for (const a of $$('a.dir, .facets a.pill, .sheet-facets a.pill, .row-meta > a.pill')) {
     const u = new URL(a.href, location.origin);
     if (q) u.searchParams.set('q', q); else u.searchParams.delete('q');
     a.href = u.href;
@@ -431,7 +442,7 @@ function syncLinks() {
   const show = ['q', 'tag', 'repo'].some((k) => qs.get(k));
   ['q', 'tag', 'repo'].forEach((k) => qs.delete(k));
   let clear = $('a.clear', toolbar);
-  if (show && !clear) toolbar.append(clear = el('a', { class: 'clear' }, 'Clear'));
+  if (show && !clear) ($('.filters-sheet', toolbar) || toolbar).append(clear = el('a', { class: 'clear' }, 'Clear'));
   if (clear) { clear.hidden = !show; clear.href = `${base}/dashboard${qs.size ? `?${qs}` : ''}`; }
 }
 function syncSort(state) {
@@ -446,7 +457,32 @@ function syncSort(state) {
 }
 if (search && toolbar) {
   search.addEventListener('input', () => { localFilter(); clearTimeout(timer); timer = setTimeout(remoteSearch, 180); });
-  for (const select of $$('select', toolbar)) select.addEventListener('change', () => toolbar.submit());
+  for (const select of $$('select', toolbar)) select.addEventListener('change', () => { syncBadge(); toolbar.submit(); });
+}
+
+// The views and filters menus are details elements. Close them on an outside click or Escape.
+const MENUS = 'details.views-more[open], details.filters-menu[open]';
+function closeMenus(except) {
+  for (const menu of $$(MENUS)) if (menu !== except) menu.open = false;
+}
+document.addEventListener('click', (event) => {
+  const inside = event.target.closest?.('details.views-more, details.filters-menu, .filters-sheet');
+  const menu = inside?.matches('.filters-sheet') ? inside.previousElementSibling : inside;
+  closeMenus(menu);
+});
+// The badge counts the filters that differ from the defaults, the same as the server.
+function syncBadge() {
+  const summary = toolbar && $('.filters-menu > summary', toolbar);
+  if (!summary) return;
+  const value = (name) => toolbar.elements[name]?.value || '';
+  const sort = value('sort');
+  const dir = value('dir');
+  const count = [!['', 'updated', 'relevance'].includes(sort), Boolean(dir) && dir !== (sort === 'title' ? 'asc' : 'desc'),
+    !['', 'time'].includes(value('group')), Boolean(value('tag')), Boolean(value('repo'))].filter(Boolean).length;
+  let badge = $('.filters-count', summary);
+  if (count && !badge) summary.append(badge = el('span', { class: 'filters-count' }));
+  if (badge) { badge.hidden = !count; badge.textContent = String(count); }
+  summary.setAttribute('aria-label', count ? `Filters, ${count} active` : 'Filters');
 }
 
 // Selection and the bulk bar.
@@ -630,6 +666,13 @@ help.append(el('h2', {}, 'Keyboard shortcuts'),
 const TYPING = 'textarea,select,[contenteditable=""],[contenteditable=true],input:not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit])';
 document.addEventListener('keydown', (event) => {
   const key = event.key;
+  const menu = key === 'Escape' && !$('dialog[open]') && $(MENUS);
+  if (menu) {
+    event.preventDefault();
+    menu.open = false;
+    $('summary', menu).focus();
+    return;
+  }
   if ((event.metaKey || event.ctrlKey) && !event.altKey && key.toLowerCase() === 'k') {
     event.preventDefault();
     if (palette.open) palette.close(); else openPalette();
