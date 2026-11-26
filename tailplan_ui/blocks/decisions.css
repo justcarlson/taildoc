@@ -102,4 +102,6 @@
   :where([data-slot="timeline-bar"] [data-series="4"]) { --series: var(--chart-4); }
   :where([data-slot="timeline-bar"] [data-series="5"]) { --series: var(--chart-5); }
   :where([data-slot="timeline-bar"] [data-series="6"]) { --series: var(--chart-6); }
+  :where([data-slot="timeline-bar"] [data-series="7"]) { --series: var(--chart-7); }
+  :where([data-slot="timeline-bar"] [data-series="8"]) { --series: var(--chart-8); }
 }

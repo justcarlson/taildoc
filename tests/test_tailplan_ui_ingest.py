@@ -1,6 +1,8 @@
 """Checks for Tailplan UI at ingest: opt-in bundling, GET /api/ui, the eight lints, and the audit fields."""
 import json
 import re
+import unittest.mock as mock
+import xml.etree.ElementTree as ET
 
 import pytest
 from auth_harness import AuthCase
@@ -159,6 +161,93 @@ def test_lint_handles_bad_input():
     assert lint.lint('<svg><<<') == []
 
 
+# Review round 1 fixes: lints
+
+def test_slot_names_in_prose_and_code_are_not_slots():
+    doc = page('<p>Write <code>data-slot="buton"</code> or data-slot="oops" in your tag.</p>'
+               '<pre>&lt;div data-slot="nope"&gt;</pre><!-- <i data-slot="gone"> -->')
+    assert 'ui-unknown-slot' not in codes(doc)
+    assert 'ui-unknown-slot' in codes(page('<DIV DATA-SLOT=buton>x</DIV>'))
+    assert lint.lint(page('<div data-slot="buton">x</div>'))[0]['line'] == 1
+    assert 'ui-unknown-slot' not in codes(page('<script>var s = \'<i data-slot="nope">\';</script>'))
+
+
+@pytest.mark.parametrize('head', [
+    '<style>body{color:light-dark(#111,#eee)}</style>',
+    '<style>:root{color-scheme:light dark}body{color:#111}</style>',
+    '<meta name="color-scheme" content="light dark"><style>body{color:#111}</style>',
+    '<style>body{color:#111}</style><meta content="dark light" name="color-scheme">',
+    '<style>.x{margin:0;padding:1rem}</style>',
+])
+def test_dark_mode_lint_accepts_real_support_and_color_free_css(head):
+    assert 'ui-no-dark-mode' not in codes(page(opt=False, head=head))
+
+
+@pytest.mark.parametrize('head,body', [
+    ('<style>:root{color-scheme:light}body{color:#111}</style>', '<p>x</p>'),
+    ('<style>body{background:#fff}</style>', '<p>Use prefers-color-scheme and color-scheme: dark in CSS.</p>'),
+    ('<style>:root{--ink:#111}</style>', '<p>x</p>'),
+    ('<style>body{color:#111}</style><meta name="theme-color" content="dark">', '<p>x</p>'),
+])
+def test_dark_mode_lint_fires_when_color_css_has_no_dark_support(head, body):
+    assert 'ui-no-dark-mode' in codes(page(body, head=head, opt=False))
+
+
+def test_a_chart_wrapped_in_a_link_counts_as_linked():
+    shapes = '<rect x="1" y="1" width="9" height="9"/><rect x="20" y="1" width="9" height="9"/><rect x="40" y="1" width="9" height="9"/>'
+    wrapped = page(f'<a href="https://example.com/data"><svg viewBox="0 0 100 40" role="img">{shapes}</svg></a>')
+    assert 'ui-chart-unlinked' not in codes(wrapped)
+    closed = page(f'<a href="https://example.com/data">Data</a><svg viewBox="0 0 100 40" role="img">{shapes}</svg>')
+    assert 'ui-chart-unlinked' in codes(closed)
+    assert 'ui-chart-unlinked' in codes(page(f'<a name="x"><svg viewBox="0 0 100 40" role="img">{shapes}</svg></a>'))
+
+
+@pytest.mark.parametrize('css,code', [
+    ('main{block-size:100vh}', 'ui-viewport-height'),
+    ('main{min-block-size:100dvh}', 'ui-viewport-height'),
+    ('.bar{position:fixed;inset-block-end:0}', 'ui-fixed-bottom'),
+    ('.bar{position:fixed;inset:auto 0 0 0}', 'ui-fixed-bottom'),
+    ('.bar{position:fixed;inset:auto 0 0}', 'ui-fixed-bottom'),
+    ('.bar{position:fixed;inset-block:auto 0}', 'ui-fixed-bottom'),
+    ('content_marker{content:"/*"} main{height:100vh} .x{content:"*/"}', 'ui-viewport-height'),
+])
+def test_logical_properties_and_css_strings(css, code):
+    assert code in codes(page(head=f'<style>{css}</style>'))
+
+
+@pytest.mark.parametrize('css,code', [
+    ('main{block-size:100svh}', 'ui-viewport-height'),
+    ('.bar{position:fixed;inset:0}', 'ui-fixed-bottom'),
+    ('.bar{position:fixed;inset:auto 0 1rem}', 'ui-fixed-bottom'),
+    ('.bar{position:fixed;inset-block:0}', 'ui-fixed-bottom'),
+    ('/* main{height:100vh} */ .x{margin:0}', 'ui-viewport-height'),
+    ('.x{content:"a"} /* .bar{position:fixed;bottom:0} */', 'ui-fixed-bottom'),
+])
+def test_logical_property_lints_stay_quiet(css, code):
+    assert code not in codes(page(head=f'<style>{css}</style>'))
+
+
+def test_a_css_comment_marker_in_a_string_does_not_hide_later_rules():
+    doc = page(head='<style>.a::before{content:"/*"}main{height:100vh}.b::after{content:"*/"}</style>')
+    found = lint.lint(doc)
+    assert [f['code'] for f in found] == ['ui-viewport-height']
+
+
+def test_the_icon_sprite_parses_as_xml_and_hides_itself():
+    sprite = tailplan_ui.icon_sprite(['check'])
+    root = ET.fromstring(sprite)
+    assert root.get('hidden') == '' and 'display:none' in root.get('style')
+
+
+def test_built_in_theme_aliases_are_not_logged_as_custom():
+    from tailplan_ui.color import tokens
+    for alias in tokens.THEME_ALIASES:
+        fields = server.ui_audit_fields({'uiVersion': '1.0.0', 'uiTheme': alias, 'uiCssBytes': 1})
+        row = server.audit_wide_event('draft.upload', None, 'draft', 'd', 'success', fields)
+        server.check_audit_row(row)
+        assert row['ui_theme'] == alias
+
+
 # Audit fields
 
 def test_audit_fields_map_known_values_and_hide_seeds():
@@ -254,6 +343,43 @@ class HttpTests(AuthCase):
         plain = self.upload(plain_doc)
         assert b'id="tp-ui"' in self.stored(opted['draftId'])
         assert self.stored(plain['draftId']) == plain_doc.encode()
+
+    def test_a_lone_surrogate_in_an_opted_in_page_is_rejected_not_crashed(self):
+        bad = page('<p>\ud800</p>')
+        status, result = self.api('/api/uploads', 'POST', {'html': bad}, token=server_token())
+        assert status == 422, result
+        assert 'invalid-unicode' in json.dumps(result)
+        status, result = self.api('/api/check', 'POST', {'html': bad}, token=server_token())
+        assert status == 200 and not result['ok'], result
+        assert 'invalid-unicode' in json.dumps(result)
+        status, result = self.api('/api/uploads', 'POST',
+                                  {'files': [{'path': 'index.html', 'html': page()}, {'path': 'b.html', 'html': bad}]},
+                                  token=server_token())
+        assert status == 422, result
+
+    def test_markdown_content_is_never_bundled(self):
+        with mock.patch.object(server, 'ui_bundle_pages', side_effect=AssertionError('bundled')):
+            status, result = self.api('/api/uploads', 'POST', {'content': '# Title\n\nBody'}, token=server_token())
+            assert status in {200, 201}, result
+            status, result = self.api('/api/check', 'POST', {'content': '# Title\n\nBody'}, token=server_token())
+            assert status == 200 and result['ok'], result
+        (row,) = self.uploaded_rows()
+        assert not [k for k in row if k.startswith(('ui_', 'custom_css', 'has_dark'))]
+
+    def test_api_ui_answers_503_when_the_catalog_cannot_load(self):
+        for error in (OSError('gone'), ValueError('bad'), KeyError('icons')):
+            with mock.patch.object(tailplan_ui, 'catalog', side_effect=error):
+                status, body = self.api('/api/ui', token=None)
+            assert status == 503 and body == {'ok': False, 'error': 'Tailplan UI catalog unavailable.'}
+        assert self.api('/api/ui', token=None)[0] == 200
+
+    def test_readyz_checks_the_ui_catalog_and_chunks(self):
+        assert self.api('/readyz', token=None)[0] == 200
+        with mock.patch.object(tailplan_ui, 'catalog', side_effect=OSError('gone')):
+            assert self.api('/readyz', token=None)[0] == 503
+        with mock.patch.object(tailplan_ui.bundler, 'chunks', side_effect=ValueError('bad chunk')):
+            assert self.api('/readyz', token=None)[0] == 503
+
 
     def stored(self, draft_id):
         status, _headers, body = self.request(f'/d/{draft_id}', token=server_token())

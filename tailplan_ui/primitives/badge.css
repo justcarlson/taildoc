@@ -18,12 +18,12 @@
     border: 1px var(--line) var(--_bd);
     border-radius: 999px;
   }
-  :where([data-slot="badge"], [data-slot="chip"])[data-variant="secondary"] { --_bg: var(--secondary); --_fg: var(--secondary-foreground); --_bd: var(--border); }
-  :where([data-slot="badge"], [data-slot="chip"])[data-variant="outline"] { --_bg: transparent; --_fg: var(--foreground); --_bd: var(--border-strong); }
-  :where([data-slot="badge"], [data-slot="chip"])[data-variant="success"] { --_bg: var(--success-surface); --_fg: var(--success); --_bd: color-mix(in oklab, var(--success) 35%, transparent); }
-  :where([data-slot="badge"], [data-slot="chip"])[data-variant="warning"] { --_bg: var(--warning-surface); --_fg: var(--warning); --_bd: color-mix(in oklab, var(--warning) 35%, transparent); }
-  :where([data-slot="badge"], [data-slot="chip"])[data-variant="destructive"] { --_bg: var(--destructive-surface); --_fg: var(--destructive); --_bd: color-mix(in oklab, var(--destructive) 35%, transparent); }
-  :where([data-slot="badge"], [data-slot="chip"])[data-variant="info"] { --_bg: var(--info-surface); --_fg: var(--info); --_bd: color-mix(in oklab, var(--info) 35%, transparent); }
+  :where(:is([data-slot="badge"], [data-slot="chip"])[data-variant="secondary"]) { --_bg: var(--secondary); --_fg: var(--secondary-foreground); --_bd: var(--border); }
+  :where(:is([data-slot="badge"], [data-slot="chip"])[data-variant="outline"]) { --_bg: transparent; --_fg: var(--foreground); --_bd: var(--border-strong); }
+  :where(:is([data-slot="badge"], [data-slot="chip"])[data-variant="success"]) { --_bg: var(--success-surface); --_fg: var(--success); --_bd: color-mix(in oklab, var(--success) 35%, transparent); }
+  :where(:is([data-slot="badge"], [data-slot="chip"])[data-variant="warning"]) { --_bg: var(--warning-surface); --_fg: var(--warning); --_bd: color-mix(in oklab, var(--warning) 35%, transparent); }
+  :where(:is([data-slot="badge"], [data-slot="chip"])[data-variant="destructive"]) { --_bg: var(--destructive-surface); --_fg: var(--destructive); --_bd: color-mix(in oklab, var(--destructive) 35%, transparent); }
+  :where(:is([data-slot="badge"], [data-slot="chip"])[data-variant="info"]) { --_bg: var(--info-surface); --_fg: var(--info); --_bd: color-mix(in oklab, var(--info) 35%, transparent); }
 }
 /* The kbd-hint display rule stays in tp.density, so these rules never set display on a hint. */
 /* @chunk kbd-keys when=slot:kbd|kbd-hint */

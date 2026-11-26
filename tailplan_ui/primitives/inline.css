@@ -44,6 +44,15 @@
   }
   :where([data-slot="cite"]:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
   @media (pointer: coarse) {
-    :where([data-slot="cite"])::after { content: ""; position: absolute; inset: -0.9em -0.4em; }
+    :where([data-slot="cite"])::after {
+      content: "";
+      position: absolute;
+      inset: auto;
+      left: 50%;
+      top: 50%;
+      width: max(100%, 44px);
+      height: max(100%, 44px);
+      translate: -50% -50%;
+    }
   }
 }

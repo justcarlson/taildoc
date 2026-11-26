@@ -2380,14 +2380,19 @@ def ui_bundle_pages(pages: object) -> tuple[object, dict | None]:
         doc = entry.get("html") if isinstance(entry, dict) else None
         if isinstance(doc, str):
             try:
+                doc.encode("utf-8")  # Lone surrogates are a validation matter: validate_upload reports them.
                 opted_in = tailplan_ui.is_opted_in(doc)
             except Exception:  # Bad markup is a validation matter, not a bundling one.
                 opted_in = False
             if opted_in:
-                bundled, meta = tailplan_ui.bundle(doc, target="standalone")
-                entry = {**entry, "html": bundled}
-                if chosen is None or entry.get("path") == "index.html":
-                    chosen = meta
+                try:
+                    bundled, meta = tailplan_ui.bundle(doc, target="standalone")
+                except UnicodeEncodeError:
+                    bundled = None
+                if bundled is not None:
+                    entry = {**entry, "html": bundled}
+                    if chosen is None or entry.get("path") == "index.html":
+                        chosen = meta
         out.append(entry)
     return out, chosen
 
@@ -3235,7 +3240,8 @@ UI_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 
 def _ui_themes() -> frozenset[str]:
     from tailplan_ui.color import tokens as ui_tokens
-    return frozenset(ui_tokens.presets()) | frozenset(ui_tokens.surfaces()) | {"custom"}
+    return (frozenset(ui_tokens.presets()) | frozenset(ui_tokens.surfaces())
+            | frozenset(ui_tokens.THEME_ALIASES) | {"custom"})
 
 
 def _ui_accents() -> frozenset[str]:
@@ -7130,7 +7136,10 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_source(source_match.group(1))
             return
         if path == "/api/ui":
-            self.send_json(200, tailplan_ui.catalog())
+            try:
+                self.send_json(200, tailplan_ui.catalog())
+            except (OSError, ValueError, KeyError):
+                self.send_json(503, {"ok": False, "error": "Tailplan UI catalog unavailable."})
             return
         if path in {"/api/themes", "/api/typography"}:
             try:
@@ -7149,8 +7158,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self.store.check_ready()
                 tailplan_themes.catalog()
+                tailplan_ui.catalog()
+                tailplan_ui.bundler.chunks()
                 web_assets.check_ready()
-            except (StorageError, OSError, tailplan_themes.ThemeError, web_assets.WebAssetError) as exc:
+            except (StorageError, OSError, ValueError, KeyError, tailplan_themes.ThemeError,
+                    web_assets.WebAssetError) as exc:
                 self.log_message("readiness storage error: %r", exc)
                 self.send_json(
                     503,
@@ -7302,7 +7314,8 @@ class Handler(BaseHTTPRequestHandler):
             if any(key in payload for key in ("html", "files", "content")):
                 try:
                     pages, _theme = self._extract_upload_pages(payload)
-                    pages, _ui = ui_bundle_pages(pages)
+                    if "content" not in payload:  # Markdown pages carry Tailplan's own CSS.
+                        pages, _ui = ui_bundle_pages(pages)
                     validation = validate_upload(pages)
                     report.update(
                         {
@@ -7383,7 +7396,9 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error:
                 self.send_json(422, {"ok": False, "error": str(error)})
                 return
-            pages, ui_meta = ui_bundle_pages(pages)
+            ui_meta = None
+            if "content" not in payload:  # Markdown pages carry Tailplan's own CSS.
+                pages, ui_meta = ui_bundle_pages(pages)
             validation = validate_upload(pages)
             if not validation["ok"]:
                 self.send_json(

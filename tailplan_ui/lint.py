@@ -9,19 +9,23 @@ from __future__ import annotations
 import difflib
 import re
 
-from .bundler import is_opted_in, strip_stamp
+from .bundler import CSS_TOKEN_RE, _Parser, is_opted_in, strip_stamp
 from .registry import known_slots
 
-COMMENT_RE = re.compile(r"<!--.*?-->|/\*.*?\*/", re.S)
+HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
 STYLE_RE = re.compile(r"<style\b[^>]*>(.*?)</style\s*>", re.S | re.I)
 SCRIPT_RE = re.compile(r"<script\b[^>]*>.*?</script\s*>", re.S | re.I)
 INLINE_STYLE_RE = re.compile(r"<([a-zA-Z][\w-]*)\b[^>]*?\sstyle\s*=\s*(\"([^\"]*)\"|'([^']*)')", re.S)
-SLOT_RE = re.compile(r"\bdata-slot\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'>]+))", re.I)
 RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}")
 MEDIA_RE = re.compile(r"@media([^{]*)\{", re.I)
 BAD_WIDTH_RE = re.compile(r"(?<![\d.])(?:600|640)(?:\.0+)?px\b")
 UI_MODE_RE = re.compile(r"<html\b[^>]*\bdata-ui-mode\s*=\s*[\"']?(?:light|dark)\b", re.I)
-DARK_RE = re.compile(r"prefers-color-scheme|color-scheme\s*:", re.I)
+DARK_RE = re.compile(r"light-dark\s*\(|prefers-color-scheme|color-scheme\s*:[^;{}]*\bdark\b", re.I)
+DARK_META_RE = re.compile(
+    r"<meta\b(?=[^>]*\bname\s*=\s*[\"']?color-scheme\b)[^>]*\bcontent\s*=\s*[\"'][^\"']*\bdark\b", re.I)
+COLOR_DECL_RE = re.compile(
+    r"(?<![\w-])(?:color|background(?:-color|-image)?|(?:border|outline)(?:-[a-z]+)*-color|fill|stroke)\s*:"
+    r"|--[\w-]+\s*:\s*(?:#|rgba?\(|hsla?\(|oklch\(|oklab\(|lab\(|lch\(|hwb\(|color\()", re.I)
 NOWRAP_RE = re.compile(r"white-space\s*:\s*nowrap", re.I)
 ELLIPSIS_RE = re.compile(r"text-overflow\s*:\s*ellipsis", re.I)
 PROSE_SEL_RE = re.compile(
@@ -30,9 +34,13 @@ PROSE_SEL_RE = re.compile(
 CONTROL_SEL_RE = re.compile(r"(?<![\w-])(?:input|select|textarea)(?![\w-])|data-slot=[\"']?(?:input|select|textarea)", re.I)
 SKIP_CONTROL_RE = re.compile(r"checkbox|radio|range|color|file|hidden", re.I)
 FONT_SIZE_RE = re.compile(r"(?<![\w-])font-size\s*:\s*([0-9.]+)(px|rem|em)\b", re.I)
-VIEWPORT_HEIGHT_RE = re.compile(r"(?<![\w-])(?:min-|max-)?height\s*:\s*100d?vh\b", re.I)
+VIEWPORT_HEIGHT_RE = re.compile(r"(?<![\w-])(?:min-|max-)?(?:height|block-size)\s*:\s*100d?vh\b", re.I)
 FIXED_RE = re.compile(r"(?<![\w-])position\s*:\s*fixed", re.I)
-BOTTOM_ZERO_RE = re.compile(r"(?<![\w-])bottom\s*:\s*0(?:px|rem|em)?\s*(?:;|$|!)", re.I)
+ZERO = r"0(?:px|rem|em)?"
+BOTTOM_ZERO_RE = re.compile(
+    rf"(?<![\w-])(?:bottom|inset-block-end)\s*:\s*{ZERO}\s*(?:;|$|!)"
+    rf"|(?<![\w-])inset\s*:\s*auto\s+{ZERO}\s+{ZERO}(?:\s+{ZERO})?\s*(?:;|$|!)"
+    rf"|(?<![\w-])inset-block\s*:\s*auto\s+{ZERO}\s*(?:;|$|!)", re.I)
 SVG_RE = re.compile(r"<svg\b([^>]*)>(.*?)</svg\s*>", re.S | re.I)
 SHAPE_RE = re.compile(r"<(?:rect|circle|ellipse|path|line|polyline|polygon)\b", re.I)
 GENERATED_RE = re.compile(r"<meta\b[^>]*\bname\s*=\s*[\"']?tailplan-theme\b", re.I)
@@ -77,13 +85,31 @@ def _rules(text: str):
         yield offset, tag, decls
 
 
+class _SlotParser(_Parser):
+    """Collect the data-slot attributes of real tags. Prose, code, and pre text never count."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.slots: list[tuple[str, int]] = []
+
+    def handle_starttag(self, tag, attrs):
+        for name, value in attrs:
+            if name.lower() == "data-slot" and value is not None:
+                self.slots.append((value.strip(), self.getpos()[0]))
+        super().handle_starttag(tag, attrs)
+
+
 def _check_slots(text: str, issues: list) -> None:
     known = known_slots()
     sample = sorted(known)
     seen = set()
-    scrubbed = STYLE_RE.sub(_blank, SCRIPT_RE.sub(_blank, text))
-    for match in SLOT_RE.finditer(scrubbed):
-        value = next(g for g in match.groups() if g is not None).strip()
+    parser = _SlotParser()
+    try:
+        parser.feed(text)
+        parser.close()
+    except Exception:  # Bad markup is a validation matter.
+        pass
+    for value, line in parser.slots:
         if not value or value in known or value in seen:
             continue
         seen.add(value)
@@ -91,7 +117,7 @@ def _check_slots(text: str, issues: list) -> None:
         hint = f' Did you mean "{close[0]}"?' if close else ""
         issues.append(_issue(
             "ui-unknown-slot", f'Unknown data-slot "{value}".{hint}',
-            fix="Use a slot from GET /api/ui.", line=_line(scrubbed, match.start())))
+            fix="Use a slot from GET /api/ui.", line=line))
 
 
 def _check_breakpoints(text: str, issues: list) -> None:
@@ -138,10 +164,19 @@ def _check_dark_mode(text: str, opted_in: bool, issues: list) -> None:
     if opted_in or UI_MODE_RE.search(text):
         return
     css = "".join(css for _, css in _css_blocks(text))
-    if css.strip() and not DARK_RE.search(css) and not DARK_RE.search(text):
+    if COLOR_DECL_RE.search(css) and not DARK_RE.search(css) and not DARK_META_RE.search(text):
         issues.append(_issue(
             "ui-no-dark-mode", "The page sets its own CSS and has no dark mode.",
             fix='Add a prefers-color-scheme query, or set <html data-ui-mode="light"> to opt out.'))
+
+
+def _inside_link(text: str, start: int, end: int) -> bool:
+    """Return True when an open <a href> wraps the span from start to end."""
+    opened = [m.start() for m in LINK_RE.finditer(text, 0, start)]
+    if not opened:
+        return False
+    last_close = text.lower().rfind("</a", 0, start)
+    return opened[-1] > last_close and text.lower().find("</a", end) != -1
 
 
 def _check_charts(text: str, issues: list) -> None:
@@ -154,6 +189,8 @@ def _check_charts(text: str, issues: list) -> None:
         chartish = re.search(r"<text\b|data-series|role\s*=\s*[\"']img", attrs + body, re.I)
         if shapes < 3 or not chartish or LINK_RE.search(body):
             continue
+        if _inside_link(scrubbed, match.start(), match.end()):
+            continue
         start = scrubbed.rfind("<figure", 0, match.start())
         if start != -1 and "</figure" not in scrubbed[start:match.start()].lower():
             end = scrubbed.lower().find("</figure", match.end())
@@ -165,6 +202,20 @@ def _check_charts(text: str, issues: list) -> None:
         break
 
 
+def _blank_css_comments(match: re.Match) -> str:
+    start = match.start(1) - match.start()
+    css = match.group(1)
+    css = CSS_TOKEN_RE.sub(lambda m: m.group(1) or re.sub(r"[^\n]", " ", m.group(0)), css)
+    whole = match.group(0)
+    return whole[:start] + css + whole[start + len(match.group(1)):]
+
+
+def _blank_comments(source: str) -> str:
+    """Blank HTML comments, and CSS comments inside style blocks. Strings in CSS stay as they are."""
+    text = HTML_COMMENT_RE.sub(_blank, source)
+    return STYLE_RE.sub(_blank_css_comments, text)
+
+
 def lint(html: str) -> list[dict]:
     """Return the warnings for one page."""
     if not isinstance(html, str):
@@ -172,7 +223,7 @@ def lint(html: str) -> list[dict]:
     source = strip_stamp(html)
     if GENERATED_RE.search(source):
         return []  # Pages that Tailplan renders from Markdown carry their own checked CSS.
-    text = COMMENT_RE.sub(_blank, source)
+    text = _blank_comments(source)
     opted_in = is_opted_in(source)
     issues: list[dict] = []
     if opted_in:

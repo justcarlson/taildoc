@@ -53,4 +53,4 @@ def icon_sprite(names=None) -> str:
             raise KeyError(name)
     symbols = "".join(
         f'<symbol id="{ICON_PREFIX}{name}" viewBox="{VIEW_BOX}">{ICONS[name]}</symbol>' for name in chosen)
-    return f'<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" aria-hidden="true" hidden>{symbols}</svg>'
+    return f'<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" aria-hidden="true" hidden="" style="display:none">{symbols}</svg>'

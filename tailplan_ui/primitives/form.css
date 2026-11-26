@@ -134,6 +134,16 @@
   :where(input[data-slot="checkbox"]:disabled, input[data-slot="switch"]:disabled) { opacity: 0.5; cursor: not-allowed; }
   @media (pointer: coarse) {
     :where(label:has(> input[data-slot="checkbox"], > input[data-slot="switch"])) { display: inline-flex; align-items: center; gap: 0.6rem; min-height: 44px; }
+    :where(input[data-slot="checkbox"]:not(label > *)) { position: relative; }
+    :where(input[data-slot="checkbox"]:not(label > *), input[data-slot="switch"]:not(label > *))::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: max(100%, 44px);
+      height: max(100%, 44px);
+      translate: -50% -50%;
+    }
   }
   @media (prefers-reduced-motion: reduce) {
     :where(input[data-slot="checkbox"], input[data-slot="switch"])::before, :where(input[data-slot="switch"]) { transition: none; }

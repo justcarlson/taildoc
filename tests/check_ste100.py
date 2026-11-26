@@ -39,6 +39,7 @@ def source_paths() -> list[Path]:
     paths.extend((ROOT / "bin").iterdir())
     paths.extend((ROOT / "systemd").iterdir())
     paths.extend((ROOT / "tailplan_web").rglob("*.py"))
+    paths.extend((ROOT / "tailplan_ui").rglob("*.py"))
     paths.extend((ROOT / "tests").glob("*.py"))
     paths.extend((ROOT / "tests").glob("*.sh"))
     paths.extend((ROOT / ".github").rglob("*.yml"))

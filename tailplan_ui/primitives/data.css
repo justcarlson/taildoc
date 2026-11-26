@@ -77,6 +77,7 @@
     color: var(--code-foreground);
     background: var(--code-background);
     border-radius: calc(var(--radius) / 2);
+    overflow-wrap: anywhere;
   }
   :where(pre[data-slot="code"]) {
     margin: 0;
@@ -91,7 +92,7 @@
     border: 1px var(--line) var(--border-subtle);
     border-radius: var(--radius);
   }
-  :where(pre[data-slot="code"] > code) { padding: 0; background: none; font-size: inherit; }
+  :where(pre[data-slot="code"] > code) { padding: 0; background: none; font-size: inherit; overflow-wrap: normal; }
   :where([data-slot="kv"]) { display: grid; margin: 0; }
   :where([data-slot="kv"] > div) {
     display: grid;
