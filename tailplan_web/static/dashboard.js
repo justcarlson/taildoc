@@ -400,6 +400,7 @@ function setDesc(row, draft) {
   if (old) old.replaceWith(...(next ? [next] : [])); else if (next) main.append(next);
 }
 async function remoteSearch() {
+  syncBadge();
   const mine = ++seq;
   const qs = params().toString();
   const page = `${base}/dashboard${qs ? `?${qs}` : ''}`;
@@ -474,7 +475,9 @@ function syncBadge() {
   const summary = toolbar && $('.filters-menu > summary', toolbar);
   if (!summary) return;
   const value = (name) => toolbar.elements[name]?.value || '';
-  const count = [!['', 'updated', 'relevance'].includes(value('sort')), Boolean(value('dir')),
+  const sort = value('sort');
+  const dir = value('dir');
+  const count = [!['', 'updated', 'relevance'].includes(sort), Boolean(dir) && dir !== (sort === 'title' ? 'asc' : 'desc'),
     !['', 'time'].includes(value('group')), Boolean(value('tag')), Boolean(value('repo'))].filter(Boolean).length;
   let badge = $('.filters-count', summary);
   if (count && !badge) summary.append(badge = el('span', { class: 'filters-count' }));

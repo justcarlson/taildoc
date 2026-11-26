@@ -132,7 +132,7 @@ kbd{font-size:11px;color:var(--muted);border:1px solid var(--border);border-radi
 @media(max-width:700px),(max-height:480px){html{scroll-padding-top:8px}.top{border-bottom:0;box-shadow:inset 0 -1px 0 var(--border)}.top .wrap{flex-wrap:nowrap;min-height:44px;padding:4px 12px;gap:8px}.brand{flex:none;white-space:nowrap}.nav{flex-wrap:nowrap;gap:2px;flex:none}.nav a{padding:6px 8px;white-space:nowrap}.account{flex-wrap:nowrap;gap:6px;flex:0 1 auto;min-width:0}.account .sm{white-space:nowrap}.theme-switch button{min-height:0;width:30px;height:30px}.who{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;max-height:20px;min-width:0;overflow-wrap:anywhere}main{padding:4px 12px calc(64px + env(safe-area-inset-bottom, 0px))}}
 @media(max-width:480px),(max-height:480px){.who{display:none}}
 @media(max-width:480px),(max-width:700px) and (max-height:480px){.brand span{display:none}}
-@media(max-width:400px){.nav a[aria-current=page]{display:none}}
+@media(max-width:480px){.nav a[aria-current=page]{display:none}}
 @media(max-width:480px),(hover:none),(pointer:coarse){input,select,textarea{font-size:16px}}
 """
 
@@ -246,7 +246,7 @@ dialog[open]{display:flex;flex-direction:column}
 .tag-editor .pill button:hover{color:var(--danger)}
 .tag-editor input{width:140px;height:28px;font-size:13px}
 .links{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px 48px}
-@media(max-width:600px){.detail-sub,.tag-editor,.links{margin-left:0}.tag-editor input{font-size:16px}}
+@media(max-width:700px){.detail-sub,.tag-editor,.links{margin-left:0}.tag-editor input{font-size:16px}}
 """
 
 # Adaptive density: the layout is a function of width, height, and pointer.
@@ -257,12 +257,12 @@ _ADAPTIVE_CSS = """
 @container(min-width:520px){.list .draft-row .row-meta>a.pill:first-child{display:inline-flex}}
 @container(min-width:720px){.list .draft-row .row-meta>.ver,.list .draft-row .row-meta>.vis{display:inline-flex}}
 @media(max-width:480px),(max-height:480px){.page-head{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%%);white-space:nowrap;border:0}.tab:not([aria-current]) .num{display:none}.facets{margin:0 0 4px}.facets:not(:has(.pill.on)),.facets .label,.facets .pill:not(.on){display:none}.section-head{margin:8px 0 4px}.shelf{display:flex;align-items:center;gap:8px;margin:0 0 4px;min-width:0}.shelf .section-head{display:contents}.shelf h2{flex:none;font-size:13px}.shelf .section-head a{order:2;flex:none;font-size:13px;white-space:nowrap}}
-@media(max-width:480px) and (min-height:481px){.shelf{min-height:40px;max-height:44px}.shelf-grid{order:1;display:flex;flex:1 1 auto;min-width:0;gap:6px}.pin{display:block;flex:0 1 auto;min-width:0;min-height:0;height:32px;padding:0 10px;border-radius:999px}.pin:nth-child(n+3),.pin form,.pin .pin-meta,.pin .details{display:none}.pin-title{font-size:13px;line-height:30px;max-height:30px}}
-@media(min-width:481px) and (max-width:700px) and (min-height:481px){main{padding-top:16px}.pin:nth-child(n+5){display:none}}
-@media(min-width:701px) and (max-height:640px){.shelf-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.pin:nth-child(n+4){display:none}}
+@media(max-width:480px) and (min-height:481px){.shelf{min-height:40px;max-height:44px}.shelf-grid{order:1;display:flex;flex:1 1 auto;min-width:0;gap:6px}.pin{display:block;flex:0 1 auto;min-width:0;min-height:0;height:32px;padding:0 10px;border-radius:999px}.pin:nth-child(n+3 of .pin:not([hidden])),.pin form,.pin .pin-meta,.pin .details{display:none}.pin-title{font-size:13px;line-height:30px;max-height:30px}}
+@media(min-width:481px) and (max-width:700px) and (min-height:481px){main{padding-top:16px}.pin:nth-child(n+5 of .pin:not([hidden])){display:none}}
+@media(min-width:701px) and (max-height:640px){.shelf-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.pin:nth-child(n+4 of .pin:not([hidden])){display:none}}
 @media(max-height:480px){.shelf{height:32px}.shelf-grid{display:none}#dashboard-root{display:flex;flex-wrap:wrap;align-items:flex-start;column-gap:8px}#dashboard-root>*{flex:1 1 100%%;min-width:0}#dashboard-root>.tabs{flex:0 0 auto;border-bottom:0;margin:0}#dashboard-root>.toolbar{flex:1 1 200px;margin:0}.draft-row,.draft-row.shared,.draft-row:has(>.row-select:not([hidden])){min-height:44px}.section-head{margin:4px 0 2px}}
 @media(max-height:480px) and (min-width:560px){.shelf{position:absolute;top:0;left:50%%;transform:translateX(-50%%);z-index:6;height:44px;margin:0;max-width:calc(100vw - 400px)}}
-@media(hover:none),(pointer:coarse){.tab{min-height:44px}.search input,.field select,.bulk-bar input{height:44px}.dir{width:44px;min-height:44px}main button:not(.pill),main .button,.bulk-bar button,.toast button{min-height:44px}}
+@media(hover:none),(pointer:coarse){.tab{min-height:44px}.search input,.field select,.bulk-bar input,.tag-editor input{height:44px}.bulk-bar input,.tag-editor input,.palette input{font-size:16px}.dir{width:44px;min-height:44px}main button:not(.pill),main .button,.bulk-bar button,.toast button{min-height:44px}}
 @media(hover:hover) and (pointer:fine) and (min-width:701px){.search kbd{display:inline-block}.search input{padding-right:44px}}
 @media(hover:hover) and (pointer:fine) and (min-width:1024px){.shortcut-hints{display:flex}}
 @media(max-width:700px),(max-height:500px),(hover:none),(pointer:coarse){.bulk-bar{top:0;bottom:auto;left:0;right:0;transform:none;width:auto;max-width:none;border-width:0 0 1px;border-radius:0;padding:calc(6px + env(safe-area-inset-top, 0px)) 12px 6px;box-shadow:0 6px 24px rgba(0,0,0,.14)}.toasts,.has-bulk .toasts{bottom:calc(64px + env(safe-area-inset-bottom, 0px))}}

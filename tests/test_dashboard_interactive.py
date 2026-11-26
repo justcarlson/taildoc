@@ -456,7 +456,27 @@ def test_the_bulk_bar_docks_at_the_top_on_a_folded_phone(new_context, page, dash
     expect(bar).to_be_visible()
     box = bar.bounding_box()
     assert box["y"] <= 16 and box["x"] == 0 and box["width"] == 382, box
+    # A 16px field stops iOS Safari from zooming in on focus.
+    assert bar.locator("input").first.evaluate("(e) => parseFloat(getComputedStyle(e).fontSize)") >= 16
     assert phone.evaluate("document.documentElement.scrollWidth") == 382
+    assert not dash.errors
+
+
+def test_archived_pins_leave_live_favorites_in_the_compact_strip(page, dash):
+    for slug, _, _ in DRAFTS:
+        favorite(dash, slug)
+    page.set_viewport_size({"width": 382, "height": 580})
+    open_dashboard(page, dash)
+    pins = page.locator(".shelf .pin")
+    expect(pins.locator("visible=true")).to_have_count(2)
+    # Archive the two pins the strip shows. The next two favorites take their places.
+    first = pins.evaluate_all("(ps) => ps.slice(0, 2).map((p) => p.dataset.draftId)")
+    for draft_id in first:
+        page.locator(f'section.group .draft-row[data-draft-id="{draft_id}"] .archive-form button').evaluate("(b) => b.click()")
+        expect(page.locator(f'.pin[data-draft-id="{draft_id}"]')).to_be_hidden()
+    shown = pins.locator("visible=true")
+    expect(shown).to_have_count(2)
+    assert not set(shown.evaluate_all("(ps) => ps.map((p) => p.dataset.draftId)")) & set(first)
     assert not dash.errors
 
 

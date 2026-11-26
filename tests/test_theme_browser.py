@@ -342,7 +342,7 @@ ADAPTIVE_VIEWPORTS = [
 ]
 STRICT_PHONES = {(320, 568), (382, 580), (390, 844), (594, 368)}
 # The first row and how many rows sit fully above the bottom URL pills (56px), for the folded iPhone.
-FOLD_BUDGETS = {(382, 580): (240, 5), (594, 368): (165, 4)}
+FOLD_BUDGETS = {(382, 580): (240, 6), (594, 368): (165, 4)}
 ADAPTIVE_CHECK = """() => {
   const box = (s) => { const e = document.querySelector(s); return e && e.getClientRects().length ? e.getBoundingClientRect().toJSON() : null; };
   const shown = (s) => { const e = document.querySelector(s); return Boolean(e && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden'); };
@@ -371,7 +371,7 @@ def _adaptive_dashboard(theme='dark'):
              'repoHost': 'github.com', 'repoOrg': 'org', 'repoName': 'repo', 'tags': ['ops', 'notes'],
              'workspace': 'team', 'visibility': 'authenticated', 'archived': False} for i in range(12)]
     counts = {'active': 12, 'favorites': 8, 'living': 2, 'shared': 3, 'archived': 1}
-    state = {'view': 'active', 'q': '', 'sort': 'updated', 'direction': 'desc', 'group': 'none', 'tag': '',
+    state = {'view': 'active', 'q': '', 'sort': 'updated', 'direction': 'desc', 'group': 'time', 'tag': '',
              'repo': '', 'counts': counts, 'tags': [{'tag': 'ops', 'count': 12}],
              'repos': [{'repo': 'org/repo', 'count': 12}], 'suggestedTags': {}, 'favorites': rows[:8], 'drafts': rows}
     doc = server.render_dashboard(base, session, rows, state=state, theme=theme)
@@ -385,9 +385,7 @@ def test_dashboard_adapts_to_width_height_and_pointer(new_context, width, height
     page = context.new_page()
     page.set_content(_adaptive_dashboard())
     fit = page.evaluate(PHONE_CHECK)
-    assert fit['scroll'] == width and not fit['escaped'], fit
-    if (width, height) in STRICT_PHONES:
-        assert not fit['sideways'], fit
+    assert fit['scroll'] == width and not fit['escaped'] and not fit['sideways'], fit
     m = page.evaluate(ADAPTIVE_CHECK)
     assert m['html'] == m['body'], m
     if touch:
