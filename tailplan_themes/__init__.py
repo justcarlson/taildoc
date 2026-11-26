@@ -34,6 +34,31 @@ def render_engine() -> str:
     return raw
 
 
+def pigment_families() -> dict[str, dict]:
+    """Return designer Pigment theme families, excluding wireframe-only presets."""
+    return {
+        ident: doc
+        for ident, doc in sorted(ui_tokens.presets().items())
+        if doc.get("kind") == "designer"
+    }
+
+
+def _solved_summary(preset_id: str, mode: str) -> dict[str, str]:
+    """Return the nine document token roles solved from a Pigment preset."""
+    solved = ui_tokens.mode_tokens("theme", preset_id, mode)
+    return {
+        "background": solved["background"],
+        "text": solved["foreground"],
+        "heading": solved["heading"],
+        "accent": solved["primary-ink"],
+        "surface": solved["card"],
+        "border": solved["border"],
+        "muted": solved["muted-foreground"],
+        "code-background": solved["code-background"],
+        "code-text": solved["code-foreground"],
+    }
+
+
 def _validate(value, schema, path="theme"):
     if "const" in schema and (type(value) is not int or value != schema["const"]):
         raise ThemeError(f"{path}: unsupported schema version")
@@ -192,11 +217,34 @@ def resolve_typography(typography=None):
 
 
 def catalog():
+    engine = render_engine()
     themes = registry()
+    families = pigment_families()
     for spec in LAYOUTS.values():
         for name in spec["css"]:
             _asset(ROOT / name)
-    return {**typography_catalog(), "themes": list(themes.values()),
+    combined = {}
+    for ident, palette in themes.items():
+        entry = dict(palette)
+        if ident in families:
+            entry["modes"] = list(MODES)
+        combined[ident] = entry
+    for ident, preset in families.items():
+        if ident in combined:
+            continue
+        combined[ident] = {
+            "schemaVersion": 2,
+            "id": ident,
+            "version": preset["version"],
+            "name": preset["name"],
+            "variant": f"{preset['variants']['light']} / {preset['variants']['dark']}",
+            "mode": "auto",
+            "modes": list(MODES),
+            "source": dict(preset["source"]),
+            "tokens": _solved_summary(ident, ui_solve.LIGHT),
+        }
+    return {**typography_catalog(), "engine": engine,
+            "themes": [combined[ident] for ident in sorted(combined)],
             "selection": policy(themes),
             "layouts": [{"id": ident, "version": spec["version"]} for ident, spec in LAYOUTS.items()]}
 
@@ -251,7 +299,7 @@ def _v1_pigment_tokens(palette: dict, *, with_viz: bool) -> dict[str, str]:
 
 
 def _resolve_target(theme: str, document_type: str, mode: str | None) -> dict:
-    """Resolve a theme name and optional mode to a v1 palette or Pigment preset."""
+    """Resolve a theme name and optional mode to a v1 palette or Pigment family."""
     if mode is not None and (not isinstance(mode, str) or mode not in MODES):
         raise ThemeError("Mode must be auto, light, or dark")
     if not isinstance(theme, str) or not isinstance(document_type, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", document_type):
@@ -259,7 +307,7 @@ def _resolve_target(theme: str, document_type: str, mode: str | None) -> dict:
     themes = registry()
     rules = policy(themes)
     ident = rules["documentTypes"].get(document_type, rules["fallback"]) if theme == "auto" else theme
-    presets = ui_tokens.presets()
+    families = pigment_families()
 
     if ident in themes:
         palette = themes[ident]
@@ -278,7 +326,7 @@ def _resolve_target(theme: str, document_type: str, mode: str | None) -> dict:
             raise ThemeError(f"Custom theme {ident} supports only {palette['mode']} mode")
         return {"kind": "v1", "id": ident, "preset": None, "pinned": palette["mode"], "v1": palette}
 
-    if ident in presets:
+    if ident in families:
         pinned = None if mode in (None, "auto") else mode
         return {"kind": "preset", "id": ident, "preset": ident, "pinned": pinned, "v1": None}
 
@@ -343,44 +391,53 @@ def _legacy_variables(target: dict, fonts: dict, *, with_viz: bool) -> tuple[str
 def _frozen_metadata(target: dict, fonts: dict, layout: str, css: str,
                      document_type: str, selection: str, engine: str) -> dict:
     font_json = json.dumps(fonts, sort_keys=True, separators=(",", ":"))
-    if target["v1"] is not None:
+    renderer_version = 5 if engine == "ui" else 4
+    rendered_mode = target["pinned"] or "auto"
+    use_v1 = (
+        target["kind"] == "v1"
+        or (engine == "legacy" and target["v1"] is not None and target["pinned"] == target["v1"]["mode"])
+    )
+    if use_v1:
         palette = target["v1"]
         canonical = json.dumps(palette, sort_keys=True, separators=(",", ":"))
-        frozen = {
+        return {
             "id": palette["id"], "version": palette["version"], "schemaVersion": 1,
             "sha256": hashlib.sha256(canonical.encode()).hexdigest(),
+            "mode": palette["mode"], "engine": engine,
             "tokens": dict(palette["tokens"]), "source": dict(palette["source"]),
             "typography": {**fonts, "sha256": hashlib.sha256(font_json.encode()).hexdigest()},
             "layout": layout, "layoutVersion": LAYOUTS[layout]["version"],
             "layoutSha256": hashlib.sha256(css.encode()).hexdigest(),
-            "rendererVersion": 4, "documentType": document_type, "selection": selection,
+            "rendererVersion": renderer_version, "documentType": document_type, "selection": selection,
         }
-        if target["pinned"] != palette["mode"]:
-            frozen["mode"] = target["pinned"] or "auto"
-        return frozen
 
     preset = ui_tokens.presets()[target["preset"]]
-    canonical = json.dumps(preset, sort_keys=True, separators=(",", ":"))
     mode_key = target["pinned"] or ui_solve.LIGHT
-    solved = ui_tokens.mode_tokens("theme", target["preset"], mode_key)
-    return {
-        "id": target["id"], "version": preset["version"], "schemaVersion": 2,
+    solved_tokens = _solved_summary(target["preset"], mode_key)
+    digest_input = {
+        "id": target["id"], "preset": preset, "mode": rendered_mode,
+        "tokens": solved_tokens,
+    }
+    if target["pinned"] is None:
+        digest_input["darkTokens"] = _solved_summary(target["preset"], ui_solve.DARK)
+    canonical = json.dumps(digest_input, sort_keys=True, separators=(",", ":"))
+    source = dict(target["v1"]["source"]) if target["v1"] is not None else dict(preset["source"])
+    version = target["v1"]["version"] if target["v1"] is not None else preset["version"]
+    schema_version = 1 if (target["v1"] is not None and target["pinned"] == target["v1"]["mode"]) else 2
+    frozen = {
+        "id": target["id"], "version": version, "schemaVersion": schema_version,
         "sha256": hashlib.sha256(canonical.encode()).hexdigest(),
-        "mode": target["pinned"] or "auto",
-        "engine": engine,
-        "tokens": {
-            "background": solved["background"], "text": solved["foreground"],
-            "heading": solved["heading"], "accent": solved["primary-ink"],
-            "surface": solved["card"], "border": solved["border"],
-            "muted": solved["muted-foreground"],
-            "code-background": solved["code-background"], "code-text": solved["code-foreground"],
-        },
-        "source": dict(preset["source"]),
+        "mode": rendered_mode, "engine": engine,
+        "tokens": solved_tokens,
+        "source": source,
         "typography": {**fonts, "sha256": hashlib.sha256(font_json.encode()).hexdigest()},
         "layout": layout, "layoutVersion": LAYOUTS[layout]["version"],
         "layoutSha256": hashlib.sha256(css.encode()).hexdigest(),
-        "rendererVersion": 4, "documentType": document_type, "selection": selection,
+        "rendererVersion": renderer_version, "documentType": document_type, "selection": selection,
     }
+    if target["pinned"] is None:
+        frozen["darkTokens"] = digest_input["darkTokens"]
+    return frozen
 
 
 def render(content, *, format="markdown", filename="document.md", theme="auto",

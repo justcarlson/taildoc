@@ -27,22 +27,45 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 _SCRIPT_PATH = Path(__file__).resolve()
-for _pkg_root in (
-    _SCRIPT_PATH.parents[1],
-    Path(os.getenv("TAILPLAN_SHARE_DIR", str(Path.home() / ".local" / "share" / "tailplan"))),
-    Path("/usr/local/lib/tailplan"),
-):
-    if (_pkg_root / "tailplan_ui").is_dir() and str(_pkg_root) not in sys.path:
-        sys.path.insert(0, str(_pkg_root))
+
+
+def _share_dir_candidates() -> list[Path]:
+    """Return candidate directories that may hold an installed tailplan_ui package."""
+    candidates: list[Path] = []
+    env_dir = os.getenv("TAILPLAN_SHARE_DIR")
+    if env_dir:
+        candidates.append(Path(env_dir).expanduser())
+    marker = _SCRIPT_PATH.with_name(".tailplan-share-dir")
+    try:
+        recorded = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        recorded = ""
+    if recorded:
+        candidates.append(Path(recorded).expanduser())
+    candidates.append(_SCRIPT_PATH.parents[1])
+    candidates.append(Path.home() / ".local" / "share" / "tailplan")
+    candidates.append(Path("/usr/local/lib/tailplan"))
+    return candidates
 
 
 def _import_tailplan_ui():
-    """Return the tailplan_ui package when available on sys.path."""
+    """Return tailplan_ui, appending an installed share directory only if needed."""
     try:
         import tailplan_ui
+        return tailplan_ui
     except ImportError:
-        return None
-    return tailplan_ui
+        pass
+    for root in _share_dir_candidates():
+        if (root / "tailplan_ui" / "__init__.py").is_file():
+            entry = str(root)
+            if entry not in sys.path:
+                sys.path.append(entry)
+            try:
+                import tailplan_ui
+                return tailplan_ui
+            except ImportError:
+                continue
+    return None
 
 
 CLI_VERSION = "0.6.0"
@@ -1832,9 +1855,9 @@ def html_document(title: str, body: str, source_name: str) -> str:
         f'{body}\n</div>\n</main>\n</body>\n</html>\n'
     )
     ui = _import_tailplan_ui()
-    if ui is not None:
-        return ui.bundle(raw, target="standalone")[0]
-    return raw
+    if ui is None:
+        raise ConfigurationFailure("tailplan_ui package is missing; re-run install-client.sh.")
+    return ui.bundle(raw, target="standalone")[0]
 
 
 def build_html(path: Path, *, home: Path | None = None) -> Path:

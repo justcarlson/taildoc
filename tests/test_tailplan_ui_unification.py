@@ -5,16 +5,15 @@ import copy
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 import tailplan_server as server
 import tailplan_themes as themes
-import tailplan_ui
 from tailplan_ui import lint
 from tailplan_ui.color import tokens as ui_tokens
 from tailplan_web import render as web_render
@@ -40,22 +39,57 @@ def test_markdown_and_brief_render_under_both_engines(monkeypatch, engine):
     reading_doc, reading_meta = themes.render(KITCHEN_SINK, theme="warm-editorial")
     assert server.validate_html(reading_doc)[0]
     assert reading_meta["layout"] == "reading" and reading_meta["layoutVersion"] == 5
+    assert reading_meta["engine"] == engine
+    assert reading_meta["rendererVersion"] == (5 if engine == "ui" else 4)
     assert ("@layer tp.tokens" in reading_doc) == (engine == "ui")
 
     brief_doc, brief_meta = themes.render(BRIEF_FIXTURE.read_text(encoding="utf-8"), layout="brief")
     assert server.validate_html(brief_doc)[0]
     assert brief_meta["layout"] == "brief" and brief_meta["layoutVersion"] == 2
+    assert brief_meta["engine"] == engine
     assert "--chart-1:" in brief_doc and "--success:" in brief_doc
     assert ("@layer tp.tokens" in brief_doc) == (engine == "ui")
 
 
-def test_default_engine_is_ui_and_invalid_engine_fails_closed(monkeypatch):
-    """Default render engine is ui. Unknown values raise ThemeError."""
+def test_default_engine_is_ui_and_invalid_engine_fails_closed(monkeypatch, tmp_path):
+    """Default render engine is ui. Unknown values fail render and server startup."""
     monkeypatch.delenv("TAILPLAN_RENDER_ENGINE", raising=False)
     assert themes.render_engine() == "ui"
     monkeypatch.setenv("TAILPLAN_RENDER_ENGINE", "bogus")
     with pytest.raises(themes.ThemeError, match="TAILPLAN_RENDER_ENGINE"):
         themes.render("# Test")
+    with pytest.raises(themes.ThemeError, match="TAILPLAN_RENDER_ENGINE"):
+        themes.catalog()
+    store = server.Store(tmp_path / "data")
+    with pytest.raises(themes.ThemeError, match="TAILPLAN_RENDER_ENGINE"):
+        server.create_servers(("127.0.0.1", 0), None, store=store, token="t",
+                              base_url="http://127.0.0.1", redirect_view_base_url="")
+
+
+def test_catalog_exposes_pigment_families_and_rejects_wire():
+    """catalog() lists every designer Pigment family and excludes wireframe-only wire."""
+    ids = {entry["id"] for entry in themes.catalog()["themes"]}
+    assert set(PIGMENT_FAMILIES) <= ids
+    assert set(LEGACY_SUFFIXED) <= ids
+    assert "wire" not in ids
+    with pytest.raises(themes.ThemeError, match="Unknown theme: wire"):
+        themes.render("# Wire", theme="wire")
+
+
+def test_frozen_metadata_tracks_mode_overrides_and_engine():
+    """Frozen metadata reflects solved tokens and sha256 for the rendered mode."""
+    light_doc, light_meta = themes.render("# Mode", theme="warm-editorial", mode="light")
+    dark_doc, dark_meta = themes.render("# Mode", theme="warm-editorial", mode="dark")
+    auto_doc, auto_meta = themes.render("# Mode", theme="warm-editorial", mode="auto")
+    assert light_meta["mode"] == "light" and dark_meta["mode"] == "dark" and auto_meta["mode"] == "auto"
+    assert light_meta["engine"] == dark_meta["engine"] == auto_meta["engine"] == "ui"
+    assert dark_meta["tokens"]["background"] == ui_tokens.mode_tokens("theme", "warm-editorial", "dark")["background"]
+    assert dark_meta["tokens"]["background"] != light_meta["tokens"]["background"]
+    assert dark_meta["sha256"] != light_meta["sha256"]
+    assert auto_meta["sha256"] != light_meta["sha256"]
+    assert auto_meta["darkTokens"]["background"] == dark_meta["tokens"]["background"]
+    assert dark_meta["tokens"]["background"] in dark_doc
+    assert "light-dark(" in auto_doc and "light-dark(" not in light_doc
 
 
 @pytest.mark.parametrize("engine", ("ui", "legacy"))
@@ -68,7 +102,7 @@ def test_custom_v1_theme_dir_renders_reading_and_brief(tmp_path, monkeypatch, en
     monkeypatch.setenv("TAILPLAN_RENDER_ENGINE", engine)
 
     doc, meta = themes.render("# Custom", theme="admin-custom")
-    assert meta["id"] == "admin-custom"
+    assert meta["id"] == "admin-custom" and meta["engine"] == engine
     assert server.validate_html(doc)[0]
     assert palette["tokens"]["background"] in doc
 
@@ -180,13 +214,44 @@ def test_web_css_unifies_onto_pigment_graphite_without_hardcoded_hexes():
         assert role in web_render.WEB_CSS
 
 
+def test_install_sh_stages_tailplan_ui_first_and_imports_from_outside_repo(tmp_path):
+    """install.sh stages tailplan_ui before tailplan_themes and tailplan_web."""
+    script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    ui_pos = script.index('cp -a "$SCRIPT_DIR/tailplan_ui" "$STAGE_DIR/tailplan_ui"')
+    themes_pos = script.index('cp -a "$SCRIPT_DIR/tailplan_themes" "$STAGE_DIR/tailplan_themes"')
+    web_pos = script.index('cp -a "$SCRIPT_DIR/tailplan_web" "$STAGE_DIR/tailplan_web"')
+    assert ui_pos < themes_pos < web_pos
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    for pkg in ("tailplan_ui", "tailplan_themes", "tailplan_web"):
+        shutil.copytree(ROOT / pkg, stage / pkg, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+
+    check = subprocess.run(
+        [
+            sys.executable, "-I", "-S", "-c",
+            "import pathlib, sys; stage = pathlib.Path(sys.argv[1]).resolve(); sys.path.append(str(stage)); "
+            "import tailplan_ui, tailplan_themes, tailplan_web.assets as a, tailplan_web.render as r; "
+            "assert pathlib.Path(tailplan_ui.__file__).resolve().is_relative_to(stage); "
+            "assert pathlib.Path(tailplan_themes.__file__).resolve().is_relative_to(stage); "
+            "assert pathlib.Path(r.__file__).resolve().is_relative_to(stage); "
+            "tailplan_themes.catalog(); a.check_ready()",
+            str(stage),
+        ],
+        cwd="/tmp",
+        capture_output=True,
+        text=True,
+    )
+    assert check.returncode == 0, check.stdout + check.stderr
+
+
 def test_share_cli_retires_legacy_css_and_client_installer_packages_tailplan_ui(tmp_path):
-    """install-client.sh packages tailplan_ui and lets installed CLI bundle locally outside the repo."""
+    """install-client.sh packages tailplan_ui and lets isolated python3 -I -S import it."""
     assert not hasattr(share_mod, "CSS")
     bin_dir = tmp_path / "bin"
     skills_root = tmp_path / "skills"
-    share_dir = tmp_path / "share"
-    env = {
+    share_dir = tmp_path / "custom-share"
+    install_env = {
         **os.environ,
         "HOME": str(tmp_path),
         "TAILPLAN_BIN_DIR": str(bin_dir),
@@ -194,29 +259,58 @@ def test_share_cli_retires_legacy_css_and_client_installer_packages_tailplan_ui(
         "TAILPLAN_SHARE_DIR": str(share_dir),
     }
 
-    subprocess.run(["bash", str(ROOT / "install-client.sh")], cwd=ROOT, env=env, check=True, capture_output=True)
+    subprocess.run(["bash", str(ROOT / "install-client.sh")], cwd=ROOT, env=install_env, check=True, capture_output=True)
     ui_dir = share_dir / "tailplan_ui"
     assert (ui_dir / "__init__.py").is_file()
     assert (ui_dir / "bundler.py").is_file()
     assert (ui_dir / "palettes" / "graphite.json").is_file()
+    assert (bin_dir / ".tailplan-share-dir").read_text(encoding="utf-8").strip() == str(share_dir)
 
-    # Load installed tailplan-publisher from an isolated cwd outside the repo checkout.
+    # Run isolated python3 -I -S WITHOUT TAILPLAN_SHARE_DIR so the marker file must resolve ui_dir.
+    run_env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "TAILPLAN_SHARE_DIR")}
+    run_env["HOME"] = str(tmp_path)
     check = subprocess.run(
         [
-            sys.executable, "-c",
-            "import runpy; "
-            f"ns = runpy.run_path({str(bin_dir / 'tailplan-publisher')!r}); "
+            sys.executable, "-I", "-S", "-c",
+            "import pathlib, runpy, sys; "
+            "ns = runpy.run_path(sys.argv[1]); "
             "doc = ns['html_document']('T', '<p>Hi</p>', 'a.md'); "
             "assert 'id=\"tp-ui\"' in doc and '#2563eb' not in doc and '640px' not in doc; "
-            "import tailplan_ui; assert tailplan_ui.catalog()['items']",
+            "import tailplan_ui; "
+            "assert pathlib.Path(tailplan_ui.__file__).resolve().is_relative_to(pathlib.Path(sys.argv[2]).resolve()); "
+            "assert tailplan_ui.catalog()['items']",
+            str(bin_dir / "tailplan-publisher"),
+            str(ui_dir),
         ],
         cwd=tmp_path,
-        env=env,
+        env=run_env,
         capture_output=True,
         text=True,
     )
     assert check.returncode == 0, check.stdout + check.stderr
 
+    # Removing ui_dir must make html_document() fail closed with ConfigurationFailure.
+    shutil.rmtree(ui_dir)
+    broken = subprocess.run(
+        [
+            sys.executable, "-I", "-S", "-c",
+            "import runpy, sys\nns = runpy.run_path(sys.argv[1])\n"
+            "try:\n"
+            "    ns['html_document']('T', '<p>Hi</p>', 'a.md')\n"
+            "except ns['ConfigurationFailure'] as exc:\n"
+            "    assert 'tailplan_ui' in str(exc)\n"
+            "else:\n"
+            "    raise SystemExit('expected ConfigurationFailure')",
+            str(bin_dir / "tailplan-publisher"),
+        ],
+        cwd=tmp_path,
+        env=run_env,
+        capture_output=True,
+        text=True,
+    )
+    assert broken.returncode == 0, broken.stdout + broken.stderr
+
     subprocess.run(["bash", str(ROOT / "install-client.sh"), "--uninstall"],
-                   cwd=ROOT, env=env, check=True, capture_output=True)
+                   cwd=ROOT, env=install_env, check=True, capture_output=True)
     assert not ui_dir.exists()
+    assert not (bin_dir / ".tailplan-share-dir").exists()

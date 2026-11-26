@@ -40,9 +40,14 @@ def test_palette_schema_contrast_and_deterministic_document(ident):
     assert server.validate_html(doc)[0]
     assert '<script>' not in doc
     assert '<table role="table">' in doc and 'aria-label="Code block"><code' in doc
-    assert frozen['tokens'] == palette['tokens']
+    assert frozen['engine'] == 'ui' and frozen['rendererVersion'] == 5
+    assert frozen['tokens']['background'] == palette['tokens']['background']
     assert f'<meta name="theme-color" content="{palette["tokens"]["background"]}">' in doc
     assert (themes.ROOT / palette['source']['licenseFile']).is_file()
+    with patch.dict(os.environ, {'TAILPLAN_RENDER_ENGINE': 'legacy'}):
+        _, legacy_frozen = themes.render(KITCHEN_SINK, theme=ident)
+        assert legacy_frozen['engine'] == 'legacy' and legacy_frozen['rendererVersion'] == 4
+        assert legacy_frozen['tokens'] == palette['tokens']
 
 
 def test_new_palette_is_discovered_without_renderer_changes(tmp_path):
@@ -51,7 +56,7 @@ def test_new_palette_is_discovered_without_renderer_changes(tmp_path):
     (tmp_path / 'custom.json').write_text(json.dumps(palette))
     with patch.dict(os.environ, {'TAILPLAN_THEME_DIR': str(tmp_path)}):
         assert themes.resolve('custom-palette')['name'] == 'Custom palette'
-        assert len(themes.catalog()['themes']) == 9
+        assert len(themes.catalog()['themes']) == 15
         assert themes.render('# Test', theme='custom-palette')[1]['id'] == 'custom-palette'
 
 
@@ -99,7 +104,7 @@ def test_text_is_prose_with_literal_markup():
 
 def test_api_publication_freezes_theme_and_preserves_html(api):
     status, _, catalog = api.api('/api/themes', token=None)
-    assert status == 200 and len(catalog['themes']) == 8
+    assert status == 200 and len(catalog['themes']) == 14
     historical = '<!doctype html>\r\n<title>Old</title><p style="color:purple">Keep bytes</p>'
     first = api.upload(historical)
     status, _, result = api.api('/api/uploads', 'POST', {
@@ -152,7 +157,7 @@ def test_real_cli_upload_listing_and_static_html(api, tmp_path):
         assert result.returncode == 0, result.stdout + result.stderr
         return json.loads(result.stdout)
     token.unlink()
-    assert len(cli('themes', '--json')['themes']) == 8
+    assert len(cli('themes', '--json')['themes']) == 14
     token.write_text('bootstrap-test')
     source = tmp_path / 'example.md'
     source.write_text(KITCHEN_SINK)

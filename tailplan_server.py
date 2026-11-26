@@ -7153,6 +7153,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/readyz":
             try:
                 self.store.check_ready()
+                tailplan_themes.render_engine()
                 tailplan_themes.catalog()
                 tailplan_ui.catalog()
                 tailplan_ui.bundler.chunks()
@@ -8423,6 +8424,7 @@ def create_servers(
     session_secret: str | None = None,
     auth: AuthConfig | None = None,
 ) -> tuple[TailplanHTTPServer, TailplanHTTPServer | None]:
+    tailplan_themes.render_engine()
     proxy = None
     if proxy_address is not None:
         try:

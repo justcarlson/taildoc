@@ -248,9 +248,11 @@ def test_client_installer_installs_and_removes_only_client_files(tmp_path: Path)
 
     client = bin_dir / "tailplan-share"
     skill = skills_root / "tailplan" / "SKILL.md"
+    marker = bin_dir / ".tailplan-share-dir"
     ui_dir = share_dir / "tailplan_ui"
     assert client.read_bytes() == REMOTE_CLIENT.read_bytes()
     assert skill.read_bytes() == SKILL.read_bytes()
+    assert marker.read_text(encoding="utf-8").strip() == str(share_dir)
     assert (ui_dir / "__init__.py").is_file()
     assert (ui_dir / "registry.json").is_file()
     assert "Configure the tailplan-server SSH alias" in installed.stdout
@@ -265,6 +267,7 @@ def test_client_installer_installs_and_removes_only_client_files(tmp_path: Path)
         text=True,
     )
     assert not client.exists()
+    assert not marker.exists()
     assert not skill.exists()
     assert not ui_dir.exists()
 

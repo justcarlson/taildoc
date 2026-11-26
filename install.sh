@@ -601,15 +601,15 @@ for source in \
 done
 STAGE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tailplan-install.XXXXXX")"
 mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/skills/tailplan" "$STAGE_DIR/systemd"
-cp -a "$SCRIPT_DIR/tailplan_themes" "$STAGE_DIR/tailplan_themes"
-find "$STAGE_DIR/tailplan_themes" -type d -name __pycache__ -prune -exec rm -rf {} +
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_themes; tailplan_themes.catalog()'
-cp -a "$SCRIPT_DIR/tailplan_web" "$STAGE_DIR/tailplan_web"
-find "$STAGE_DIR/tailplan_web" -type d -name __pycache__ -prune -exec rm -rf {} +
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_web.assets as a, tailplan_web.render; a.check_ready()'
 cp -a "$SCRIPT_DIR/tailplan_ui" "$STAGE_DIR/tailplan_ui"
 find "$STAGE_DIR/tailplan_ui" -type d -name __pycache__ -prune -exec rm -rf {} +
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_ui; tailplan_ui.catalog(); tailplan_ui.bundler.chunks()'
+(cd "$STAGE_DIR" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_ui; tailplan_ui.catalog(); tailplan_ui.bundler.chunks()')
+cp -a "$SCRIPT_DIR/tailplan_themes" "$STAGE_DIR/tailplan_themes"
+find "$STAGE_DIR/tailplan_themes" -type d -name __pycache__ -prune -exec rm -rf {} +
+(cd "$STAGE_DIR" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_themes; tailplan_themes.catalog()')
+cp -a "$SCRIPT_DIR/tailplan_web" "$STAGE_DIR/tailplan_web"
+find "$STAGE_DIR/tailplan_web" -type d -name __pycache__ -prune -exec rm -rf {} +
+(cd "$STAGE_DIR" && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_web.assets as a, tailplan_web.render; a.check_ready()')
 install -m 755 "$SCRIPT_DIR/tailplan_server.py" "$STAGE_DIR/tailplan_server.py"
 install -m 755 "$SCRIPT_DIR/bin/run-tailplan" "$STAGE_DIR/bin/run-tailplan"
 install -m 755 "$SCRIPT_DIR/bin/tailplan-share" "$STAGE_DIR/bin/tailplan-share"
