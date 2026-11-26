@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 2,
+  "id": "graphite",
+  "version": 1,
+  "kind": "designer",
+  "name": "Graphite",
+  "description": "Crisp, achromatic, high-contrast neutral UI. In-house.",
+  "variants": {
+    "light": "Light",
+    "dark": "Dark"
+  },
+  "source": {
+    "url": "https://github.com/justcarlson/taildoc",
+    "revision": "original",
+    "license": "MIT",
+    "licenseFile": "licenses/tailplan.txt"
+  },
+  "radius": "6px",
+  "line": "solid",
+  "viz": "editorial",
+  "accentName": "mono",
+  "modes": {
+    "light": {
+      "background": "#ffffff",
+      "foreground": "#09090b",
+      "card": "#fafafa",
+      "muted": "#f4f4f5",
+      "muted-foreground": "#52525b",
+      "border": "#e4e4e7",
+      "border-strong": "#a1a1aa",
+      "code-background": "#f4f4f5",
+      "code-foreground": "#09090b",
+      "accent": "#18181b",
+      "destructive": "#dc2626",
+      "warning": "#b45309",
+      "success": "#15803d",
+      "info": "#1d4ed8"
+    },
+    "dark": {
+      "background": "#0a0a0a",
+      "foreground": "#fafafa",
+      "card": "#111111",
+      "muted": "#1c1c1e",
+      "muted-foreground": "#a1a1aa",
+      "border": "#27272a",
+      "border-strong": "#52525b",
+      "code-background": "#1c1c1e",
+      "code-foreground": "#fafafa",
+      "accent": "#fafafa",
+      "destructive": "#f87171",
+      "warning": "#fbbf24",
+      "success": "#4ade80",
+      "info": "#60a5fa"
+    }
+  }
+}

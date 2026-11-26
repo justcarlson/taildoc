@@ -1,0 +1,34 @@
+/* tp.density: Duo-safe width tiers, short screens, and touch targets. */
+/* The tiers are 480px and below, 481px to 700px, and 701px and up. */
+/* @chunk density when=always */
+@layer tp.density {
+  :root {
+    --tap: 32px;
+    --gutter: 16px;
+    --space: 1rem;
+    --measure: 68ch;
+    --safe-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+  }
+  @media (max-width: 480px) { :root { --gutter: 16px; --measure: 100%; } }
+  @media (min-width: 481px) and (max-width: 700px) { :root { --gutter: 20px; } }
+  @media (min-width: 701px) { :root { --gutter: 32px; --space: 1.125rem; } }
+  @media (max-height: 480px) { :root { --space: 0.75rem; --gutter: 16px; } }
+  @media (pointer: coarse) {
+    :root { --tap: 44px; }
+    input, select, textarea { font-size: max(16px, 1em); }
+  }
+}
+/* @chunk kbd when=slot:kbd-hint */
+@layer tp.density {
+  [data-slot="kbd-hint"] { display: none; }
+  @media (hover: hover) and (pointer: fine) { [data-slot="kbd-hint"] { display: revert; } }
+  @media (pointer: coarse) { [data-slot="kbd-hint"] { display: none; } }
+}
+/* Line clamps use the box clamp, never nowrap with an ellipsis. */
+/* @chunk clamp when=attr:data-clamp */
+@layer tp.density {
+  [data-clamp] { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+  [data-clamp="1"] { -webkit-line-clamp: 1; line-clamp: 1; }
+  [data-clamp="2"] { -webkit-line-clamp: 2; line-clamp: 2; }
+  [data-clamp="3"] { -webkit-line-clamp: 3; line-clamp: 3; }
+}

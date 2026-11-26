@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 2,
+  "surfaces": {
+    "paper": {"name": "Paper", "hue": 85, "chroma": 0.012, "ramp": "standard", "accent": "olive"},
+    "sand": {"name": "Sand", "hue": 75, "chroma": 0.016, "ramp": "standard", "accent": "rust"},
+    "stone": {"name": "Stone", "hue": 60, "chroma": 0.008, "ramp": "standard", "accent": "teal"},
+    "slate": {"name": "Slate", "hue": 255, "chroma": 0.015, "ramp": "standard", "accent": "cobalt"},
+    "zinc": {"name": "Zinc", "hue": 285, "chroma": 0.006, "ramp": "standard", "accent": "indigo"},
+    "ink": {"name": "Ink", "hue": 260, "chroma": 0.012, "ramp": "deep", "accent": "cobalt"},
+    "oled": {"name": "OLED", "hue": 0, "chroma": 0, "ramp": "oled", "accent": "cyan"},
+    "wire": {"name": "Wire", "hue": 0, "chroma": 0, "ramp": "wire", "accent": "mono", "line": "dashed", "radius": "3px"}
+  },
+  "ramps": {
+    "standard": {
+      "light": {"background": 0.985, "card": 0.997, "muted": 0.955, "border": 0.89, "border-strong": 0.74, "foreground": 0.24, "muted-foreground": 0.5, "code-background": 0.955},
+      "dark": {"background": 0.19, "card": 0.225, "muted": 0.27, "border": 0.33, "border-strong": 0.46, "foreground": 0.94, "muted-foreground": 0.75, "code-background": 0.24}
+    },
+    "deep": {
+      "light": {"background": 0.99, "card": 1.0, "muted": 0.95, "border": 0.86, "border-strong": 0.66, "foreground": 0.17, "muted-foreground": 0.42, "code-background": 0.95},
+      "dark": {"background": 0.15, "card": 0.18, "muted": 0.23, "border": 0.3, "border-strong": 0.45, "foreground": 0.97, "muted-foreground": 0.8, "code-background": 0.2}
+    },
+    "oled": {
+      "light": {"background": 1.0, "card": 1.0, "muted": 0.96, "border": 0.88, "border-strong": 0.7, "foreground": 0.18, "muted-foreground": 0.45, "code-background": 0.96},
+      "dark": {"background": 0.0, "card": 0.12, "muted": 0.18, "border": 0.27, "border-strong": 0.42, "foreground": 0.96, "muted-foreground": 0.76, "code-background": 0.14}
+    },
+    "wire": {
+      "light": {"background": 1.0, "card": 1.0, "muted": 0.96, "border": 0.62, "border-strong": 0.2, "foreground": 0.2, "muted-foreground": 0.45, "code-background": 0.96},
+      "dark": {"background": 0.18, "card": 0.18, "muted": 0.24, "border": 0.55, "border-strong": 0.95, "foreground": 0.95, "muted-foreground": 0.75, "code-background": 0.24}
+    }
+  },
+  "status": {
+    "destructive": {"hue": 27, "chroma": 0.19},
+    "warning": {"hue": 70, "chroma": 0.15},
+    "success": {"hue": 150, "chroma": 0.14},
+    "info": {"hue": 250, "chroma": 0.14}
+  },
+  "accents": {
+    "olive": {"name": "Olive", "light": "#536447", "dark": "#9cb08a"},
+    "cobalt": {"name": "Cobalt", "light": "#2563eb", "dark": "#3b82f6"},
+    "indigo": {"name": "Indigo", "light": "#4f46e5", "dark": "#6366f1"},
+    "violet": {"name": "Violet", "light": "#7c3aed", "dark": "#8b5cf6"},
+    "plum": {"name": "Plum", "light": "#a21caf", "dark": "#c026d3"},
+    "crimson": {"name": "Crimson", "light": "#d6264f", "dark": "#e5486a"},
+    "rust": {"name": "Rust", "light": "#c2410c", "dark": "#ea580c"},
+    "amber": {"name": "Amber", "light": "#ffb224", "dark": "#ffb224"},
+    "gold": {"name": "Gold", "light": "#d4a72c", "dark": "#d4a72c"},
+    "lime": {"name": "Lime", "light": "#a3e635", "dark": "#a3e635"},
+    "emerald": {"name": "Emerald", "light": "#059669", "dark": "#10b981"},
+    "teal": {"name": "Teal", "light": "#0d9488", "dark": "#14b8a6"},
+    "cyan": {"name": "Cyan", "light": "#06b6d4", "dark": "#06b6d4"},
+    "mono": {"name": "Mono", "light": "#18181b", "dark": "#fafafa"}
+  },
+  "viz": {
+    "editorial": {
+      "name": "Editorial",
+      "note": "The eight brief topic colors.",
+      "light": ["#5d6a2c", "#a8701a", "#a34d5f", "#3f6b8f", "#b6412d", "#2f7d74", "#6d5a9c", "#78736a"],
+      "dark": ["#b3bf74", "#d6a046", "#d27b8d", "#78a3c9", "#e07360", "#63b8ad", "#ab99da", "#a19c90"],
+      "sequential": 250,
+      "diverging": [35, 250]
+    },
+    "okabe-ito": {
+      "name": "Okabe-Ito",
+      "source": "https://jfly.uni-koeln.de/color/",
+      "light": ["#e69f00", "#56b4e9", "#009e73", "#f0e442", "#0072b2", "#d55e00", "#cc79a7", "#000000"],
+      "dark": ["#e69f00", "#56b4e9", "#009e73", "#f0e442", "#0072b2", "#d55e00", "#cc79a7", "#ffffff"],
+      "sequential": 250,
+      "diverging": [60, 250]
+    },
+    "tol-bright": {
+      "name": "Tol Bright",
+      "source": "https://personal.sron.nl/~pault/",
+      "light": ["#4477aa", "#ee6677", "#228833", "#ccbb44", "#66ccee", "#aa3377", "#bbbbbb", "#000000"],
+      "dark": ["#4477aa", "#ee6677", "#228833", "#ccbb44", "#66ccee", "#aa3377", "#bbbbbb", "#ffffff"],
+      "sequential": 255,
+      "diverging": [20, 255]
+    },
+    "tol-muted": {
+      "name": "Tol Muted",
+      "source": "https://personal.sron.nl/~pault/",
+      "light": ["#cc6677", "#332288", "#ddcc77", "#117733", "#88ccee", "#882255", "#44aa99", "#999933"],
+      "dark": ["#cc6677", "#332288", "#ddcc77", "#117733", "#88ccee", "#882255", "#44aa99", "#999933"],
+      "sequential": 160,
+      "diverging": [350, 220]
+    },
+    "blue-amber": {
+      "name": "Blue and Amber",
+      "light": ["#1f4e9c", "#e8a33d", "#5b8fd6", "#9c5c0a", "#0f2f66", "#f2c46d", "#8fb3e6", "#6b3e05"],
+      "dark": ["#1f4e9c", "#e8a33d", "#5b8fd6", "#9c5c0a", "#0f2f66", "#f2c46d", "#8fb3e6", "#6b3e05"],
+      "sequential": 255,
+      "diverging": [70, 255]
+    },
+    "monochrome": {
+      "name": "Monochrome",
+      "generator": "lightness",
+      "sequential": 0,
+      "diverging": [0, 0]
+    }
+  }
+}

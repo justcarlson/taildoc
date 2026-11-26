@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="tailplan-ui" content="theme=warm-editorial viz=editorial">
+<title>Duo rollout plan</title>
+<style>
+main { max-width: 72rem; margin: 0 auto; padding: var(--gutter); }
+header p { color: var(--muted-foreground); margin: 0; }
+.grid { display: grid; gap: var(--space); grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); }
+.card { background: var(--card); color: var(--card-foreground); border: 1px var(--line) var(--border); border-radius: var(--radius); padding: var(--space); }
+.card h3 { margin: 0 0 0.4rem; }
+.pill { display: inline-block; padding: 0.1rem 0.55rem; border-radius: 999px; background: var(--accent); color: var(--accent-foreground); font-size: 0.85em; }
+.done { background: var(--success-surface); color: var(--success); }
+.risk { background: var(--warning-surface); color: var(--warning); }
+.bar { display: flex; height: 0.75rem; border-radius: var(--radius); overflow: hidden; }
+.bar span { display: block; }
+.bar span:nth-child(1) { flex: 5; background: var(--chart-1); }
+.bar span:nth-child(2) { flex: 3; background: var(--chart-2); }
+.bar span:nth-child(3) { flex: 2; background: var(--chart-3); }
+.cta { display: inline-flex; align-items: center; min-height: var(--tap); padding: 0 1rem; border-radius: var(--radius); background: var(--primary); color: var(--primary-foreground); border: 1px solid var(--primary-edge); text-decoration: none; }
+.cta:hover { background: var(--primary-hover); }
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>Duo rollout plan</h1>
+<p data-clamp="2">Fit the reader and brief layouts to folded and open iPhone Duo screens without horizontal scroll.</p>
+</header>
+<section class="grid" aria-label="Status">
+<article class="card"><h3>Reader</h3><p><span class="pill done">Done</span> Fits 382 by 580.</p></article>
+<article class="card"><h3>Brief</h3><p><span class="pill risk">Risk</span> Landscape needs short-screen spacing.</p></article>
+<article class="card" data-ui-accent="cobalt"><h3>Dashboard</h3><p><span class="pill">Next</span> Rebuild on Pigment tokens.</p></article>
+</section>
+<section data-slot="prose">
+<h2>Progress</h2>
+<div class="bar" role="img" aria-label="Done 50 percent, active 30 percent, open 20 percent"><span></span><span></span><span></span></div>
+<p>Half the work is done. See the <a href="#plan">plan</a> for each step.</p>
+<blockquote>Every page must pass in both light and dark mode.</blockquote>
+<pre><code>python3 -m tailplan_ui bundle plan.html -o out.html</code></pre>
+<p><a class="cta" href="#plan">Open the plan</a> <span data-slot="kbd-hint">Press P</span></p>
+</section>
+<aside class="card" data-ui-theme="nord"><h3>Upstream note</h3><p>Nested themes repaint their own box.</p></aside>
+</main>
+</body>
+</html>

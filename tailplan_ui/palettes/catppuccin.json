@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 2,
+  "id": "catppuccin",
+  "version": 1,
+  "kind": "designer",
+  "name": "Catppuccin",
+  "description": "Soothing pastel colors.",
+  "variants": {
+    "light": "Latte",
+    "dark": "Mocha"
+  },
+  "source": {
+    "url": "https://github.com/catppuccin/palette/blob/07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd/palette.json",
+    "revision": "07d02aa110ef9eb7e7427afca5c73ba9cf7f8ebd",
+    "license": "MIT",
+    "licenseFile": "licenses/catppuccin.txt"
+  },
+  "radius": "8px",
+  "line": "solid",
+  "viz": "editorial",
+  "modes": {
+    "light": {
+      "background": "#eff1f5",
+      "foreground": "#4c4f69",
+      "card": "#e6e9ef",
+      "muted": "#ccd0da",
+      "muted-foreground": "#5c5f77",
+      "border": "#bcc0cc",
+      "border-strong": "#9ca0b0",
+      "code-background": "#e6e9ef",
+      "code-foreground": "#4c4f69",
+      "accent": "#8839ef",
+      "destructive": "#d20f39",
+      "warning": "#df8e1d",
+      "success": "#40a02b",
+      "info": "#209fb5"
+    },
+    "dark": {
+      "background": "#1e1e2e",
+      "foreground": "#cdd6f4",
+      "card": "#181825",
+      "muted": "#313244",
+      "muted-foreground": "#bac2de",
+      "border": "#45475a",
+      "border-strong": "#6c7086",
+      "code-background": "#181825",
+      "code-foreground": "#cdd6f4",
+      "accent": "#cba6f7",
+      "destructive": "#f38ba8",
+      "warning": "#f9e2af",
+      "success": "#a6e3a1",
+      "info": "#74c7ec"
+    }
+  }
+}

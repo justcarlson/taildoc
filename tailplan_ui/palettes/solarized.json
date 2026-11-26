@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 2,
+  "id": "solarized",
+  "version": 1,
+  "kind": "designer",
+  "name": "Solarized",
+  "description": "Precision colors by Ethan Schoonover.",
+  "variants": {
+    "light": "Light",
+    "dark": "Dark"
+  },
+  "source": {
+    "url": "https://github.com/altercation/solarized/blob/62f656a02f93c5190a8753159e34b385588d5ff3/README.md",
+    "revision": "62f656a02f93c5190a8753159e34b385588d5ff3",
+    "license": "MIT",
+    "licenseFile": "licenses/solarized.txt"
+  },
+  "radius": "4px",
+  "line": "solid",
+  "viz": "editorial",
+  "modes": {
+    "light": {
+      "background": "#fdf6e3",
+      "foreground": "#073642",
+      "card": "#eee8d5",
+      "muted": "#eee8d5",
+      "muted-foreground": "#586e75",
+      "border": "#93a1a1",
+      "border-strong": "#839496",
+      "code-background": "#eee8d5",
+      "code-foreground": "#073642",
+      "accent": "#268bd2",
+      "destructive": "#dc322f",
+      "warning": "#b58900",
+      "success": "#859900",
+      "info": "#2aa198"
+    },
+    "dark": {
+      "background": "#002b36",
+      "foreground": "#93a1a1",
+      "card": "#073642",
+      "muted": "#073642",
+      "muted-foreground": "#839496",
+      "border": "#586e75",
+      "border-strong": "#657b83",
+      "code-background": "#073642",
+      "code-foreground": "#93a1a1",
+      "accent": "#268bd2",
+      "destructive": "#dc322f",
+      "warning": "#b58900",
+      "success": "#859900",
+      "info": "#2aa198"
+    }
+  }
+}

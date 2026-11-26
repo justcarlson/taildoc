@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 2,
+  "id": "wire",
+  "version": 1,
+  "kind": "wireframe",
+  "name": "Wire",
+  "description": "Monochrome lo-fi wireframe mode with dashed lines.",
+  "variants": {
+    "light": "Paper",
+    "dark": "Blueprint"
+  },
+  "source": {
+    "url": "https://github.com/justcarlson/taildoc",
+    "revision": "original",
+    "license": "MIT",
+    "licenseFile": "licenses/tailplan.txt"
+  },
+  "radius": "3px",
+  "line": "dashed",
+  "viz": "monochrome",
+  "accentName": "mono",
+  "modes": {
+    "light": {
+      "background": "#ffffff",
+      "foreground": "#111111",
+      "card": "#ffffff",
+      "muted": "#f2f2f2",
+      "muted-foreground": "#555555",
+      "border": "#8a8a8a",
+      "border-strong": "#111111",
+      "code-background": "#f2f2f2",
+      "code-foreground": "#111111",
+      "accent": "#111111",
+      "destructive": "#111111",
+      "warning": "#111111",
+      "success": "#111111",
+      "info": "#111111"
+    },
+    "dark": {
+      "background": "#141414",
+      "foreground": "#eeeeee",
+      "card": "#141414",
+      "muted": "#222222",
+      "muted-foreground": "#aaaaaa",
+      "border": "#6a6a6a",
+      "border-strong": "#eeeeee",
+      "code-background": "#222222",
+      "code-foreground": "#eeeeee",
+      "accent": "#eeeeee",
+      "destructive": "#eeeeee",
+      "warning": "#eeeeee",
+      "success": "#eeeeee",
+      "info": "#eeeeee"
+    }
+  }
+}

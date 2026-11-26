@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 2,
+  "id": "warm-editorial",
+  "version": 1,
+  "kind": "designer",
+  "name": "Warm Editorial",
+  "description": "Tailplan default: cream paper with olive ink, and warm charcoal with sage.",
+  "variants": {
+    "light": "Cream",
+    "dark": "Charcoal"
+  },
+  "source": {
+    "url": "https://github.com/justcarlson/taildoc",
+    "revision": "original",
+    "license": "MIT",
+    "licenseFile": "licenses/tailplan.txt"
+  },
+  "radius": "10px",
+  "line": "solid",
+  "viz": "editorial",
+  "accentName": "olive",
+  "modes": {
+    "light": {
+      "background": "#faf6ee",
+      "foreground": "#26352e",
+      "card": "#fffdf8",
+      "muted": "#e9ecdf",
+      "muted-foreground": "#536447",
+      "border": "#d8d7c9",
+      "border-strong": "#b9b7a4",
+      "code-background": "#e9ecdf",
+      "code-foreground": "#26352e",
+      "accent": "#536447",
+      "destructive": "#b3412d",
+      "warning": "#9a6a14",
+      "success": "#4f6a2a",
+      "info": "#3f6b8f"
+    },
+    "dark": {
+      "background": "#1c1b18",
+      "foreground": "#ece6d8",
+      "card": "#24231f",
+      "muted": "#2e2c27",
+      "muted-foreground": "#b5b09f",
+      "border": "#3d3a33",
+      "border-strong": "#57534a",
+      "code-background": "#2a2924",
+      "code-foreground": "#ece6d8",
+      "accent": "#9cb08a",
+      "destructive": "#e07360",
+      "warning": "#d6a046",
+      "success": "#a3b86c",
+      "info": "#78a3c9"
+    }
+  }
+}
