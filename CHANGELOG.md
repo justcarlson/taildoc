@@ -6,6 +6,13 @@ The project uses semantic version numbers.
 
 ## Unreleased
 
+- Change the audit log lines on standard output to wide events.
+  Each line is compact JSON with sorted keys and has `event` (`tailplan.` and the name), `event_version`, `run_id`, `started_at`, `duration_ms`, `outcome`, `error_type`, and `release`.
+  The line has an `actor_hash` and an `actor_kind` in place of `actor_email`, and flat detail fields in place of `detail`.
+  It has no `ts` and no `service`.
+  A failed event goes to standard error.
+  Set `TAILPLAN_AUDIT_HMAC_KEY` so that the hashes stay the same after a restart.
+  The `audit_events` table and `GET /api/audit` do not change.
 - Add schema version 4. It adds draft tags, an archive state, and a full-text search index.
   The index covers titles, slugs, descriptions, tags, and page text.
   The server builds the index from existing drafts at start.

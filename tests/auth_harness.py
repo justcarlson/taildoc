@@ -159,8 +159,12 @@ class AuthCase(unittest.TestCase):
         return cookie_pair(headers["Set-Cookie"][0])
 
     def events(self, name: str | None = None) -> list[dict]:
+        """Return the audit wide events that were printed, or those of one event name such as `auth.login`."""
         lines = [json.loads(line) for line in self.audit_lines.getvalue().splitlines() if line]
-        return [line for line in lines if name is None or line["event"] == name]
+        return [line for line in lines if name is None or line["event"] == "tailplan." + name]
+
+    def event_names(self, name: str | None = None) -> list[str]:
+        return [event["event"].removeprefix("tailplan.") for event in self.events(name)]
 
     def create_key(self, cookie: str) -> str:
         """Create an API key on the account of a browser session."""
