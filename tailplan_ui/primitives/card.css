@@ -1,0 +1,60 @@
+/* tp.primitives: cards and callouts. */
+/* @chunk card when=slot:card|card-header|card-title|card-description|card-action|card-content|card-footer */
+@layer tp.primitives {
+  :where([data-slot="card"]) {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding-block: var(--space);
+    background: var(--card);
+    color: var(--card-foreground);
+    border: 1px var(--line) var(--border);
+    border-radius: var(--radius);
+  }
+  :where([data-slot="card-header"]) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 0.25rem 0.75rem;
+    padding-inline: var(--space);
+  }
+  :where([data-slot="card-title"]) { grid-column: 1; margin: 0; font-family: var(--font-heading); font-weight: var(--heading-weight); font-size: 1.125rem; line-height: 1.3; color: var(--heading); }
+  :where([data-slot="card-description"]) { grid-column: 1; margin: 0; font-size: 0.9em; color: var(--muted-foreground); }
+  :where([data-slot="card-action"]) { grid-column: 2; grid-row: 1 / span 2; align-self: start; justify-self: end; }
+  :where([data-slot="card-content"]) { padding-inline: var(--space); }
+  :where([data-slot="card-footer"]) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding-inline: var(--space);
+    padding-block-start: 0.75rem;
+    border-block-start: 1px var(--line) var(--border-subtle);
+  }
+  @media (max-width: 400px) {
+    :where([data-slot="card-header"]) { grid-template-columns: minmax(0, 1fr); }
+    :where([data-slot="card-action"]) { grid-column: 1; grid-row: auto; justify-self: start; }
+  }
+}
+/* @chunk callout when=slot:callout|callout-title */
+@layer tp.primitives {
+  :where([data-slot="callout"]) {
+    min-width: 0;
+    --_tone: var(--info);
+    --_bg: var(--info-surface);
+    padding: 0.75rem 1rem;
+    background: var(--_bg);
+    color: var(--foreground);
+    border: 1px var(--line) color-mix(in oklab, var(--_tone) 30%, transparent);
+    border-inline-start: 4px solid var(--_tone);
+    border-radius: var(--radius);
+  }
+  :where([data-slot="callout"][data-variant="warning"]) { --_tone: var(--warning); --_bg: var(--warning-surface); }
+  :where([data-slot="callout"][data-variant="success"]) { --_tone: var(--success); --_bg: var(--success-surface); }
+  :where([data-slot="callout"][data-variant="destructive"]) { --_tone: var(--destructive); --_bg: var(--destructive-surface); }
+  :where([data-slot="callout"][data-variant="note"]) { --_tone: var(--border-strong); --_bg: var(--muted); }
+  :where([data-slot="callout"] > :first-child) { margin-block-start: 0; }
+  :where([data-slot="callout"] > :last-child) { margin-block-end: 0; }
+  :where([data-slot="callout-title"]) { display: block; margin-block-end: 0.25rem; font-weight: 700; color: var(--heading); }
+}

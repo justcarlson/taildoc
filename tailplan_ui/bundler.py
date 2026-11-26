@@ -29,6 +29,8 @@ CSS_TOKEN_RE = re.compile(r"(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*')|/\*.*?\*/",
 HEX_RE = S.HEX_RE
 HUE_RE = re.compile(r"[0-9]{1,3}(?:\.[0-9]+)?\Z")
 VIZ_VAR_RE = re.compile(r"--(?:chart|seq|div)-\d")
+# Slots whose CSS reads --chart-N. They need the viz tokens even without data-ui-viz.
+VIZ_SLOTS = frozenset({"chart", "chart-legend", "legend-item", "timeline-bar", "timeline-seg", "timeline-item"})
 VOID_TAGS = {
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
     "source", "track", "wbr",
@@ -274,6 +276,8 @@ class Scanner(_Parser):
         if "data-slot" in a:
             f.slot_count += 1
             f.slots[a["data-slot"]] = f.slots.get(a["data-slot"], 0) + 1
+            if a["data-slot"] in VIZ_SLOTS:
+                f.viz_needed = True
         parent = self._top()
         # The Composer checks the root attributes once, with the meta tag.
         frame = parent if is_root else self._frame(tag, a, parent)

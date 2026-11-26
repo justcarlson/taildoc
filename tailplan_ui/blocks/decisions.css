@@ -1,0 +1,107 @@
+/* tp.blocks: decision log with a sign-off box, and verification claims with a timeline bar. */
+/* @chunk decisions when=slot:decisions|decision|decision-title|decision-meta|decision-reason|signoff|signoff-title|signoff-list|signoff-action */
+@layer tp.blocks {
+  :where([data-slot="decisions"]) { display: grid; gap: 0.75rem; margin-block: var(--space); padding: 0; list-style: none; counter-reset: tp-decision; }
+  :where([data-slot="decision"]) {
+    --_tone: var(--border-strong);
+    position: relative;
+    display: grid;
+    gap: 0.2rem;
+    padding: 0.75rem 1rem 0.75rem 3rem;
+    counter-increment: tp-decision;
+    background: var(--card);
+    color: var(--card-foreground);
+    border: 1px var(--line) var(--border);
+    border-inline-start: 4px solid var(--_tone);
+    border-radius: var(--radius);
+  }
+  :where([data-slot="decision"])::before {
+    content: counter(tp-decision);
+    position: absolute;
+    inset-block-start: 0.7rem;
+    inset-inline-start: 0.75rem;
+    display: grid;
+    place-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    font-size: 0.8125rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted-foreground);
+    background: var(--muted);
+    border-radius: 50%;
+  }
+  :where([data-slot="decision"][data-state="accepted"]) { --_tone: var(--success); }
+  :where([data-slot="decision"][data-state="rejected"]) { --_tone: var(--destructive); }
+  :where([data-slot="decision"][data-state="open"]) { --_tone: var(--warning); }
+  :where([data-slot="decision-title"]) { font-weight: 600; color: var(--heading); }
+  :where([data-slot="decision-meta"]) { font-size: 0.8125rem; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+  :where([data-slot="decision-reason"]) { margin: 0; font-size: 0.9375em; }
+  :where([data-slot="signoff"]) {
+    display: grid;
+    gap: 0.75rem;
+    margin-block: var(--space);
+    padding: 1rem 1.25rem;
+    background: var(--muted);
+    color: var(--foreground);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius);
+  }
+  :where([data-slot="signoff-title"]) { margin: 0; font-family: var(--font-heading); font-size: 1.1rem; color: var(--heading); }
+  :where([data-slot="signoff-list"]) { display: grid; gap: 0.35rem; margin: 0; padding: 0; list-style: none; }
+  :where([data-slot="signoff-list"] > li) { display: flex; gap: 0.6rem; align-items: baseline; }
+  :where([data-slot="signoff-list"] > li)::before { content: "\2610"; flex: none; color: var(--muted-foreground); }
+  :where([data-slot="signoff-list"] > li[data-state="done"])::before { content: "\2611"; color: var(--success); }
+  :where([data-slot="signoff-action"]) { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+}
+/* @chunk claims when=slot:claims|claim|claim-status|claim-text|claim-evidence|timeline-bar|timeline-track|timeline-seg|timeline-legend|timeline-item */
+@layer tp.blocks {
+  :where([data-slot="claims"]) { display: grid; gap: 0.5rem; margin-block: var(--space); padding: 0; list-style: none; }
+  :where([data-slot="claim"]) {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    gap: 0.25rem 0.75rem;
+    align-items: start;
+    padding: 0.7rem 0.9rem;
+    background: var(--card);
+    color: var(--card-foreground);
+    border: 1px var(--line) var(--border);
+    border-radius: var(--radius);
+  }
+  :where([data-slot="claim-status"]) {
+    --_tone: var(--muted-foreground);
+    --_bg: var(--muted);
+    justify-self: start;
+    padding: 0.05em 0.65em;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--_tone);
+    background: var(--_bg);
+    border-radius: 999px;
+  }
+  :where([data-slot="claim"][data-status="verified"] > [data-slot="claim-status"]) { --_tone: var(--success); --_bg: var(--success-surface); }
+  :where([data-slot="claim"][data-status="disputed"] > [data-slot="claim-status"]) { --_tone: var(--destructive); --_bg: var(--destructive-surface); }
+  :where([data-slot="claim"][data-status="partial"] > [data-slot="claim-status"]) { --_tone: var(--warning); --_bg: var(--warning-surface); }
+  :where([data-slot="claim-text"]) { margin: 0; font-weight: 600; }
+  :where([data-slot="claim-evidence"]) { grid-column: 2; margin: 0; font-size: 0.875rem; color: var(--muted-foreground); }
+  @media (max-width: 400px) {
+    :where([data-slot="claim"]) { grid-template-columns: minmax(0, 1fr); }
+    :where([data-slot="claim-evidence"]) { grid-column: 1; }
+  }
+  :where([data-slot="timeline-bar"]) { display: grid; gap: 0.5rem; margin-block: var(--space); }
+  :where([data-slot="timeline-track"]) { display: flex; gap: 2px; height: 0.875rem; overflow: hidden; border-radius: 999px; background: var(--muted); }
+  :where([data-slot="timeline-seg"]) { flex: var(--span, 1) 1 0; min-width: 2px; background: var(--series, var(--chart-1)); }
+  :where([data-slot="timeline-legend"]) { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; margin: 0; padding: 0; list-style: none; font-size: 0.875rem; }
+  :where([data-slot="timeline-item"]) { display: inline-flex; align-items: baseline; gap: 0.4rem; font-variant-numeric: tabular-nums; }
+  :where([data-slot="timeline-item"])::before { content: ""; flex: none; align-self: center; width: 0.75rem; height: 0.75rem; background: var(--series, var(--chart-1)); border-radius: 3px; }
+  :where([data-slot="timeline-bar"] [data-series="1"]) { --series: var(--chart-1); }
+  :where([data-slot="timeline-bar"] [data-series="2"]) { --series: var(--chart-2); }
+  :where([data-slot="timeline-bar"] [data-series="3"]) { --series: var(--chart-3); }
+  :where([data-slot="timeline-bar"] [data-series="4"]) { --series: var(--chart-4); }
+  :where([data-slot="timeline-bar"] [data-series="5"]) { --series: var(--chart-5); }
+  :where([data-slot="timeline-bar"] [data-series="6"]) { --series: var(--chart-6); }
+  :where([data-slot="timeline-bar"] [data-series="7"]) { --series: var(--chart-7); }
+  :where([data-slot="timeline-bar"] [data-series="8"]) { --series: var(--chart-8); }
+}

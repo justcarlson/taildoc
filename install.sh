@@ -585,6 +585,12 @@ for source in \
   tailplan_web/static/dashboard.js \
   tailplan_web/static/fonts/geist-sans.woff2 \
   tailplan_web/static/fonts/geist-mono.woff2 \
+  tailplan_ui/__init__.py \
+  tailplan_ui/bundler.py \
+  tailplan_ui/registry.py \
+  tailplan_ui/registry.json \
+  tailplan_ui/color/__init__.py \
+  tailplan_ui/color/primitives.json \
   bin/run-tailplan \
   bin/tailplan-share \
   bin/tailplan \
@@ -601,6 +607,9 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_th
 cp -a "$SCRIPT_DIR/tailplan_web" "$STAGE_DIR/tailplan_web"
 find "$STAGE_DIR/tailplan_web" -type d -name __pycache__ -prune -exec rm -rf {} +
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_web.assets as a, tailplan_web.render; a.check_ready()'
+cp -a "$SCRIPT_DIR/tailplan_ui" "$STAGE_DIR/tailplan_ui"
+find "$STAGE_DIR/tailplan_ui" -type d -name __pycache__ -prune -exec rm -rf {} +
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$STAGE_DIR" python3 -c 'import tailplan_ui; tailplan_ui.catalog(); tailplan_ui.bundler.chunks()'
 install -m 755 "$SCRIPT_DIR/tailplan_server.py" "$STAGE_DIR/tailplan_server.py"
 install -m 755 "$SCRIPT_DIR/bin/run-tailplan" "$STAGE_DIR/bin/run-tailplan"
 install -m 755 "$SCRIPT_DIR/bin/tailplan-share" "$STAGE_DIR/bin/tailplan-share"
@@ -828,6 +837,7 @@ backup_item() {
 }
 backup_item app-themes "$APP_DIR/tailplan_themes"
 backup_item app-web "$APP_DIR/tailplan_web"
+backup_item app-ui "$APP_DIR/tailplan_ui"
 backup_item app-server "$APP_DIR/tailplan_server.py"
 backup_item app-runner "$APP_DIR/bin/run-tailplan"
 backup_item cli-share "$BIN_DIR/tailplan-share"
@@ -888,6 +898,10 @@ rollback() {
   rm -rf -- "$APP_DIR/tailplan_web"
   if [[ -f "$BACKUP_DIR/state/app-web.existed" ]]; then
     cp -a -- "$BACKUP_DIR/files/app-web" "$APP_DIR/tailplan_web" || rollback_failed=1
+  fi
+  rm -rf -- "$APP_DIR/tailplan_ui"
+  if [[ -f "$BACKUP_DIR/state/app-ui.existed" ]]; then
+    cp -a -- "$BACKUP_DIR/files/app-ui" "$APP_DIR/tailplan_ui" || rollback_failed=1
   fi
   restore_item app-server "$APP_DIR/tailplan_server.py" || rollback_failed=1
   restore_item app-runner "$APP_DIR/bin/run-tailplan" || rollback_failed=1
@@ -1060,6 +1074,10 @@ rm -rf -- "$APP_DIR/tailplan_web"
 cp -a "$STAGE_DIR/tailplan_web" "$APP_DIR/tailplan_web"
 find "$APP_DIR/tailplan_web" -type d -exec chmod 755 {} +
 find "$APP_DIR/tailplan_web" -type f -exec chmod 644 {} +
+rm -rf -- "$APP_DIR/tailplan_ui"
+cp -a "$STAGE_DIR/tailplan_ui" "$APP_DIR/tailplan_ui"
+find "$APP_DIR/tailplan_ui" -type d -exec chmod 755 {} +
+find "$APP_DIR/tailplan_ui" -type f -exec chmod 644 {} +
 install -m 755 "$STAGE_DIR/tailplan_server.py" "$APP_DIR/tailplan_server.py"
 install -m 755 "$STAGE_DIR/bin/run-tailplan" "$APP_DIR/bin/run-tailplan"
 install -m 755 "$STAGE_DIR/bin/tailplan-share" "$BIN_DIR/tailplan-share"
@@ -1252,6 +1270,7 @@ mv -f -- "$unit_tmp" "$UNIT_FILE"
 if [[ "$INSTALL_SCOPE" == system ]]; then
   chown -R -P --no-dereference root:root "$APP_DIR/tailplan_themes"
   chown -R -P --no-dereference root:root "$APP_DIR/tailplan_web"
+  chown -R -P --no-dereference root:root "$APP_DIR/tailplan_ui"
   chown root:root \
     "$APP_DIR" \
     "$APP_DIR/bin" \
@@ -1274,6 +1293,7 @@ verify_installed_file() {
 }
 diff -r --exclude=__pycache__ "$STAGE_DIR/tailplan_themes" "$APP_DIR/tailplan_themes" >/dev/null || die "Installed theme assets mismatch."
 diff -r --exclude=__pycache__ "$STAGE_DIR/tailplan_web" "$APP_DIR/tailplan_web" >/dev/null || die "Installed web assets mismatch."
+diff -r --exclude=__pycache__ "$STAGE_DIR/tailplan_ui" "$APP_DIR/tailplan_ui" >/dev/null || die "Installed UI assets mismatch."
 verify_installed_file "$STAGE_DIR/tailplan_server.py" "$APP_DIR/tailplan_server.py" 755
 verify_installed_file "$STAGE_DIR/bin/run-tailplan" "$APP_DIR/bin/run-tailplan" 755
 verify_installed_file "$STAGE_DIR/bin/tailplan-share" "$BIN_DIR/tailplan-share" 755

@@ -1,0 +1,58 @@
+/* tp.primitives: icons and source citations. */
+/* An icon is an svg that points at a symbol from icon_sprite(). It takes the text color. */
+/* @chunk icon when=slot:icon */
+@layer tp.primitives {
+  :where([data-slot="icon"]) {
+    flex: none;
+    width: 1.125em;
+    height: 1.125em;
+    vertical-align: -0.2em;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  :where([data-slot="icon"][data-size="sm"]) { width: 0.875em; height: 0.875em; }
+  :where([data-slot="icon"][data-size="lg"]) { width: 1.5em; height: 1.5em; }
+}
+/* @chunk cite when=slot:cite */
+@layer tp.primitives {
+  :where([data-slot="cite"]) {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.35em;
+    height: 1.35em;
+    padding-inline: 0.4em;
+    margin-inline: 0.1em;
+    font-size: 0.75em;
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    text-decoration: none;
+    vertical-align: 0.25em;
+    color: var(--primary-ink);
+    background: var(--accent-surface);
+    border: 1px var(--line) var(--accent-border);
+    border-radius: 999px;
+  }
+  :where([data-slot="cite"][data-variant="chip"]) { height: auto; padding: 0.15em 0.6em; font-size: 0.8125em; font-weight: 600; vertical-align: baseline; }
+  @media (hover: hover) {
+    :where([data-slot="cite"]:hover) { color: var(--accent-foreground); background: var(--accent-hover); }
+  }
+  :where([data-slot="cite"]:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
+  @media (pointer: coarse) {
+    :where([data-slot="cite"])::after {
+      content: "";
+      position: absolute;
+      inset: auto;
+      left: 50%;
+      top: 50%;
+      width: max(100%, 44px);
+      height: max(100%, 44px);
+      translate: -50% -50%;
+    }
+  }
+}

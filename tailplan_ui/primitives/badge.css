@@ -1,0 +1,46 @@
+/* tp.primitives: badges, chips, and key caps. */
+/* @chunk badge when=slot:badge|chip */
+@layer tp.primitives {
+  :where([data-slot="badge"], [data-slot="chip"]) {
+    --_bg: var(--primary);
+    --_fg: var(--primary-foreground);
+    --_bd: transparent;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35em;
+    padding: 0.1em 0.65em;
+    font-size: 0.8125em;
+    font-weight: 600;
+    line-height: 1.5;
+    white-space: nowrap;
+    background: var(--_bg);
+    color: var(--_fg);
+    border: 1px var(--line) var(--_bd);
+    border-radius: 999px;
+  }
+  :where(:is([data-slot="badge"], [data-slot="chip"])[data-variant="secondary"]) { --_bg: var(--secondary); --_fg: var(--secondary-foreground); --_bd: var(--border); }
+  :where(:is([data-slot="badge"], [data-slot="chip"])[data-variant="outline"]) { --_bg: transparent; --_fg: var(--foreground); --_bd: var(--border-strong); }
+  :where(:is([data-slot="badge"], [data-slot="chip"])[data-variant="success"]) { --_bg: var(--success-surface); --_fg: var(--success); --_bd: color-mix(in oklab, var(--success) 35%, transparent); }
+  :where(:is([data-slot="badge"], [data-slot="chip"])[data-variant="warning"]) { --_bg: var(--warning-surface); --_fg: var(--warning); --_bd: color-mix(in oklab, var(--warning) 35%, transparent); }
+  :where(:is([data-slot="badge"], [data-slot="chip"])[data-variant="destructive"]) { --_bg: var(--destructive-surface); --_fg: var(--destructive); --_bd: color-mix(in oklab, var(--destructive) 35%, transparent); }
+  :where(:is([data-slot="badge"], [data-slot="chip"])[data-variant="info"]) { --_bg: var(--info-surface); --_fg: var(--info); --_bd: color-mix(in oklab, var(--info) 35%, transparent); }
+}
+/* The kbd-hint display rule stays in tp.density, so these rules never set display on a hint. */
+/* @chunk kbd-keys when=slot:kbd|kbd-hint */
+@layer tp.primitives {
+  :where([data-slot="kbd"]) {
+    display: inline-block;
+    min-width: 1.6em;
+    padding: 0.05em 0.45em;
+    font-family: var(--font-mono);
+    font-size: 0.8125em;
+    line-height: 1.5;
+    text-align: center;
+    color: var(--foreground);
+    background: var(--muted);
+    border: 1px var(--line) var(--border-strong);
+    border-block-end-width: 2px;
+    border-radius: calc(var(--radius) / 2);
+  }
+  :where([data-slot="kbd-hint"]) { color: var(--muted-foreground); font-size: 0.8125em; }
+}

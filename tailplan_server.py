@@ -39,6 +39,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
+import tailplan_ui
+from tailplan_ui import lint as ui_lint
 from tailplan_web import assets as web_assets
 from tailplan_web.render import (  # noqa: F401
     VISIBILITY_LABELS,
@@ -2340,6 +2342,15 @@ def validate_html_detailed(
             "No viewport meta tag found; phones will show a shrunken desktop page. "
             'Add <meta name="viewport" content="width=device-width, initial-scale=1">.',
         )
+    if not too_deep:
+        try:
+            ui_findings = ui_lint.lint(doc)
+        except Exception:  # A lint bug must never block an upload.
+            ui_findings = []
+        for finding in ui_findings:
+            line = finding.get("line")
+            issues.warning(finding["code"], finding["message"], fix=finding.get("fix"),
+                           pos=(line, 0) if line else None)
     items = issues.items()
     errors = [format_issue(i) for i in items if i["level"] == "error"]
     warnings = [format_issue(i) for i in items if i["level"] == "warning"]
@@ -2353,6 +2364,37 @@ def validate_html_detailed(
         "bytes": size,
         "externalImageHosts": sorted(external_hosts),
     }
+
+
+def ui_bundle_pages(pages: object) -> tuple[object, dict | None]:
+    """Bundle each page that opts in with <meta name="tailplan-ui" content="1">.
+
+    A page without the meta tag stays byte for byte the same.
+    Return the pages and the bundle metadata of the index page, or of the first bundled page.
+    """
+    if not isinstance(pages, list):
+        return pages, None
+    out: list[object] = []
+    chosen: dict | None = None
+    for entry in pages:
+        doc = entry.get("html") if isinstance(entry, dict) else None
+        if isinstance(doc, str):
+            try:
+                doc.encode("utf-8")  # Lone surrogates are a validation matter: validate_upload reports them.
+                opted_in = tailplan_ui.is_opted_in(doc)
+            except Exception:  # Bad markup is a validation matter, not a bundling one.
+                opted_in = False
+            if opted_in:
+                try:
+                    bundled, meta = tailplan_ui.bundle(doc, target="standalone")
+                except UnicodeEncodeError:
+                    bundled = None
+                if bundled is not None:
+                    entry = {**entry, "html": bundled}
+                    if chosen is None or entry.get("path") == "index.html":
+                        chosen = meta
+        out.append(entry)
+    return out, chosen
 
 
 def validate_html(doc: object) -> tuple[bool, list[str], list[str]]:
@@ -3144,6 +3186,7 @@ AUDIT_BASE_KEYS = frozenset({
 AUDIT_DETAIL_KEYS = frozenset({
     "client.address", "auth_method", "reason", "action", "created", "draft_version", "visibility",
     "workspace", "grant_count", "grant_type", "grant_role", "grant_hash", "session_count", "item_count",
+    "ui_version", "ui_theme", "ui_accent", "ui_viz", "ui_css_bytes", "custom_css_bytes", "has_dark_mode",
 })
 # The redact rules of the log gateway read these as secrets. See the `logs` standard, section 3.
 AUDIT_SECRET_RE = re.compile(
@@ -3190,6 +3233,44 @@ def _audit_address(value) -> str | None:
 
 def _audit_count(value) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+UI_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+
+
+def _ui_themes() -> frozenset[str]:
+    from tailplan_ui.color import tokens as ui_tokens
+    return (frozenset(ui_tokens.presets()) | frozenset(ui_tokens.surfaces())
+            | frozenset(ui_tokens.THEME_ALIASES) | {"custom"})
+
+
+def _ui_accents() -> frozenset[str]:
+    from tailplan_ui.color import tokens as ui_tokens
+    return frozenset(ui_tokens.accents()) | frozenset(ui_tokens.presets()) | {"seed", "hue", "none"}
+
+
+def _ui_viz() -> frozenset[str]:
+    from tailplan_ui.color import tokens as ui_tokens
+    return frozenset(ui_tokens.viz_sets())
+
+
+def ui_audit_fields(meta: dict | None) -> dict:
+    """Return the Tailplan UI numbers and enum names for an audit detail. A raw seed, text, or HTML never passes."""
+    if not meta:
+        return {}
+    theme = meta.get("uiTheme") or meta.get("uiSurface")
+    accent = meta.get("uiAccent")
+    if isinstance(accent, str) and accent not in _ui_accents():
+        accent = "seed" if tailplan_ui.bundler.S.is_hex(accent) else "hue" if tailplan_ui.bundler.is_hue(accent) else "none"
+    return {
+        "uiVersion": meta.get("uiVersion"),
+        "uiTheme": theme if theme in _ui_themes() else ("custom" if theme else None),
+        "uiAccent": accent if accent else "none",
+        "uiViz": meta.get("uiViz"),
+        "uiCssBytes": meta.get("uiCssBytes"),
+        "customCssBytes": meta.get("customCssBytes"),
+        "hasDarkMode": meta.get("hasDarkMode"),
+    }
 
 
 def _audit_actor(actor: dict | None) -> tuple[str, str]:
@@ -3240,6 +3321,13 @@ def _audit_detail(detail: dict) -> dict:
         if isinstance(grant_value, str) and grant_value.strip() else None,
         "session_count": _audit_count(detail.get("sessions")),
         "item_count": _audit_count(detail.get("count")),
+        "ui_version": _audit_keep(detail.get("uiVersion"), UI_VERSION_RE),
+        "ui_theme": choice(detail.get("uiTheme"), _ui_themes()),
+        "ui_accent": choice(detail.get("uiAccent"), _ui_accents()),
+        "ui_viz": choice(detail.get("uiViz"), _ui_viz()),
+        "ui_css_bytes": _audit_count(detail.get("uiCssBytes")),
+        "custom_css_bytes": _audit_count(detail.get("customCssBytes")),
+        "has_dark_mode": detail["hasDarkMode"] if isinstance(detail.get("hasDarkMode"), bool) else None,
     }
     return {key: value for key, value in flat.items() if value is not None}
 
@@ -3259,6 +3347,13 @@ AUDIT_DETAIL_CHECKS = {
     "grant_hash": lambda v: isinstance(v, str) and re.fullmatch(r"[0-9a-f]{16}", v) is not None,
     "session_count": lambda v: _audit_count(v) == v and not isinstance(v, bool),
     "item_count": lambda v: _audit_count(v) == v and not isinstance(v, bool),
+    "ui_version": lambda v: _audit_keep(v, UI_VERSION_RE) == v,
+    "ui_theme": lambda v: v in _ui_themes(),
+    "ui_accent": lambda v: v in _ui_accents(),
+    "ui_viz": lambda v: v in _ui_viz(),
+    "ui_css_bytes": lambda v: _audit_count(v) == v and not isinstance(v, bool),
+    "custom_css_bytes": lambda v: _audit_count(v) == v and not isinstance(v, bool),
+    "has_dark_mode": lambda v: isinstance(v, bool),
 }
 
 
@@ -7040,6 +7135,12 @@ class Handler(BaseHTTPRequestHandler):
         if source_match:
             self.serve_source(source_match.group(1))
             return
+        if path == "/api/ui":
+            try:
+                self.send_json(200, tailplan_ui.catalog())
+            except (OSError, ValueError, KeyError):
+                self.send_json(503, {"ok": False, "error": "Tailplan UI catalog unavailable."})
+            return
         if path in {"/api/themes", "/api/typography"}:
             try:
                 self.send_json(200, tailplan_themes.catalog() if path == "/api/themes"
@@ -7057,8 +7158,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self.store.check_ready()
                 tailplan_themes.catalog()
+                tailplan_ui.catalog()
+                tailplan_ui.bundler.chunks()
                 web_assets.check_ready()
-            except (StorageError, OSError, tailplan_themes.ThemeError, web_assets.WebAssetError) as exc:
+            except (StorageError, OSError, ValueError, KeyError, tailplan_themes.ThemeError,
+                    web_assets.WebAssetError) as exc:
                 self.log_message("readiness storage error: %r", exc)
                 self.send_json(
                     503,
@@ -7210,6 +7314,8 @@ class Handler(BaseHTTPRequestHandler):
             if any(key in payload for key in ("html", "files", "content")):
                 try:
                     pages, _theme = self._extract_upload_pages(payload)
+                    if "content" not in payload:  # Markdown pages carry Tailplan's own CSS.
+                        pages, _ui = ui_bundle_pages(pages)
                     validation = validate_upload(pages)
                     report.update(
                         {
@@ -7290,6 +7396,9 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as error:
                 self.send_json(422, {"ok": False, "error": str(error)})
                 return
+            ui_meta = None
+            if "content" not in payload:  # Markdown pages carry Tailplan's own CSS.
+                pages, ui_meta = ui_bundle_pages(pages)
             validation = validate_upload(pages)
             if not validation["ok"]:
                 self.send_json(
@@ -7384,7 +7493,8 @@ class Handler(BaseHTTPRequestHandler):
             if "workspace" not in audit_sharing and sharing.get("defaultWorkspace") and created:
                 audit_sharing["workspace"] = sharing["defaultWorkspace"]
             self.audit_event("draft.upload", roles, "draft", result["draftId"],
-                             detail={"created": created, "version": result.get("versionNumber"), **audit_sharing})
+                             detail={"created": created, "version": result.get("versionNumber"), **audit_sharing,
+                                     **ui_audit_fields(ui_meta)})
             if not result.get("replayed"):
                 for grant in sharing.get("grants") or []:
                     self.audit_event("sharing.grant", roles, "draft", result["draftId"],

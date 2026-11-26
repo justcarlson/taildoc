@@ -1,0 +1,63 @@
+/* tp.blocks: wave flow and tier map. */
+/* A wave flow is a vertical rail on narrow screens and a row of columns from 701px. */
+/* @chunk wave-flow when=slot:wave-flow|wave|wave-label|wave-title|wave-body */
+@layer tp.blocks {
+  :where([data-slot="wave-flow"]) { display: grid; gap: var(--space); margin-block: var(--space); padding: 0; list-style: none; }
+  :where([data-slot="wave"]) {
+    --_tone: var(--border-strong);
+    position: relative;
+    display: grid;
+    align-content: start;
+    gap: 0.25rem;
+    padding-inline-start: 1.75rem;
+    border-inline-start: 2px solid var(--_tone);
+  }
+  :where([data-slot="wave"])::before {
+    content: "";
+    position: absolute;
+    inset-block-start: 0.2rem;
+    inset-inline-start: -0.5rem;
+    width: 0.875rem;
+    height: 0.875rem;
+    background: var(--background);
+    border: 2px solid var(--_tone);
+    border-radius: 50%;
+  }
+  :where([data-slot="wave"][data-state="done"]) { --_tone: var(--success); }
+  :where([data-slot="wave"][data-state="done"])::before { background: var(--success); }
+  :where([data-slot="wave"][data-state="active"]) { --_tone: var(--primary); }
+  :where([data-slot="wave"][data-state="active"])::before { background: var(--primary); box-shadow: 0 0 0 3px var(--accent-surface); }
+  :where([data-slot="wave-label"]) { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted-foreground); }
+  :where([data-slot="wave-title"]) { font-family: var(--font-heading); font-size: 1.05rem; line-height: 1.3; color: var(--heading); }
+  :where([data-slot="wave-body"]) { margin: 0; font-size: 0.9375em; color: var(--muted-foreground); }
+  @media (min-width: 701px) {
+    :where([data-slot="wave-flow"]) { grid-auto-flow: column; grid-auto-columns: minmax(11rem, 1fr); overflow-x: auto; padding-block-start: 0.4rem; }
+    :where([data-slot="wave"]) { padding-inline-start: 0; padding-block-start: 1.5rem; border-inline-start: 0; border-block-start: 2px solid var(--_tone); }
+    :where([data-slot="wave"])::before { inset-block-start: -0.5rem; inset-inline-start: 0; }
+  }
+}
+/* A tier map is stacked layers. Each layer has a label and its items. */
+/* @chunk tier-map when=slot:tier-map|tier|tier-label|tier-items|tier-item */
+@layer tp.blocks {
+  :where([data-slot="tier-map"]) { display: grid; gap: 0.5rem; margin-block: var(--space); }
+  :where([data-slot="tier"]) {
+    --_depth: 0%;
+    display: grid;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    background: color-mix(in oklab, var(--primary) var(--_depth), var(--card));
+    color: var(--card-foreground);
+    border: 1px var(--line) var(--border);
+    border-radius: var(--radius);
+  }
+  :where([data-slot="tier"]:nth-child(2)) { --_depth: 5%; }
+  :where([data-slot="tier"]:nth-child(3)) { --_depth: 10%; }
+  :where([data-slot="tier"]:nth-child(4)) { --_depth: 15%; }
+  :where([data-slot="tier"]:nth-child(n+5)) { --_depth: 20%; }
+  :where([data-slot="tier-label"]) { margin: 0; font-size: 0.8125rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--primary-ink); }
+  :where([data-slot="tier-items"]) { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+  :where([data-slot="tier-item"]) { padding: 0.3rem 0.75rem; font-size: 0.9rem; background: var(--background); border: 1px var(--line) var(--border); border-radius: calc(var(--radius) / 1.5); }
+  @media (min-width: 561px) {
+    :where([data-slot="tier"]) { grid-template-columns: 9rem minmax(0, 1fr); align-items: center; }
+  }
+}

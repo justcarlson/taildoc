@@ -1,0 +1,138 @@
+/* tp.primitives: tables, code, key-value lists, separators, progress, and skeletons. */
+/* A table with data-label on its cells stacks into key-value cards at 700px and below. */
+/* A table inside table-wrap scrolls sideways instead. */
+/* @chunk table when=slot:table|table-wrap */
+@layer tp.primitives {
+  :where([data-slot="table"]) {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+  }
+  :where([data-slot="table"] caption) { padding-block-end: 0.5rem; text-align: start; color: var(--muted-foreground); font-size: 0.875em; }
+  :where([data-slot="table"] th) {
+    padding: 0.55rem 0.75rem;
+    text-align: start;
+    font-weight: 600;
+    font-size: 0.875em;
+    color: var(--muted-foreground);
+    border-block-end: 1px var(--line) var(--border-strong);
+    vertical-align: bottom;
+  }
+  :where([data-slot="table"] td) { padding: 0.6rem 0.75rem; border-block-end: 1px var(--line) var(--border-subtle); vertical-align: top; }
+  :where([data-slot="table"] tbody th) { color: var(--foreground); font-size: inherit; vertical-align: top; }
+  :where([data-slot="table"] td[data-align="end"], [data-slot="table"] th[data-align="end"]) { text-align: end; }
+  :where([data-slot="table"][data-sticky] thead th) { position: sticky; inset-block-start: 0; z-index: 1; background: var(--background); }
+  @media (hover: hover) {
+    :where([data-slot="table"] tbody tr:hover > *) { background: var(--accent-surface); }
+  }
+  :where([data-slot="table-wrap"]) {
+    max-width: 100%;
+    max-height: var(--table-max, none);
+    overflow: auto;
+    border: 1px var(--line) var(--border);
+    border-radius: var(--radius);
+  }
+  :where([data-slot="table-wrap"]:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
+  :where([data-slot="table-wrap"] > [data-slot="table"]) { min-width: 32rem; }
+  @media (max-width: 700px) {
+    :where([data-slot="table"]:has(td[data-label]):not([data-slot="table-wrap"] [data-slot="table"])) { display: block; }
+    :where([data-slot="table"]:has(td[data-label]):not([data-slot="table-wrap"] [data-slot="table"]) :is(tbody, tr, td, th)) { display: block; }
+    :where([data-slot="table"]:has(td[data-label]):not([data-slot="table-wrap"] [data-slot="table"]) thead) {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+    :where([data-slot="table"]:has(td[data-label]):not([data-slot="table-wrap"] [data-slot="table"]) tr) {
+      margin-block-end: 0.75rem;
+      padding: 0.35rem 0.75rem;
+      background: var(--card);
+      border: 1px var(--line) var(--border);
+      border-radius: var(--radius);
+    }
+    :where([data-slot="table"]:has(td[data-label]):not([data-slot="table-wrap"] [data-slot="table"]) td) {
+      display: grid;
+      grid-template-columns: minmax(5.5rem, 38%) minmax(0, 1fr);
+      gap: 0.75rem;
+      padding: 0.4rem 0;
+      text-align: start;
+      border-block-end-color: var(--border-subtle);
+    }
+    :where([data-slot="table"]:has(td[data-label]):not([data-slot="table-wrap"] [data-slot="table"]) td:last-child) { border-block-end: 0; }
+    :where([data-slot="table"]:has(td[data-label]):not([data-slot="table-wrap"] [data-slot="table"]) td)::before {
+      content: attr(data-label);
+      font-weight: 600;
+      font-size: 0.875em;
+      color: var(--muted-foreground);
+    }
+  }
+}
+/* @chunk code when=slot:code|kv */
+@layer tp.primitives {
+  :where(code[data-slot="code"]) {
+    padding: 0.1em 0.35em;
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    color: var(--code-foreground);
+    background: var(--code-background);
+    border-radius: calc(var(--radius) / 2);
+    overflow-wrap: anywhere;
+  }
+  :where(pre[data-slot="code"]) {
+    margin: 0;
+    padding: 0.75rem 1rem;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.875em;
+    line-height: 1.55;
+    tab-size: 2;
+    color: var(--code-foreground);
+    background: var(--code-background);
+    border: 1px var(--line) var(--border-subtle);
+    border-radius: var(--radius);
+  }
+  :where(pre[data-slot="code"] > code) { padding: 0; background: none; font-size: inherit; overflow-wrap: normal; }
+  :where([data-slot="kv"]) { display: grid; margin: 0; }
+  :where([data-slot="kv"] > div) {
+    display: grid;
+    grid-template-columns: minmax(6rem, 30%) minmax(0, 1fr);
+    gap: 0.25rem 1rem;
+    padding-block: 0.5rem;
+    border-block-end: 1px var(--line) var(--border-subtle);
+  }
+  :where([data-slot="kv"] dt) { font-weight: 600; font-size: 0.9em; color: var(--muted-foreground); }
+  :where([data-slot="kv"] dd) { margin: 0; font-variant-numeric: tabular-nums; }
+  @media (max-width: 400px) {
+    :where([data-slot="kv"] > div) { grid-template-columns: minmax(0, 1fr); }
+  }
+}
+/* @chunk separator when=slot:separator|progress|skeleton */
+@layer tp.primitives {
+  :where([data-slot="separator"]) { flex: none; align-self: stretch; height: 0; margin: var(--space) 0; border: 0; border-block-start: 1px var(--line) var(--border); }
+  :where([data-slot="separator"][data-orientation="vertical"]) { width: 0; height: auto; margin: 0 var(--space); border-block-start: 0; border-inline-start: 1px var(--line) var(--border); }
+  :where(progress[data-slot="progress"]) {
+    appearance: none;
+    display: block;
+    width: 100%;
+    height: 0.5rem;
+    overflow: hidden;
+    color: var(--primary);
+    background: var(--muted);
+    border: 0;
+    border-radius: 999px;
+  }
+  :where(progress[data-slot="progress"])::-webkit-progress-bar { background: var(--muted); }
+  :where(progress[data-slot="progress"])::-webkit-progress-value { background: var(--primary); border-radius: 999px; }
+  :where(progress[data-slot="progress"])::-moz-progress-bar { background: var(--primary); border-radius: 999px; }
+  :where([data-slot="skeleton"]) {
+    display: block;
+    min-height: 1rem;
+    background: linear-gradient(90deg, var(--muted) 0%, var(--border-subtle) 50%, var(--muted) 100%) 0 0 / 200% 100%;
+    border-radius: var(--radius);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    :where([data-slot="skeleton"]) { animation: tp-skeleton 1.4s ease-in-out infinite; }
+    @keyframes tp-skeleton { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+  }
+}

@@ -229,6 +229,12 @@ Each line has these fields:
 An event can add more fields. The server adds a field only when its value passes a check.
 The fields are `client.address`, `auth_method`, `reason`, `action`, `created`, `draft_version`, `visibility`, and `workspace`.
 The other fields are `grant_count`, `grant_type`, `grant_role`, `grant_hash`, `session_count`, and `item_count`.
+A page upload can add fields for Tailplan UI.
+They are `ui_version`, `ui_theme`, `ui_accent`, and `ui_viz`.
+The other fields are `ui_css_bytes`, `custom_css_bytes`, and `has_dark_mode`.
+They are metadata only. `ui_theme` is a known preset or surface, or `custom`.
+`ui_accent` is a known accent, `seed`, `hue`, or `none`. A raw color seed never appears.
+The line never holds a title, text, CSS, or HTML from the page.
 A tag never appears on the line.
 `grant_hash` is the same kind of hash, of the grant value.
 The server drops every other detail field from the line.
@@ -238,6 +244,14 @@ A row that fails the check prints as `tailplan.audit.invalid` with only the fiel
 Set `TAILPLAN_AUDIT_HMAC_KEY` to a secret value so that hashes stay the same after a restart.
 Without it, the server uses a random key for each process.
 The `ts` and `service` fields are not on the line: the log driver adds the time and the container name.
+
+## Tailplan UI bundling
+
+A page that has `<meta name="tailplan-ui" content="1">` gets a generated `<style>` block at upload.
+The CSS comes from files in the server package. No request data becomes CSS, except a checked color seed or hue.
+The bundle adds no script and no remote URL.
+Pages still run in the same sandbox and the same content security policy.
+The static checks only warn. They never block an upload.
 
 ## Suitable content
 

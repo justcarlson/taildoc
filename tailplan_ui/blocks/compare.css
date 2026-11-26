@@ -1,0 +1,66 @@
+/* tp.blocks: option grid and compare matrix. */
+/* @chunk option-grid when=slot:option-grid|option|option-tag|option-title|option-body */
+@layer tp.blocks {
+  :where([data-slot="option-grid"]) {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+    gap: var(--space);
+    margin-block: var(--space);
+    padding: 0;
+    list-style: none;
+  }
+  :where([data-slot="option"]) {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 1rem;
+    background: var(--card);
+    color: var(--card-foreground);
+    border: 1px var(--line) var(--border);
+    border-radius: var(--radius);
+  }
+  :where([data-slot="option"][data-recommended]) { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); background: var(--accent-surface); }
+  :where([data-slot="option-tag"]) {
+    align-self: flex-start;
+    padding: 0.05em 0.65em;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+    background: var(--muted);
+    border-radius: 999px;
+  }
+  :where([data-slot="option"][data-recommended] > [data-slot="option-tag"]) { color: var(--primary-foreground); background: var(--primary); }
+  :where([data-slot="option-title"]) { margin: 0; font-family: var(--font-heading); font-size: 1.1rem; line-height: 1.3; color: var(--heading); }
+  :where([data-slot="option-body"]) { margin: 0; font-size: 0.9375em; color: var(--muted-foreground); }
+}
+/* A compare-matrix is a scroll wrapper around a table. The first column stays in view. */
+/* @chunk compare-matrix when=slot:compare-matrix */
+@layer tp.blocks {
+  :where([data-slot="compare-matrix"]) {
+    max-width: 100%;
+    margin-block: var(--space);
+    overflow-x: auto;
+    border: 1px var(--line) var(--border);
+    border-radius: var(--radius);
+  }
+  :where([data-slot="compare-matrix"]:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
+  :where([data-slot="compare-matrix"] table) { width: 100%; min-width: 30rem; border-collapse: collapse; background: var(--card); color: var(--card-foreground); }
+  :where([data-slot="compare-matrix"] :is(th, td)) { padding: 0.6rem 0.8rem; text-align: start; vertical-align: top; border-block-end: 1px var(--line) var(--border-subtle); }
+  :where([data-slot="compare-matrix"] thead th) { font-size: 0.875em; color: var(--heading); border-block-end-color: var(--border-strong); }
+  :where([data-slot="compare-matrix"] tbody th) { position: sticky; inset-inline-start: 0; z-index: 1; min-width: 7.5rem; font-weight: 600; background: var(--card); }
+  :where([data-slot="compare-matrix"] [data-recommended]) { background: var(--accent-surface); }
+  :where([data-slot="compare-matrix"] thead [data-recommended]) { box-shadow: inset 0 3px 0 var(--primary); }
+  :where([data-slot="compare-matrix"] td[data-state])::before { margin-inline-end: 0.4em; font-weight: 700; }
+  :where([data-slot="compare-matrix"] td[data-state="yes"]) { color: var(--success); }
+  :where([data-slot="compare-matrix"] td[data-state="yes"])::before { content: "\2713"; }
+  :where([data-slot="compare-matrix"] td[data-state="no"]) { color: var(--destructive); }
+  :where([data-slot="compare-matrix"] td[data-state="no"])::before { content: "\2715"; }
+  :where([data-slot="compare-matrix"] td[data-state="partial"]) { color: var(--warning); }
+  :where([data-slot="compare-matrix"] td[data-state="partial"])::before { content: "\007E"; }
+  @media (max-width: 400px) {
+    :where([data-slot="compare-matrix"] tbody th) { min-width: 6rem; }
+  }
+}
