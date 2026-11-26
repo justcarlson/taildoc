@@ -1,0 +1,19 @@
+/* tp.reset: box model, text size, and wrap safety. */
+/* @chunk reset when=always */
+@layer tp.reset {
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  body { margin: 0; }
+  :where(p, li, dd, dt, h1, h2, h3, h4, h5, h6, blockquote, figcaption, caption, label, a) { overflow-wrap: anywhere; }
+  :where(td, th) { overflow-wrap: break-word; }
+  img, svg, video, canvas { max-width: 100%; }
+  :where(img, video) { height: auto; }
+  pre { max-width: 100%; overflow-x: auto; }
+  :where(table) { max-width: 100%; }
+}
+/* The canvas paint. The t3-embed target leaves it to the host. */
+/* @chunk canvas when=standalone */
+@layer tp.reset {
+  :root { background: var(--background); color: var(--foreground); }
+  body { background: var(--background); color: var(--foreground); padding-bottom: var(--safe-bottom); }
+}

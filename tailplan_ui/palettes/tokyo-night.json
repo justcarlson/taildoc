@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 2,
+  "id": "tokyo-night",
+  "version": 1,
+  "kind": "designer",
+  "name": "Tokyo Night",
+  "description": "Downtown Tokyo at night, and its day variant, by folke.",
+  "variants": {
+    "light": "Day",
+    "dark": "Night"
+  },
+  "source": {
+    "url": "https://github.com/folke/tokyonight.nvim/tree/cdc07ac78467a233fd62c493de29a17e0cf2b2b6",
+    "revision": "cdc07ac78467a233fd62c493de29a17e0cf2b2b6",
+    "license": "Apache-2.0",
+    "licenseFile": "licenses/tokyo-night.txt",
+    "modes": {
+      "light": "https://github.com/folke/tokyonight.nvim/blob/cdc07ac78467a233fd62c493de29a17e0cf2b2b6/extras/lua/tokyonight_day.lua",
+      "dark": "https://github.com/folke/tokyonight.nvim/blob/cdc07ac78467a233fd62c493de29a17e0cf2b2b6/lua/tokyonight/colors/night.lua"
+    }
+  },
+  "radius": "8px",
+  "line": "solid",
+  "viz": "editorial",
+  "modes": {
+    "light": {
+      "background": "#e1e2e7",
+      "foreground": "#3760bf",
+      "card": "#d0d5e3",
+      "muted": "#c4c8da",
+      "muted-foreground": "#6172b0",
+      "border": "#a8aecb",
+      "border-strong": "#848cb5",
+      "code-background": "#d0d5e3",
+      "code-foreground": "#3760bf",
+      "accent": "#2e7de9",
+      "destructive": "#f52a65",
+      "warning": "#8c6c3e",
+      "success": "#587539",
+      "info": "#007197"
+    },
+    "dark": {
+      "background": "#1a1b26",
+      "foreground": "#c0caf5",
+      "card": "#16161e",
+      "muted": "#292e42",
+      "muted-foreground": "#a9b1d6",
+      "border": "#3b4261",
+      "border-strong": "#565f89",
+      "code-background": "#24283b",
+      "code-foreground": "#c0caf5",
+      "accent": "#7aa2f7",
+      "destructive": "#f7768e",
+      "warning": "#e0af68",
+      "success": "#9ece6a",
+      "info": "#7dcfff"
+    }
+  }
+}
