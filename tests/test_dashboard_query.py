@@ -290,8 +290,10 @@ class BulkTests(DashCase):
         self.assertEqual([], self.draft(ids[0])["tags"])
         events = self.events("draft.bulk")
         self.assertEqual(4, len(events))
-        self.assertEqual({"action": "add_tag", "count": 3, "tag": "ship"},
-                         {key: events[1]["detail"][key] for key in ("action", "count", "tag")})
+        self.assertEqual({"action": "add_tag", "item_count": 3},
+                         {key: events[1][key] for key in ("action", "item_count")})
+        self.assertNotIn("tag", events[1])
+        self.assertEqual("ship", self.store.list_audit(limit=50, event="draft.bulk")[2]["detail"]["tag"])
 
     def test_csrf_can_travel_in_a_header(self) -> None:
         ids = [self.upload("<title>Plan</title>")["draftId"]]
@@ -347,7 +349,7 @@ class ApiTests(DashCase):
         self.assertTrue(draft["archived"] and draft["favorite"])
         status, body = self.api("/api/drafts/patch-me", "PATCH", {"archived": False}, token=TOKEN)
         self.assertFalse(body["draft"]["archived"])
-        names = [event["event"] for event in self.events()]
+        names = self.event_names()
         for name in ("draft.archive", "draft.unarchive", "draft.tag"):
             self.assertIn(name, names)
 
@@ -427,7 +429,7 @@ class DashboardPageTests(DashCase):
         logged = self.audit_lines.getvalue()
         self.assertNotIn("secretbodytext", logged)
         self.assertNotIn("secretquerytext", logged)
-        self.assertTrue(re.search(r'"event": ?"draft\.archive"', logged))
+        self.assertTrue(re.search(r'"event": ?"tailplan\.draft\.archive"', logged))
 
 
 def row(draft_id: str, title: str, **fields) -> dict:
@@ -615,10 +617,11 @@ class ReviewHttpTests(DashCase):
         self.post("/dashboard/bulk", {"draftIds": [draft_id], "action": "add_tag", "tag": " Ship "}, as_json=True)
         self.post("/dashboard/bulk", {"draftIds": [draft_id], "action": "favorite", "tag": "leakyvalue"},
                   as_json=True)
-        events = self.events("draft.bulk")
-        self.assertEqual("ship", events[0]["detail"]["tag"])
-        self.assertNotIn("tag", events[1]["detail"])
+        stored = self.store.list_audit(limit=10, event="draft.bulk")
+        self.assertEqual("ship", stored[1]["detail"]["tag"])
+        self.assertNotIn("tag", stored[0]["detail"])
         self.assertNotIn("leakyvalue", self.audit_lines.getvalue())
+        self.assertNotIn("ship", self.audit_lines.getvalue())
 
     def test_theme_cookie_follows_the_base_path(self) -> None:
         self.primary.base_url = "https://tailplan.test/tp"

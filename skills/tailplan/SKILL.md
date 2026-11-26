@@ -28,8 +28,10 @@ The name Tailplan does not mean a checklist or an agent plan mode.
 7. Publish a new draft, or update an existing draft in place with `--draft <draft-id>`:
 
    ```sh
-   tailplan-share /path/to/artifact.html --new
+   tailplan-share /path/to/artifact.html --new --tag <stream>
    ```
+
+   Replace `<stream>` with the project or topic name. See "Tag drafts for the dashboard" below.
 
 8. Copy the `URL:` value from the command output. It uses the automatic preview
    page at `/d/ID/share` when the server supports it. For JSON output, prefer
@@ -47,6 +49,51 @@ Always produce a Tailplan URL when the user asks for a Tailplan.
 Do not return only the path to a Markdown source file as a fallback.
 If `tailplan-share` is unavailable, run `./install-client.sh` from the repository.
 Start a new agent session after skill installation.
+
+## Tag drafts for the dashboard
+
+Pass `--tag <stream>` on every new draft. A stream is a project or topic name, such as `dawn`.
+Tags keep drafts organized on `/dashboard`.
+Repeat the flag, or separate tags with commas, to add more tags. A draft holds up to 10 tags.
+A tag uses 1 to 32 lowercase letters, digits, dots, underscores, or hyphens.
+
+```sh
+tailplan upload plan.md --new --tag dawn --tag epic
+tailplan upload plan.md --new --tag dawn --favorite
+```
+
+Use `--favorite` to pin the draft when you publish it.
+The client also adds `TAILPLAN_PROJECT` and `TAILPLAN_TAGS` to a new draft, next to any `--tag` flags, up to 10 tags in all.
+It never uses the name of the working folder as a tag.
+It skips these env tags when it updates an existing draft.
+A re-upload without `--tag` keeps the tags of the draft.
+A re-upload with `--tag` replaces the tags of the draft.
+
+Change tags later with one command:
+
+```sh
+tailplan tag REF +dawn -old-tag
+tailplan tag REF --set dawn,epic
+tailplan tag REF --set ""
+```
+
+`+tag` adds a tag, `-tag` removes a tag, and `--set a,b` replaces all tags. An empty `--set` clears them.
+
+Use `tailplan archive REF` to hide a draft from the active dashboard.
+An archived draft keeps its `/d/REF` and `/share` URLs live.
+This differs from `tailplan disable REF`, which turns those URLs off.
+Use `tailplan unarchive REF` to bring the draft back.
+
+Find drafts with filters:
+
+```sh
+tailplan list --tag dawn
+tailplan list --q "is:fav tag:dawn v:>1" --sort updated --dir desc
+tailplan list --archived --json
+```
+
+The list filters are `--tag`, `--view`, `--q`, `--sort`, `--dir`, `--repo`, and `--archived`.
+Views are `active`, `favorites`, `living`, `shared`, `archived`, and `all`.
 
 ## Built-in document themes
 

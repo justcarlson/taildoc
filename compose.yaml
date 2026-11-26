@@ -24,6 +24,8 @@ services:
       TAILPLAN_REDIRECT_VIEW_BASE_URL: ${TAILPLAN_REDIRECT_VIEW_BASE_URL:-}
       # Optional. Path inside the container to a cookie signing secret. See docs/security.md.
       TAILPLAN_SESSION_SECRET_FILE: ${TAILPLAN_SESSION_SECRET_FILE:-}
+      # Optional. Key for the actor hashes in the audit log. See docs/security.md.
+      TAILPLAN_AUDIT_HMAC_KEY: ${TAILPLAN_AUDIT_HMAC_KEY:-}
       # Optional. Single sign-on, roles, and sharing. See docs/security.md.
       TAILPLAN_AUTH_MODES: ${TAILPLAN_AUTH_MODES:-}
       TAILPLAN_OIDC_ISSUER: ${TAILPLAN_OIDC_ISSUER:-}
