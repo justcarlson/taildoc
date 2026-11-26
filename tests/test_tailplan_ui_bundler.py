@@ -135,7 +135,7 @@ def test_nested_themes_get_scoped_rules_and_island_paint():
     assert ':where(:not(:root))[data-ui-theme="wire"]{' in css
     assert ('@scope ([data-ui-theme="wire"]:not(:root)) to ([data-ui-theme],[data-ui-surface])'
             '{:scope[data-ui-accent="cobalt"],[data-ui-accent="cobalt"]{') in css
-    assert ':where([data-ui-theme],[data-ui-surface]):not(:root)' in css
+    assert ':where([data-ui-theme],[data-ui-surface],[data-ui-mode]):not(:root)' in css
     assert '--line:dashed' in css
 
 
@@ -461,3 +461,56 @@ def test_attr_conditions_take_any_attribute():
 def test_real_chunk_dirs_load_when_present():
     names = [name for name, *_ in B.chunks()]
     assert names[:1] == ['layers.css']
+
+
+def test_root_modifiers_stay_in_donut_scope_when_islands_exist():
+    doc = (
+        '<!doctype html><html data-ui-theme="catppuccin-latte"><head><title>x</title></head><body>'
+        '<div data-ui-accent="amber"><p data-ui-contrast="more">root</p>'
+        '<aside data-ui-theme="nord" data-ui-mode="dark"><section data-ui-contrast="more">'
+        '<h3>Title</h3><a href="#">link</a></section></aside></div></body></html>'
+    )
+    css = B.build_css(doc)
+    assert '@scope (:root) to ([data-ui-theme],[data-ui-surface]){' in css
+
+
+def test_subtree_mode_flip_loads_island_repaint_chunk():
+    doc = page('<aside data-ui-mode="dark"><h3>Title</h3><p>Body</p></aside>')
+    css = B.build_css(doc)
+    assert ':where([data-ui-theme],[data-ui-surface],[data-ui-mode]):not(:root)' in css
+
+
+def test_html_root_overrides_meta_across_sibling_keys():
+    doc = (
+        '<!doctype html><html data-ui-surface="slate" data-ui-seed="#06b6d4"><head>'
+        '<meta name="tailplan-ui" content="1; theme=warm-editorial accent=olive">'
+        '<title>x</title></head><body><p>hi</p></body></html>'
+    )
+    _, meta = B.bundle(doc)
+    assert meta['uiSurface'] == 'slate'
+    assert meta['uiTheme'] is None
+    assert meta['uiAccent'] == '#06b6d4'
+    assert '#06b6d4' in meta['seeds']
+
+
+def test_stray_inert_close_and_leading_comment_doctype():
+    doc = (
+        '<!doctype html><html><head><template></svg><style>a{color:red}</style></template>'
+        '<style>p{color:blue}</style></head><body><p>x</p></body></html>'
+    )
+    out, _ = B.bundle(doc)
+    assert out.index('id="tp-ui"') > out.index('</template>')
+    assert out.index('id="tp-ui"') < out.index('<style>p{color:blue}</style>')
+    bare = '<!-- leading comment -->\n<!doctype html><p>hi</p>'
+    out_bare, _ = B.bundle(bare)
+    assert out_bare.startswith('<!-- leading comment -->\n<!doctype html>')
+
+
+def test_tp_hue_read_only_no_warning_and_attr_alternatives():
+    doc = page('<style>.x{color:oklch(0.5 0.07 var(--tp-hue));content:"--tp-hue:1"}</style>'
+               '<p style="--tp-hue:200">hi</p>')
+    _, meta = B.bundle(doc)
+    assert not any('--tp-hue' in w for w in meta['warnings'])
+    composer = B.Composer(B.scan(page('<div data-card>x</div>')), 'standalone')
+    assert composer.wants('attr:data-other|data-card') is True
+    assert composer.wants('attr:data-a|data-b') is False

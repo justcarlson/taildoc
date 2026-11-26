@@ -227,12 +227,14 @@ class Scanner(_Parser):
         self.f = Features()
         self.stack: list[Frame] = []
         self.in_style = False
-        self.inert = 0
         self.body_started = False
         self.seen_html = False
 
     def _top(self) -> Frame:
         return self.stack[-1] if self.stack else Frame("", ROOT, None, None)
+
+    def _in_inert(self) -> bool:
+        return any(fr.tag in INERT_TAGS for fr in self.stack)
 
     def start(self, tag, a, closed):
         f = self.f
@@ -245,7 +247,7 @@ class Scanner(_Parser):
         elif tag == "head" and f.head_open is None:
             f.head_open = self._after_tag()
         elif tag == "body" or (tag not in HEAD_TAGS and tag not in ("html", "head")
-                               and self.inert == 0):
+                               and not self._in_inert()):
             self.body_started = True
         if tag == "meta":
             name = a.get("name", "").lower()
@@ -257,7 +259,7 @@ class Scanner(_Parser):
                 f.theme_color = True
         is_sheet = tag == "style" or (tag == "link" and "stylesheet" in a.get("rel", "").lower())
         if (f.first_style is None and is_sheet and not self.body_started
-                and self.inert == 0):
+                and not self._in_inert()):
             f.first_style = self.getpos()
         style = a.get("style")
         if style:
@@ -277,8 +279,6 @@ class Scanner(_Parser):
         frame = parent if is_root else self._frame(tag, a, parent)
         if tag == "style" and not closed:
             self.in_style = True
-        if tag in INERT_TAGS and not closed:
-            self.inert += 1
         if not closed and tag not in VOID_TAGS:
             self.stack.append(Frame(tag, frame.ctx, frame.accent, frame.contrast))
 
@@ -348,8 +348,6 @@ class Scanner(_Parser):
             self.body_started = True
         if tag == "style":
             self.in_style = False
-        if tag in INERT_TAGS and self.inert:
-            self.inert -= 1
         for i in range(len(self.stack) - 1, -1, -1):
             if self.stack[i].tag == tag:
                 del self.stack[i:]
@@ -358,10 +356,9 @@ class Scanner(_Parser):
     def data(self, data):
         if self.in_style:
             self.f.custom_css.append(data)
-            plain = strip_comments(data)
-            if "--tp-hue" in plain:
+            if re.search(r"--tp-hue\s*:", CSS_TOKEN_RE.sub(" ", data)):
                 self.f.tp_hue_sheet = True
-            if VIZ_VAR_RE.search(plain):
+            if VIZ_VAR_RE.search(strip_comments(data)):
                 self.f.viz_needed = True
 
 
@@ -432,29 +429,33 @@ class Composer:
         for key in f.meta:
             if key not in META_KEYS:
                 self.warnings.append(f"Unknown tailplan-ui meta key: {key}")
-        root = {**{f"data-ui-{k}": v for k, v in f.meta.items() if k in META_KEYS},
-                **f.root_attrs}
+        meta_attrs = {f"data-ui-{k}": v for k, v in f.meta.items() if k in META_KEYS}
+        root = {**meta_attrs, **f.root_attrs}
         self.root_attrs = root
         self.root_ctx = None
-        for kind in ("theme", "surface"):
-            value = root.get(f"data-ui-{kind}")
-            if value is None:
-                continue
-            if not _valid_context(kind, value):
-                self.warnings.append(f"Unknown root data-ui-{kind}: {value}")
-            elif self.root_ctx is None:
-                self.root_ctx = (kind, value)
+        for source in (f.root_attrs, meta_attrs):
+            for kind in ("theme", "surface"):
+                key = f"data-ui-{kind}"
+                value = source.get(key)
+                if value is None or (source is meta_attrs and key in f.root_attrs):
+                    continue
+                if not _valid_context(kind, value):
+                    self.warnings.append(f"Unknown root data-ui-{kind}: {value}")
+                elif self.root_ctx is None:
+                    self.root_ctx = (kind, value)
         self.root_ctx = self.root_ctx or ("theme", T.DEFAULT_THEME)
         self.root_accent = None
-        for kind in ("accent", "seed", "hue"):
-            value = root.get(f"data-ui-{kind}")
-            if value is None:
-                continue
-            parsed = _modifier(kind, value, self.warnings)
-            if parsed is not None and self.root_accent is None:
-                self.root_accent = (kind, parsed[0], parsed[1])
-                if kind == "seed" and parsed[1] not in f.seeds:
-                    f.seeds.append(parsed[1])
+        for source in (f.root_attrs, meta_attrs):
+            for kind in ("accent", "seed", "hue"):
+                key = f"data-ui-{kind}"
+                value = source.get(key)
+                if value is None or (source is meta_attrs and key in f.root_attrs):
+                    continue
+                parsed = _modifier(kind, value, self.warnings)
+                if parsed is not None and self.root_accent is None:
+                    self.root_accent = (kind, parsed[0], parsed[1])
+                    if kind == "seed" and parsed[1] not in f.seeds:
+                        f.seeds.append(parsed[1])
         viz = root.get("data-ui-viz")
         self.root_viz = viz if viz in T.viz_sets() else None
         if viz is not None and self.root_viz is None:
@@ -550,12 +551,14 @@ class Composer:
     def scoped_rules(self, ctx) -> str:
         """Return the modifier and contrast rules for one context.
 
-        Island rules sit in a donut scope, so they stop at nested themes and surfaces.
+        Rules sit in a donut scope when islands exist, so they stop at nested themes and surfaces.
         """
         rules = "".join(self._modifier_rules(ctx) + self._contrast_rules(ctx))
-        kind, ident, pinned, sel = self._ctx(ctx)
-        if not rules or sel is None:
-            return rules
+        if not rules:
+            return ""
+        _, _, _, sel = self._ctx(ctx)
+        if sel is None:
+            return f"@scope (:root) to {ISLAND_LIMIT}{{{rules}}}" if self.f.contexts else rules
         return f"@scope ({sel}) to {ISLAND_LIMIT}{{{rules}}}"
 
     def modifier_rules(self) -> list[str]:
@@ -608,12 +611,12 @@ class Composer:
         if condition == "standalone":
             return self.target == "standalone"
         if condition == "island":
-            return bool(self.f.contexts)
+            return bool(self.f.contexts or self.f.modes)
         kind, _, value = condition.partition(":")
         if kind == "slot" and value:
             return any(v in self.f.slots for v in value.split("|"))
         if kind == "attr" and value:
-            return value in self.f.attrs
+            return any(v in self.f.attrs for v in value.split("|"))
         raise ValueError(f"Unknown chunk condition: {condition}")
 
     def css(self) -> str:
@@ -718,7 +721,7 @@ def bundle(html: str, target: str = "standalone") -> tuple[str, dict]:
     elif features.html_open is not None:
         at = _offset(lines, features.html_open)
     else:
-        doctype = re.match(r"\s*<!doctype[^>]*>", source, re.I)
+        doctype = re.match(r"(?:\s|<!--.*?-->)*<!doctype[^>]*>", source, re.I | re.S)
         at = doctype.end() if doctype else 0
     out = source[:at] + metas + style + source[at:]
     kind, ident, pinned, _ = composer._ctx(ROOT)

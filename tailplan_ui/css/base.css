@@ -18,10 +18,10 @@
   :where(:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
   :where(button, input, select, textarea) { font: inherit; }
 }
-/* Nested themes and surfaces repaint their own box. */
+/* Nested themes, surfaces, and mode flips repaint their own box. */
 /* @chunk island when=island */
 @layer tp.base {
-  :where([data-ui-theme], [data-ui-surface]):not(:root) { background-color: var(--background); color: var(--foreground); }
+  :where([data-ui-theme], [data-ui-surface], [data-ui-mode]):not(:root) { background-color: var(--background); color: var(--foreground); }
 }
 /* Donut scope: prose rules stop at nested themes, surfaces, and device screens. */
 /* @chunk prose when=slot:prose */
