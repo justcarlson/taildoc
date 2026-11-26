@@ -3464,8 +3464,14 @@ class Store:
         The index page comes first. The text has the same cap as at upload.
         """
         try:
-            root = (self.drafts / draft["draftId"]).resolve(strict=True)
-        except (OSError, RuntimeError, ValueError):
+            draft_dir = self.drafts / draft["draftId"]
+            # A symlinked draft folder, or one that resolves outside the drafts folder, gives no text.
+            if draft_dir.is_symlink():
+                return ""
+            root = draft_dir.resolve(strict=True)
+            if not root.is_relative_to(self.drafts.resolve(strict=True)):
+                return ""
+        except (OSError, RuntimeError, ValueError, TypeError):
             return ""
         sources = [Path(str(draft.get("currentObject") or ""))]
         latest = draft.get("latestVersionNumber")

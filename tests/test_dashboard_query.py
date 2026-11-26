@@ -494,6 +494,24 @@ class ReviewStoreTests(StoreCase):
         reopened = server.Store(self.root)
         self.assertEqual({}, reopened.search_fts("local", server.parse_dashboard_query("outsideword")["fts"]))
 
+    def test_search_body_ignores_a_symlinked_draft_folder(self) -> None:
+        draft_id = self.two_page_draft()
+        draft = self.store.resolve_draft(draft_id)
+        self.assertIn("secondpageword", self.store._read_search_body(draft, ["index.html", "two.html"]))
+        folder = self.store.drafts / draft_id
+        moved = Path(self.temporary.name) / "moved"
+        folder.rename(moved)
+        folder.symlink_to(moved, target_is_directory=True)
+        self.assertEqual("", self.store._read_search_body(draft, ["index.html", "two.html"]))
+
+    def test_search_body_stays_inside_the_drafts_folder(self) -> None:
+        outside = Path(self.temporary.name) / "outside"
+        (outside / "v1").mkdir(parents=True)
+        (outside / "v1" / "two.html").write_text("<p>outsideword</p>", encoding="utf-8")
+        draft = {"draftId": "../../outside", "currentObject": str(outside / "v1" / "two.html"),
+                 "latestVersionNumber": 1}
+        self.assertEqual("", self.store._read_search_body(draft, ["index.html", "two.html"]))
+
     def test_soft_delete_clears_tag_rows_for_good(self) -> None:
         gone = seed(self.store, "<title>Gone</title>", tags=["ghost"])
         self.store.change_draft("local", gone, "delete", None)

@@ -28,6 +28,18 @@ async function post(url, body) {
   return data;
 }
 
+// Only http and https URLs open. A details URL must also be on this origin.
+function safeUrl(raw, { sameOrigin = false } = {}) {
+  if (!raw) return null;
+  let u;
+  try { u = new URL(raw, location.origin); } catch { return null; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+  if (sameOrigin && u.origin !== location.origin) return null;
+  return u.href;
+}
+function openShare(raw) { const url = safeUrl(raw); if (url) window.open(url, '_blank', 'noopener,noreferrer'); }
+function openDetail(raw) { const url = safeUrl(raw, { sameOrigin: true }); if (url) location.assign(url); }
+
 // Toasts and undo.
 const toasts = el('div', { class: 'float toasts', role: 'status', 'aria-live': 'polite' });
 document.body.append(toasts);
@@ -35,9 +47,14 @@ let undoLast = null;
 function toast(text, { error = false, undo = null } = {}) {
   const node = el('div', { class: 'toast' + (error ? ' error' : '') }, el('span', {}, text));
   if (undo) {
-    undoLast = undo;
+    // Each button runs its own action. The `z` key runs the latest one.
+    undoLast = { undo, node };
     const button = el('button', { type: 'button' }, 'Undo', el('kbd', {}, 'Z'));
-    button.addEventListener('click', () => { node.remove(); runUndo(); });
+    button.addEventListener('click', () => {
+      node.remove();
+      if (undoLast?.undo === undo) undoLast = null;
+      undo();
+    });
     node.append(button);
   }
   toasts.append(node);
@@ -45,17 +62,19 @@ function toast(text, { error = false, undo = null } = {}) {
   setTimeout(() => node.remove(), error ? 7000 : 5000);
 }
 function runUndo() {
-  const fn = undoLast;
+  const last = undoLast;
   undoLast = null;
-  if (fn) fn();
+  if (!last) return;
+  last.node.remove();
+  last.undo();
 }
 const fail = (err) => toast(err.message || 'Something went wrong.', { error: true });
 
 // Keep the anchor element at the same place on screen while the page changes.
 function keep(anchor, fn) {
-  const top = anchor?.isConnected ? anchor.getBoundingClientRect().top : null;
+  const top = anchor?.isConnected && anchor.getClientRects().length ? anchor.getBoundingClientRect().top : null;
   fn();
-  if (top !== null && anchor.isConnected) {
+  if (top !== null && anchor.isConnected && anchor.getClientRects().length) {
     const shift = anchor.getBoundingClientRect().top - top;
     if (shift) window.scrollBy(0, shift);
   }
@@ -83,9 +102,14 @@ const owned = () => $$('.draft-row[data-draft-id]:not(.shared)');
 const visibleRows = () => $$('.draft-row').filter((row) => !row.hidden && row.getClientRects().length);
 const nodesFor = (id) => $$(`.draft-row[data-draft-id="${CSS.escape(id)}"]:not(.shared), .pin[data-draft-id="${CSS.escape(id)}"]`);
 const rowFor = (id) => owned().find((row) => row.dataset.draftId === id);
+// Keep the plain description of each row. A page loaded with ?q= has a snippet, so it uses data-desc.
+function plainDesc(row) {
+  if (row.dataset.desc === undefined) return $('.row-desc', row)?.cloneNode(true) || null;
+  return row.dataset.desc ? el('p', { class: 'row-desc' }, row.dataset.desc) : null;
+}
+for (const row of $$('.draft-row')) row._desc = plainDesc(row);
 for (const row of owned()) {
   row._home = row.dataset.archived;
-  row._desc = $('.row-desc', row)?.cloneNode(true) || null;
   const box = $('.row-select', row);
   if (box) box.hidden = false;
 }
@@ -106,7 +130,8 @@ function bump(key, delta) {
 }
 function filtering() { return Boolean(search?.value.trim() || toolbar?.querySelector('input[name=tag],input[name=repo]')); }
 function refresh() {
-  for (const row of owned()) row.hidden = Boolean(row._gone || row._match === false);
+  const unstarred = (row) => view === 'favorites' && row.dataset.favorite !== '1';
+  for (const row of owned()) row.hidden = Boolean(row._gone || row._match === false || unstarred(row));
   for (const row of $$('.draft-row.shared')) row.hidden = row._match === false;
   let shown = 0;
   for (const sec of $$('section.group')) {
@@ -124,10 +149,12 @@ function refresh() {
     empty.hidden = false;
   } else if (empty) empty.hidden = true;
   if (cursor?.hidden) setCursor(null);
+  syncBulk();
 }
 
 // Favorites.
 function setFavorite(id, on) {
+  if (on) restorePin(id);
   for (const node of nodesFor(id)) {
     node.dataset.favorite = on ? '1' : '0';
     if (node.matches('.draft-row')) node.classList.toggle('fav', on);
@@ -142,10 +169,30 @@ function setFavorite(id, on) {
     button.setAttribute('aria-pressed', String(on));
     button.title = label;
   }
+  if (!on) unpin(id);
+  refresh();
+}
+const pinSel = (id) => `.pin[data-draft-id="${CSS.escape(id)}"]`;
+const unpinned = new Map();
+function unpin(id) {
+  for (const pin of $$(pinSel(id))) {
+    unpinned.set(id, { pin, parent: pin.parentNode, next: pin.nextSibling });
+    pin.remove();
+  }
+}
+function restorePin(id) {
+  if ($(pinSel(id))) return;
+  const saved = unpinned.get(id);
+  unpinned.delete(id);
   const row = rowFor(id);
-  if (!on || !row || nodesFor(id).some((n) => n.matches('.pin'))) return;
+  if (saved?.parent.isConnected) {
+    saved.pin.hidden = row?.dataset.archived === '1';
+    saved.parent.insertBefore(saved.pin, saved.next?.parentNode === saved.parent ? saved.next : null);
+    return;
+  }
+  if (!row) return;
   const grid = $('.shelf-grid') || makeShelf();
-  if (grid) { grid.prepend(buildPin(row)); refresh(); }
+  if (grid) grid.prepend(buildPin(row));
 }
 // The first star on the Active view adds the Favorites shelf.
 function makeShelf() {
@@ -166,22 +213,37 @@ function buildPin(row) {
   const tag = (d.tags || '').split(' ')[0];
   if (tag) meta.append(el('span', {}, tag));
   const title = el('div', { class: 'pin-title' }, ...[...$('.row-title', row).childNodes].map((n) => n.cloneNode(true)));
+  const detail = safeUrl(d.detailUrl, { sameOrigin: true });
   pin.append($('.star-form', row).cloneNode(true), el('div', { class: 'pin-body' }, title, meta),
-    el('a', { class: 'details', href: d.detailUrl }, 'Details'));
+    el('a', { class: 'details', ...(detail ? { href: detail } : {}) }, 'Details'));
   return pin;
 }
 const pending = new Set();
-async function toggleFavorite(id) {
-  const node = nodesFor(id)[0];
+// The first visible element after `node` that stays on screen: a row, or the content below the shelf.
+function nextVisible(node) {
+  if (node.matches('.pin')) {
+    let next = node.closest('.shelf')?.nextElementSibling;
+    while (next && (next.hidden || !next.getClientRects().length)) next = next.nextElementSibling;
+    return next || null;
+  }
+  const rows = visibleRows().filter((r) => r !== node);
+  return rows.find((r) => node.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING)
+    || rows.reverse().find((r) => node.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_PRECEDING) || null;
+}
+async function toggleFavorite(id, trigger = null) {
+  const node = trigger?.closest?.('.draft-row, .pin') || nodesFor(id)[0];
   if (!node || pending.has(id)) return;
   const on = node.dataset.favorite !== '1';
   const live = rowFor(id)?.dataset.archived !== '1';
+  // When the clicked item goes away, hold the next item in place.
+  const leaves = !on && (node.matches('.pin') || view === 'favorites');
+  const anchor = leaves ? nextVisible(node) : node;
   pending.add(id);
-  keep(node, () => { setFavorite(id, on); if (live) bump('favorites', on ? 1 : -1); });
+  keep(anchor, () => { setFavorite(id, on); if (live) bump('favorites', on ? 1 : -1); });
   try {
     await post(`${base}/dashboard/drafts/${id}/${on ? 'favorite' : 'unfavorite'}`, {});
   } catch (err) {
-    keep(node, () => { setFavorite(id, !on); if (live) bump('favorites', on ? -1 : 1); });
+    keep(anchor, () => { setFavorite(id, !on); if (live) bump('favorites', on ? -1 : 1); });
     fail(err);
   } finally { pending.delete(id); }
 }
@@ -209,11 +271,14 @@ function setArchived(row, archived) {
 async function archiveRows(rows, archived, { undo = false } = {}) {
   rows = rows.filter((row) => (row.dataset.archived === '1') !== archived && !pending.has(row.dataset.draftId));
   if (!rows.length) return;
-  const next = visibleRows().find((r) => !rows.includes(r) && r.compareDocumentPosition(rows[0]) & Node.DOCUMENT_POSITION_PRECEDING);
+  const others = visibleRows().filter((r) => !rows.includes(r));
+  const next = others.find((r) => rows[0].compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING)
+    || others.reverse().find((r) => rows[0].compareDocumentPosition(r) & Node.DOCUMENT_POSITION_PRECEDING) || null;
   const apply = (value) => keep(next, () => { rows.forEach((row) => setArchived(row, value)); refresh(); });
+  const hadCursor = Boolean(cursor && rows.includes(cursor));
   rows.forEach((row) => pending.add(row.dataset.draftId));
   apply(archived);
-  if (cursor && rows.includes(cursor) && next) setCursor(next);
+  if (hadCursor && next) setCursor(next);
   try {
     const action = archived ? 'archive' : 'unarchive';
     if (rows.length === 1) await post(`${base}/dashboard/drafts/${rows[0].dataset.draftId}/${action}`, {});
@@ -232,19 +297,22 @@ function addTagPill(row, tag) {
   row.dataset.s += ` ${tag}`;
   $('.suggest-form', row)?.remove();
   if (tags.length >= 3) return;
-  const pills = $$('.row-meta > a.pill', row);
-  const pill = el('a', { class: 'pill', href: `${base}/dashboard?tag=${encodeURIComponent(tag)}` }, tag);
   const meta = $('.row-meta', row);
-  meta.insertBefore(pill, pills[tags.length] || meta.firstChild);
+  const tagPills = $$(':scope > a.pill', meta).slice(0, tags.length);
+  const pill = el('a', { class: 'pill', href: `${base}/dashboard?tag=${encodeURIComponent(tag)}` }, tag);
+  // A new tag goes after the last tag pill, before the repo pill and the other chips.
+  if (tagPills.length) tagPills.at(-1).after(pill); else meta.prepend(pill);
 }
 async function acceptSuggestion(form) {
   const row = form.closest('.draft-row');
   const tag = form.elements.add_tag.value;
   const holder = form.parentNode;
   const after = form.nextSibling;
+  const prevS = row.dataset.s;
   addTagPill(row, tag);
   try { await post(form.action, { add_tag: tag }); toast(`Tagged “${tag}”`); } catch (err) {
     row.dataset.tags = (row.dataset.tags || '').split(' ').filter((t) => t !== tag).join(' ');
+    row.dataset.s = prevS;
     $$('.row-meta > a.pill', row).find((a) => a.textContent === tag)?.remove();
     holder.insertBefore(form, after);
     fail(err);
@@ -256,7 +324,7 @@ document.addEventListener('submit', (event) => {
   const item = form.closest('.draft-row, .pin');
   if (form === toolbar) { event.preventDefault(); clearTimeout(timer); remoteSearch(); return; }
   if (!item) return;
-  if (form.matches('.star-form')) { event.preventDefault(); toggleFavorite(item.dataset.draftId); }
+  if (form.matches('.star-form')) { event.preventDefault(); toggleFavorite(item.dataset.draftId, item); }
   else if (form.matches('.archive-form')) { event.preventDefault(); archiveRows([item], item.dataset.archived !== '1'); }
   else if (form.matches('.suggest-form')) { event.preventDefault(); acceptSuggestion(form); }
 });
@@ -313,7 +381,7 @@ function snippet(html) {
 function setDesc(row, draft) {
   const main = $('.row-main', row);
   const old = $('.row-desc', main);
-  let next = row._desc?.cloneNode(true) || null;
+  let next = row._desc?.cloneNode(true) || (draft.description ? el('p', { class: 'row-desc' }, draft.description) : null);
   const marked = draft.snippet ? snippet(String(draft.snippet)) : null;
   if (draft.snippet) {
     next = el('p', { class: 'row-desc' });
@@ -332,7 +400,9 @@ async function remoteSearch() {
     if (!res.ok || !state.ok) throw new Error(state.error || 'Search failed.');
   } catch (err) { if (mine === seq) fail(err); return; }
   if (mine !== seq) return;
-  const rows = new Map($$('section.group:not([data-shared]) .draft-row').map((row) => [row.dataset.draftId, row]));
+  // An archived row is gone from this view. If the server still lists it, load the page.
+  const rows = new Map($$('section.group:not([data-shared]) .draft-row').filter((row) => !row._gone)
+    .map((row) => [row.dataset.draftId, row]));
   if (state.view !== view || state.drafts.some((d) => !rows.has(d.draftId))) { location.assign(page); return; }
   const order = new Map(state.drafts.map((d, i) => [d.draftId, i]));
   for (const [id, row] of rows) {
@@ -345,8 +415,24 @@ async function remoteSearch() {
       .forEach((row) => list.append(row));
   }
   syncSort(state);
+  syncLinks();
   refresh();
   history.replaceState(history.state, '', page);
+}
+// Links that the server built for the old query get the new one.
+function syncLinks() {
+  const q = search.value.trim();
+  for (const a of $$('a.dir, .facets a.pill, .row-meta > a.pill')) {
+    const u = new URL(a.href, location.origin);
+    if (q) u.searchParams.set('q', q); else u.searchParams.delete('q');
+    a.href = u.href;
+  }
+  const qs = params();
+  const show = ['q', 'tag', 'repo'].some((k) => qs.get(k));
+  ['q', 'tag', 'repo'].forEach((k) => qs.delete(k));
+  let clear = $('a.clear', toolbar);
+  if (show && !clear) toolbar.append(clear = el('a', { class: 'clear' }, 'Clear'));
+  if (clear) { clear.hidden = !show; clear.href = `${base}/dashboard${qs.size ? `?${qs}` : ''}`; }
 }
 function syncSort(state) {
   const select = $('#dash-sort');
@@ -465,7 +551,7 @@ function commands() {
   const out = [];
   const row = focused();
   if (row && !row.matches('.shared')) {
-    out.push({ label: `${row.dataset.favorite === '1' ? 'Unstar' : 'Star'} focused draft`, hint: 'F', run: () => toggleFavorite(row.dataset.draftId) });
+    out.push({ label: `${row.dataset.favorite === '1' ? 'Unstar' : 'Star'} focused draft`, hint: 'F', run: () => toggleFavorite(row.dataset.draftId, row) });
     out.push({ label: `${row.dataset.archived === '1' ? 'Unarchive' : 'Archive'} focused draft`, hint: 'E', run: () => archiveRows([row], row.dataset.archived !== '1') });
   }
   if (row?.dataset.shareUrl) out.push({ label: 'Copy share URL', hint: 'C', run: () => copyUrl(row.dataset.shareUrl) });
@@ -475,11 +561,11 @@ function commands() {
     if (seen.has(d.draftId) || !d.shareUrl) continue;
     seen.add(d.draftId);
     out.push({ label: d.title || 'Untitled', hint: d.detailUrl ? '↵ open · ⇧↵ details' : 'Open',
-      run: (shift) => (shift && d.detailUrl ? location.assign(d.detailUrl) : window.open(d.shareUrl, '_blank', 'noopener')) });
+      run: (shift) => (shift && d.detailUrl ? openDetail(d.detailUrl) : openShare(d.shareUrl)) });
   }
   [['active', 'Active'], ['favorites', 'Favorites'], ['living', 'Living'], ['shared', 'Shared'], ['archived', 'Archived']]
     .forEach(([key, name], i) => out.push({ label: `View: ${name}`, hint: String(i + 1), run: go(viewUrl(key)) }));
-  for (const pill of $$('.facets a.pill')) out.push({ label: `${pill.href.includes('repo=') ? 'Repo' : 'Tag'}: ${pill.firstChild.textContent}`, hint: 'Filter', run: go(pill.href) });
+  for (const pill of $$('.facets a.pill')) out.push({ label: `${pill.dataset.facet === 'repo' ? 'Repo' : 'Tag'}: ${pill.firstChild.textContent}`, hint: 'Filter', run: go(pill.href) });
   for (const [id, word] of [['dash-sort', 'Sort by'], ['dash-group', 'Group by']]) {
     const select = $(`#${id}`);
     for (const option of select ? select.options : []) {
@@ -506,7 +592,8 @@ function renderPalette() {
 }
 function mark() {
   $$('li[role=option]', palList).forEach((li, i) => li.setAttribute('aria-selected', String(i === active && shown.length > 0)));
-  palInput.setAttribute('aria-activedescendant', shown.length ? `pal-${active}` : '');
+  if (shown.length) palInput.setAttribute('aria-activedescendant', `pal-${active}`);
+  else palInput.removeAttribute('aria-activedescendant');
   $(`#pal-${active}`)?.scrollIntoView({ block: 'nearest' });
 }
 function choose(i, shift) { const item = shown[i]; if (!item) return; palette.close(); item.run(shift); }
@@ -561,9 +648,9 @@ document.addEventListener('keydown', (event) => {
   const handlers = {
     '/': () => search?.focus(),
     j: () => move(1), ArrowDown: () => move(1), k: () => move(-1), ArrowUp: () => move(-1),
-    Enter: () => row?.dataset.shareUrl && window.open(row.dataset.shareUrl, '_blank', 'noopener'),
-    o: () => row?.dataset.detailUrl && location.assign(row.dataset.detailUrl),
-    f: () => ownedRow && toggleFavorite(ownedRow.dataset.draftId),
+    Enter: () => openShare(row?.dataset.shareUrl),
+    o: () => openDetail(row?.dataset.detailUrl),
+    f: () => ownedRow && toggleFavorite(ownedRow.dataset.draftId, ownedRow),
     e: () => ownedRow && archiveRows([ownedRow], ownedRow.dataset.archived !== '1'),
     z: runUndo,
     c: () => copyUrl(row?.dataset.shareUrl),

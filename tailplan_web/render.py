@@ -362,6 +362,24 @@ def external_link(url: object, label: str, *, css: str = "") -> str:
     return f'<a href="{esc(url)}"{css_attr} target="_blank" rel="noopener noreferrer">{esc(label)}</a>'
 
 
+def _http_url(url: object) -> str:
+    """Return the URL if it is an absolute http or https URL. Else return an empty string."""
+    try:
+        parsed = urlparse(str(url or ""))
+    except ValueError:
+        return ""
+    if parsed.scheme not in {"https", "http"} or not parsed.hostname:
+        return ""
+    return str(url)
+
+
+def _desc_attr(draft: dict) -> str:
+    """Keep the plain description when a search snippet replaces it, so the script can restore it."""
+    if not draft.get("snippet"):
+        return ""
+    return f' data-desc="{esc(draft.get("description") or "")}"'
+
+
 def sharing_badges(draft: dict) -> str:
     badges = ""
     if draft.get("workspace"):
@@ -537,7 +555,7 @@ def _render_dashboard_row(base_url: str, session: dict, draft: dict, *, show_rep
     row = (f'<article class="{classes}" id="d-{draft_id}" data-draft-id="{draft_id}" data-title="{esc(draft.get("title"))}"'
            f' data-tags="{esc(" ".join(tags))}" data-favorite="{"1" if draft.get("favorite") else "0"}"'
            f' data-archived="{"1" if archived else "0"}" data-versions="{int(draft.get("versionCount") or 1)}"'
-           f' data-share-url="{esc(draft.get("shareUrl"))}"'
+           f' data-share-url="{esc(_http_url(draft.get("shareUrl")))}"{_desc_attr(draft)}'
            f' data-detail-url="{detail_url}" data-s="{esc(_search_text(draft))}">')
     row += (f'<input type="checkbox" class="row-select" name="ids" value="{draft_id}" hidden '
             f'aria-label="Select {esc(draft.get("title"))}">')
@@ -581,8 +599,8 @@ def _render_shared_row(draft: dict, *, now: datetime | None = None) -> str:
     """Render one draft that another account shared. It has no owner actions."""
     now = now or datetime.now(UTC)
     row = (f'<article class="draft-row shared" data-draft-id="{esc(draft.get("draftId"))}"'
-           f' data-title="{esc(draft.get("title"))}" data-share-url="{esc(draft.get("shareUrl"))}"'
-           f' data-s="{esc(_search_text(draft, include_tags=False))}">')
+           f' data-title="{esc(draft.get("title"))}" data-share-url="{esc(_http_url(draft.get("shareUrl")))}"'
+           f'{_desc_attr(draft)} data-s="{esc(_search_text(draft, include_tags=False))}">')
     row += f'<div class="row-main"><h3 class="row-title">{external_link(draft.get("shareUrl"), draft.get("title") or "Untitled")}</h3>'
     if draft.get("snippet"):
         row += f'<p class="row-desc">{_snippet_html(draft["snippet"])}</p>'
@@ -688,7 +706,7 @@ def _facets(raw: str, state: dict) -> str:
             value = str(item.get(key) or "")
             on = value.lower() == selected.lower()
             href = raw + _dash_path(state, **{key: "" if on else value})
-            strips += (f'<a class="pill{" on" if on else ""}" href="{esc(href)}"'
+            strips += (f'<a class="pill{" on" if on else ""}" data-facet="{key}" href="{esc(href)}"'
                        f'{_CURRENT_TRUE if on else ""}>{esc(value)}'
                        f'<span class="num">{int(item.get("count") or 0)}</span></a>')
     return f'<div class="facets">{strips}</div>' if strips else ""
@@ -708,7 +726,7 @@ def _favorites_shelf(raw: str, session: dict, state: dict, next_path: str) -> st
         label = (draft.get("tags") or [None])[0] or _repo_label(draft)
         detail_url = f'{base}/dashboard/drafts/{esc(draft["draftId"])}'
         shelf += (f'<article class="pin" data-draft-id="{esc(draft["draftId"])}" data-favorite="1"'
-                  f' data-title="{esc(draft.get("title"))}" data-share-url="{esc(draft.get("shareUrl"))}"'
+                  f' data-title="{esc(draft.get("title"))}" data-share-url="{esc(_http_url(draft.get("shareUrl")))}"'
                   f' data-detail-url="{detail_url}">'
                   f'{_star_form(base, draft, session["csrf"], next_path)}<div class="pin-body">'
                   f'<div class="pin-title">{external_link(draft.get("shareUrl"), draft.get("title") or "Untitled")}</div>'

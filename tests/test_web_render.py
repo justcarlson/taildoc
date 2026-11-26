@@ -417,3 +417,26 @@ class WebRoutes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DashboardScriptHooksTests(unittest.TestCase):
+    def test_share_url_attribute_allows_only_http_and_https(self) -> None:
+        session = {"csrf": "c"}
+        for url, kept in (("javascript:alert(1)", False), ("data:text/html,x", False), ("//evil.test/x", False),
+                          ("https://tailnet.example/d/a/share", True), ("http://127.0.0.1:8/d/a/share", True)):
+            draft = {"draftId": "abc", "title": "T", "shareUrl": url}
+            for html in (render._render_dashboard_row(BASE, session, draft), render._render_shared_row(draft)):
+                attr = re.search(r'data-share-url="([^"]*)"', html)[1]
+                self.assertEqual(render.esc(url) if kept else "", attr, url)
+
+    def test_snippet_rows_keep_the_plain_description(self) -> None:
+        draft = {"draftId": "abc", "title": "T", "description": "Plain <text>", "snippet": "a <mark>hit</mark>"}
+        html = render._render_dashboard_row(BASE, {"csrf": "c"}, draft)
+        self.assertIn('data-desc="Plain &lt;text&gt;"', html)
+        self.assertNotIn("data-desc", render._render_dashboard_row(BASE, {"csrf": "c"}, {**draft, "snippet": ""}))
+
+    def test_facet_pills_name_their_kind(self) -> None:
+        html = render._facets(BASE, {"view": "active", "repo": "acme/web", "tags": [{"tag": "ops", "count": 1}],
+                                     "repos": [{"repo": "acme/web", "count": 1}]})
+        self.assertRegex(html, r'data-facet="tag" href="[^"]*repo=acme')
+        self.assertIn('data-facet="repo"', html)

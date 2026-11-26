@@ -233,3 +233,181 @@ def test_fits_a_phone_with_the_bulk_bar(page, dash):
     page.keyboard.press("Control+k")
     assert page.evaluate("document.documentElement.scrollWidth") <= 390
     assert not dash.errors
+
+
+def favorite(dash, slug, on=True):
+    status, body = dash.api(f"/api/drafts/{slug}", "PATCH", {"favorite": on}, token=TOKEN)
+    assert status == 200, body
+
+
+def pin(page, dash, slug):
+    return page.locator(f'.pin[data-draft-id="{dash.ids[slug]}"]')
+
+
+def fail_route(page, pattern):
+    page.route(pattern, lambda route: route.fulfill(status=500, content_type="application/json",
+                                                    body='{"ok": false, "error": "Test failure."}'))
+
+
+def real_errors(dash):
+    # A forced 500 logs "Failed to load resource" in the console. Other errors are bugs.
+    return [error for error in dash.errors if "Failed to load resource" not in error]
+
+
+def test_unstar_from_the_shelf_removes_the_pin_and_holds_the_page(page, dash):
+    favorite(dash, "alpha-plan")
+    page.set_viewport_size({"width": 1280, "height": 420})
+    open_dashboard(page, dash)
+    assert pin(page, dash, "alpha-plan").is_visible()
+    # Scroll so the shelf is at the top, then hold the first list section in place.
+    page.evaluate("window.scrollTo(0, document.querySelector('.shelf').offsetTop - 8)")
+    below = page.locator("section.group").first
+    top = below.evaluate("(n) => n.getBoundingClientRect().top")
+    count = page.locator('.tab[data-view="favorites"] .num')
+    pin(page, dash, "alpha-plan").locator(".star-form button").click()
+    expect(pin(page, dash, "alpha-plan")).to_have_count(0)
+    expect(page.locator(".shelf")).to_be_hidden()
+    assert row(page, dash, "alpha-plan").get_attribute("data-favorite") == "0"
+    assert count.inner_text() == "0"
+    assert abs(below.evaluate("(n) => n.getBoundingClientRect().top") - top) <= 1
+    page.wait_for_timeout(200)
+    assert not api_draft(dash, "alpha-plan")["favorite"]
+    # A new star puts the pin back on the shelf.
+    row(page, dash, "alpha-plan").locator(".star-form button").click()
+    expect(pin(page, dash, "alpha-plan")).to_be_visible()
+    assert same_page(page)
+    assert not dash.errors
+
+
+def test_a_failed_first_star_removes_the_new_pin(page, dash):
+    open_dashboard(page, dash)
+    fail_route(page, "**/favorite")
+    row(page, dash, "charlie-plan").locator(".star-form button").click()
+    page.wait_for_selector(".toast.error")
+    expect(pin(page, dash, "charlie-plan")).to_have_count(0)
+    expect(page.locator(".shelf")).to_be_hidden()
+    assert row(page, dash, "charlie-plan").get_attribute("data-favorite") == "0"
+    assert page.locator('.tab[data-view="favorites"] .num').inner_text() == "0"
+    assert not real_errors(dash)
+
+
+def test_unstar_on_favorites_hides_the_row_and_a_failure_restores_it(page, dash):
+    favorite(dash, "alpha-plan")
+    favorite(dash, "bravo-plan")
+    open_dashboard(page, dash, "?view=favorites")
+    alpha, bravo = row(page, dash, "alpha-plan"), row(page, dash, "bravo-plan")
+    alpha.locator(".star-form button").click()
+    expect(alpha).to_be_hidden()
+    page.wait_for_timeout(200)
+    assert not api_draft(dash, "alpha-plan")["favorite"]
+    fail_route(page, "**/unfavorite")
+    bravo.locator(".star-form button").click()
+    page.wait_for_selector(".toast.error")
+    expect(bravo).to_be_visible()
+    assert bravo.get_attribute("data-favorite") == "1"
+    assert api_draft(dash, "bravo-plan")["favorite"]
+    assert same_page(page)
+    assert not real_errors(dash)
+
+
+def test_each_undo_button_undoes_its_own_archive(page, dash):
+    open_dashboard(page, dash)
+    bravo, charlie = row(page, dash, "bravo-plan"), row(page, dash, "charlie-plan")
+    bravo.locator(".archive-form button").click()
+    page.wait_for_selector(".toast:has-text('Archived “Bravo plan”')")
+    charlie.locator(".archive-form button").click()
+    page.wait_for_selector(".toast:has-text('Archived “Charlie plan”')")
+    page.locator(".toast", has_text="Bravo plan").get_by_role("button", name="Undo").click()
+    page.wait_for_selector(".toast:has-text('Restored “Bravo plan”')")
+    expect(bravo).to_be_visible()
+    expect(charlie).to_be_hidden()
+    assert not api_draft(dash, "bravo-plan")["archived"]
+    assert api_draft(dash, "charlie-plan")["archived"]
+    # The z key still undoes the latest archive.
+    page.locator("body").press("z")
+    page.wait_for_selector(".toast:has-text('Restored “Charlie plan”')")
+    expect(charlie).to_be_visible()
+    assert not api_draft(dash, "charlie-plan")["archived"]
+    assert not dash.errors
+
+
+def test_archive_key_moves_the_cursor(page, dash):
+    open_dashboard(page, dash)
+    ids = page.locator("section.group .draft-row").evaluate_all("(rows) => rows.map((r) => r.dataset.draftId)")
+    cursor = page.locator('.draft-row[data-cursor="1"]')
+    page.keyboard.press("j")
+    page.keyboard.press("e")
+    expect(cursor).to_have_attribute("data-draft-id", ids[1])
+    # On the last row, the cursor goes to the row above.
+    for _ in ids:
+        page.keyboard.press("j")
+    expect(cursor).to_have_attribute("data-draft-id", ids[-1])
+    page.keyboard.press("e")
+    expect(cursor).to_have_attribute("data-draft-id", ids[-2])
+    page.wait_for_timeout(200)
+    assert api_draft(dash, next(s for s, i in dash.ids.items() if i == ids[0]))["archived"]
+    assert not dash.errors
+
+
+def test_the_bulk_bar_follows_the_filter(page, dash):
+    open_dashboard(page, dash)
+    row(page, dash, "alpha-plan").locator(".row-select").check()
+    bar = page.locator(".bulk-bar")
+    expect(bar).to_be_visible()
+    page.locator("#dash-q").fill("bravo")
+    expect(bar).to_be_hidden()
+    page.locator("#dash-q").fill("")
+    expect(bar).to_be_visible()
+    expect(bar.locator(".count")).to_have_text("1 selected")
+    assert not dash.errors
+
+
+def test_is_archived_finds_a_draft_archived_on_this_page(page, dash):
+    open_dashboard(page, dash)
+    row(page, dash, "bravo-plan").locator(".archive-form button").click()
+    page.wait_for_selector(".toast:has-text('Archived')")
+    page.locator("#dash-q").fill("is:archived")
+    page.wait_for_url(re.compile(r".*q=is%3Aarchived"))
+    expect(row(page, dash, "bravo-plan")).to_be_visible()
+    expect(row(page, dash, "alpha-plan")).to_have_count(0)
+    assert not dash.errors
+
+
+def test_search_restores_plain_descriptions_and_syncs_links(page, dash):
+    dash.upload("<title>Echo plan</title><p>A wombat count.</p>", slug="echo-plan", description="Field notes.",
+                tags=["fauna"])
+    # A page loaded with ?q= shows a snippet. A tag search has no snippet, so the row shows its description.
+    open_dashboard(page, dash, "?q=wombat")
+    echo = page.locator('section.group .draft-row[data-title="Echo plan"]')
+    expect(echo.locator(".row-desc mark")).to_have_count(1)
+    page.locator("#dash-q").fill("tag:fauna")
+    expect(page).to_have_url(re.compile(r".*[?&]q=tag%3Afauna"))
+    expect(echo.locator(".row-desc mark")).to_have_count(0)
+    expect(echo.locator(".row-desc")).to_have_text("Field notes.")
+    assert same_page(page)
+    open_dashboard(page, dash)
+    expect(page.locator("a.clear")).to_have_count(0)
+    page.locator("#dash-q").fill("budget")
+    expect(page).to_have_url(re.compile(r".*[?&]q=budget"))
+    expect(page.locator("a.clear")).to_be_visible()
+    assert "q=budget" in page.locator("a.dir").get_attribute("href")
+    assert all("q=budget" in href for href in page.locator(".facets a.pill").evaluate_all("(a) => a.map((n) => n.href)"))
+    page.locator("#dash-q").press("Escape")
+    expect(page).not_to_have_url(re.compile(r".*[?&]q="))
+    expect(page.locator("a.clear")).to_be_hidden()
+    assert "q=" not in page.locator("a.dir").get_attribute("href")
+    assert not dash.errors
+
+
+def test_palette_labels_facets_with_a_repo_filter(page, dash):
+    dash.upload("<title>Echo plan</title><p>Echo.</p>", slug="echo-plan", tags=["ops"],
+                metadata={"repoOrg": "acme", "repoName": "web"})
+    open_dashboard(page, dash, "?repo=acme%2Fweb")
+    assert page.locator('.facets a.pill[data-facet="tag"]').count() >= 1
+    page.keyboard.press("Control+k")
+    labels = page.locator("dialog.palette li[role=option] > span").all_inner_texts()
+    assert "Tag: ops" in labels and "Repo: acme/web" in labels
+    assert "Repo: ops" not in labels
+    page.keyboard.type("zzzz-no-match")
+    assert page.locator("#pal-list").evaluate("() => document.querySelector('dialog.palette input').hasAttribute('aria-activedescendant')") is False
+    assert not dash.errors
