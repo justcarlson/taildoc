@@ -13,10 +13,11 @@ ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 CONTENT_TYPES = {
     ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
     ".svg": "image/svg+xml",
     ".woff2": "font/woff2",
 }
-REQUIRED = ("tailplan-mark.svg", "geist-sans.woff2", "geist-mono.woff2")
+REQUIRED = ("tailplan-mark.svg", "geist-sans.woff2", "geist-mono.woff2", "dashboard.js")
 
 
 class WebAssetError(RuntimeError):

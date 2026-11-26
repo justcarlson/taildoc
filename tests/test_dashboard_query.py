@@ -420,6 +420,30 @@ class DashboardPageTests(DashCase):
         status, _headers, _body = self.post("/dashboard/theme", {"theme": "dark"}, csrf=False)
         self.assertEqual(403, status)
 
+    def nonce_page(self, path: str) -> tuple[str, str]:
+        status, headers, body = self.request(path, cookies=[self.cookie])
+        self.assertEqual(200, status, path)
+        csp = headers["Content-Security-Policy"]
+        match = re.search(r"script-src 'nonce-([A-Za-z0-9_-]{22})'; connect-src 'self'; ", csp)
+        self.assertIsNotNone(match, csp)
+        self.assertNotIn("unsafe-inline' ", csp.split("style-src")[0])
+        self.assertIn("font-src 'self'", csp)
+        self.assertRegex(body.decode(), rf'<script type="module" nonce="{match[1]}" src="[^"]*/assets/dashboard\.[0-9a-f]{{8}}\.js" defer>')
+        return match[1], body.decode()
+
+    def test_management_pages_get_a_new_script_nonce(self) -> None:
+        draft_id = self.upload("<title>Plan</title><p>walrus</p>")["draftId"]
+        first, _page = self.nonce_page("/dashboard")
+        second, _page = self.nonce_page("/dashboard")
+        self.assertNotEqual(first, second)
+        for path in ("/cli/auth", "/cli/activate", f"/dashboard/drafts/{draft_id}"):
+            self.nonce_page(path)
+        status, headers, _body = self.request("/auth/sign-in")
+        self.assertIn("script-src 'none'", headers["Content-Security-Policy"])
+        status, headers, _body = self.request(f"/d/{draft_id}/share", cookies=[self.cookie])
+        self.assertIn("script-src 'none'", headers.get("Content-Security-Policy", ""), status)
+        self.assertNotIn("nonce-", headers.get("Content-Security-Policy", ""))
+
     def test_audit_never_holds_body_or_query_text(self) -> None:
         draft_id = self.upload("<title>Plan</title><p>secretbodytext</p>")["draftId"]
         self.request("/dashboard?format=json&q=secretquerytext", cookies=[self.cookie])
@@ -549,6 +573,44 @@ class ReviewStoreTests(StoreCase):
         parsed = server.parse_dashboard_query("age:>1d")
         now = server.datetime(2026, 6, 1, tzinfo=server.UTC)
         self.assertTrue(server._matches_query(naive, parsed, granted=set(), shared_view=False, now=now))
+
+
+class ReviewMinorTests(StoreCase):
+    def test_remove_tags_take_any_count(self) -> None:
+        many = [f"t{i}" for i in range(server.MAX_TAGS_PER_DRAFT + 5)]
+        with self.assertRaises(ValueError):
+            server.normalize_tags(many)
+        self.assertEqual(len(many), len(server.normalize_tags(many, limit=None)))
+        draft_id = seed(self.store, "<title>Plan</title>", tags=["keep", "t1"])
+        self.store.patch_draft("local", draft_id, BASE, remove_tags=many)
+        self.assertEqual(["keep"], self.store.resolve_draft(draft_id)["tags"])
+
+    def test_page_text_has_one_budget_and_a_parser_per_page(self) -> None:
+        self.assertEqual("one two", server.extract_pages_text(["<p>one<script>x", "<p>two"]))
+
+        def pages():
+            yield "<p>" + "a" * 20
+            raise AssertionError("read past the budget")
+
+        self.assertEqual(10, len(server.extract_pages_text(pages(), limit=10)))
+        draft_id = self.store.upsert(None, None, None, BASE, files=[
+            {"path": "index.html", "html": "<title>T</title><style>p{</style><a href='b.html'>b</a>"},
+            {"path": "b.html", "html": "<p>pagebword</p>"}])["draftId"]
+        self.assertIn(draft_id, self.search("pagebword"))
+
+    def test_is_archived_needs_an_archived_draft(self) -> None:
+        parsed = server.parse_dashboard_query("is:archived")
+        kwargs = {"granted": set(), "shared_view": False, "now": server.datetime.now(server.UTC)}
+        self.assertFalse(server._matches_query(row("a", "A", archived=False), parsed, **kwargs))
+        self.assertTrue(server._matches_query(row("b", "B", archived=True), parsed, **kwargs))
+
+    def test_state_reports_ranked_and_repo_facet_alone_matches(self) -> None:
+        seed(self.store, "<title>Plan</title><p>walrus</p>")
+        auth = server.AuthConfig(modes=("api_key",), policy=server.RBACPolicy(None))
+        state = server.query_dashboard(self.store, auth, "local", BASE, q="walrus")
+        self.assertTrue(state["ranked"])
+        self.assertFalse(server.query_dashboard(self.store, auth, "local", BASE, q="is:favorite")["ranked"])
+        self.assertEqual([], server.query_dashboard(self.store, auth, "local", BASE, q="---", repo="acme/app")["drafts"])
 
 
 class SuggestionRuleTests(unittest.TestCase):

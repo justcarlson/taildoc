@@ -252,6 +252,11 @@ def _server_pages():
     snippet = 'a long passage ' * 6 + '<mark>' + 'unbrokenmatch' * 6 + '</mark> and more'
     dash = lambda **change: server.render_dashboard(base, session, rows, shared=shared, state=dict(state, **change),
                                                     theme='dark')
+    # With JavaScript, the page shows the row checkboxes and a `js-ready` root class.
+    script_on = lambda doc: doc.replace('<html lang', '<html class="js-ready" lang', 1).replace(
+        '" hidden aria-label="Select', '" aria-label="Select')
+    info = {'userCode': 'ABCD-EFGH', 'clientName': 'tailplan-cli on a-host-with-a-long-name.example',
+            'expiresAt': '2026-11-14T10:10:00Z'}
     return {
         'home': server.home(base),
         'not-found': server.not_found(),
@@ -264,6 +269,9 @@ def _server_pages():
         'dash-group-tag': dash(group='tag'),
         'dash-search': dash(q='unbrokenmatch', sort='relevance', tag='ops',
                             drafts=[dict(r, snippet=snippet) for r in rows]),
+        'dash-select': script_on(dash()),
+        'activate': server.render_activate(base, session, 'ABCD-EFGH', info),
+        'activate-done': server.render_activate(base, session, 'ABCD-EFGH', info, result='approved'),
         'detail': server.render_detail(base, session, {'draft': draft, 'versions': [version, dict(version, versionNumber=2)]}),
         'keys': server.render_keys(base, session, [key]),
         'new-key': server.render_key(base, session, {'apiKey': {'name': 'Laptop'}, 'token': 'tp_' + 'z' * 60}),
