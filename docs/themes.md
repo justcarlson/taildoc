@@ -4,7 +4,7 @@ Tailplan separates content, layout, palette, and typography.
 The server renders Markdown or plain text once, when you publish a version.
 Each version stores complete HTML, inline CSS, and resolved theme metadata.
 Later palette changes do not change stored versions.
-Static HTML uploads keep their original bytes and styles.
+Static HTML uploads keep their original bytes and styles, unless the page opts in to Tailplan UI.
 Theme options on HTML uploads return an error.
 
 ## List and select
@@ -274,3 +274,53 @@ Clients need no font assets.
 
 Browser tests cover both presets with every palette at mobile and desktop sizes.
 They verify heading, body, and code fonts, print output, and horizontal overflow.
+
+## Tailplan UI
+
+Tailplan UI is a set of CSS slots for HTML pages. It needs no JavaScript and no `<form>` element.
+Add `<meta name="tailplan-ui" content="1">` to opt in.
+At upload, the server adds one `<style id="tp-ui">` block with only the CSS that the page uses.
+A page without the meta tag keeps its exact bytes.
+The 512 KB size limit applies to the page after bundling.
+
+Mark an element with `data-slot="name"`. Eighteen primitives and twelve blocks exist.
+Primitives are small parts, such as `button`, `card`, `tabs`, and `table`.
+Blocks are page parts, such as `doc-header`, `verdict`, `stat-strip`, and `compare-matrix`.
+`GET /api/ui` lists every slot, its subslots, its variants, and a markup example.
+The catalog also lists the 24 icons, presets, surfaces, accents, and viz sets.
+The endpoint needs no upload credential, as for `/api/themes`.
+Use `tailplan_ui.icon_sprite(names)` to get the SVG sprite for `<use href="#tp-icon-name"/>`.
+
+All slot CSS sits in `@layer tp.primitives` or `@layer tp.blocks`. Selectors use `:where()`, so they have no weight.
+Your own unlayered CSS always wins, with no `!important`.
+Layouts fit 320px and the folded iPhone sizes 382x580 and 594x368.
+Do not use 600px or 640px breakpoints. Use 560px, 700px, or 900px.
+
+### Checks
+
+`tailplan check` and every upload run eight static checks. Each result is a warning, never an error.
+
+| Code | Finding |
+| --- | --- |
+| `ui-unknown-slot` | An opted-in page uses a `data-slot` that the catalog does not list. The message names the closest slot. |
+| `ui-breakpoint` | A media query uses 600px or 640px. |
+| `ui-nowrap-ellipsis` | Prose, a heading, or a cell uses `nowrap` with an ellipsis. |
+| `ui-input-font-size` | An input, select, or textarea has text under 16px. iOS zooms in on focus. |
+| `ui-no-dark-mode` | The page has its own CSS and no dark mode. Set `<html data-ui-mode="light">` to opt out. |
+| `ui-viewport-height` | A height uses `100vh` or `100dvh`. |
+| `ui-fixed-bottom` | A fixed element sits at `bottom: 0`. The Safari URL pill covers it. |
+| `ui-chart-unlinked` | A chart has no link to its source. |
+
+Pages that Tailplan renders from Markdown skip these checks.
+Opted-in pages already have dark mode.
+
+### Extend the catalog
+
+Add a primitive or a block in four steps:
+
+1. Put its CSS in `tailplan_ui/primitives/` or `tailplan_ui/blocks/`.
+2. Start each chunk with `/* @chunk id when=slot:name|subslot */`.
+3. List the slot in `tailplan_ui/registry.json` with the same chunk id.
+4. Run the tests.
+
+The registry also reads `tailplan_ui/wireframes/registry_items.json` when that file exists.

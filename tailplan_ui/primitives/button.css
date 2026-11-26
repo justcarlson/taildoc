@@ -1,0 +1,46 @@
+/* tp.primitives: buttons. Zero JavaScript. Variants use data-variant and sizes use data-size. */
+/* @chunk button when=slot:button */
+@layer tp.primitives {
+  :where([data-slot="button"]) {
+    --_bg: var(--secondary);
+    --_fg: var(--secondary-foreground);
+    --_bd: var(--border);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5em;
+    min-height: 2.25rem;
+    padding: 0 1rem;
+    font: inherit;
+    font-weight: 600;
+    line-height: 1.2;
+    text-align: center;
+    text-decoration: none;
+    cursor: pointer;
+    background: var(--_bg);
+    color: var(--_fg);
+    border: 1px var(--line) var(--_bd);
+    border-radius: var(--radius);
+    transition: background-color 0.12s, border-color 0.12s, color 0.12s;
+  }
+  :where([data-slot="button"][data-variant="primary"]) { --_bg: var(--primary); --_fg: var(--primary-foreground); --_bd: var(--primary-edge); }
+  :where([data-slot="button"][data-variant="outline"]) { --_bg: transparent; --_fg: var(--foreground); --_bd: var(--border-strong); }
+  :where([data-slot="button"][data-variant="ghost"]) { --_bg: transparent; --_fg: var(--foreground); --_bd: transparent; }
+  :where([data-slot="button"][data-variant="destructive"]) { --_bg: var(--destructive); --_fg: var(--background); --_bd: var(--destructive); }
+  :where([data-slot="button"][data-size="sm"]) { min-height: 1.875rem; padding: 0 0.75rem; font-size: 0.875em; }
+  :where([data-slot="button"][data-size="lg"]) { min-height: 2.75rem; padding: 0 1.4rem; font-size: 1.0625em; }
+  :where([data-slot="button"][data-size="icon"]) { min-width: 2.25rem; padding: 0; }
+  @media (hover: hover) {
+    :where([data-slot="button"]:hover) { border-color: var(--accent-hover); }
+    :where([data-slot="button"][data-variant="primary"]:hover) { background: var(--primary-hover); border-color: var(--primary-hover); }
+    :where([data-slot="button"][data-variant="outline"]:hover) { background: var(--accent-surface); color: var(--primary-hover-ink); }
+    :where([data-slot="button"][data-variant="ghost"]:hover) { background: var(--accent-surface); color: var(--primary-hover-ink); border-color: transparent; }
+    :where([data-slot="button"][data-variant="destructive"]:hover) { background: color-mix(in oklab, var(--destructive) 86%, var(--foreground)); border-color: transparent; }
+  }
+  :where([data-slot="button"]:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
+  :where([data-slot="button"]:active) { translate: 0 1px; }
+  :where([data-slot="button"]:disabled, [data-slot="button"][aria-disabled="true"]) { opacity: 0.5; cursor: not-allowed; pointer-events: none; }
+  @media (pointer: coarse) {
+    :where([data-slot="button"]) { min-height: 44px; min-width: 44px; }
+  }
+}

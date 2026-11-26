@@ -1,0 +1,89 @@
+/* tp.primitives: tabs and disclosures. No JavaScript. */
+/* Tabs are radio inputs in labels. Tab N shows panel N. The first panel shows when no other tab is checked. */
+/* @chunk tabs when=slot:tabs|tab-list|tab|tab-panel */
+@layer tp.primitives {
+  :where([data-slot="tabs"]) { display: block; }
+  :where([data-slot="tab-list"]) {
+    display: flex;
+    gap: 0.25rem;
+    overflow-x: auto;
+    border-block-end: 1px var(--line) var(--border);
+    scrollbar-width: thin;
+  }
+  :where([data-slot="tab"]) { position: relative; flex: none; display: flex; margin-block-end: -1px; }
+  :where([data-slot="tab"] > input) { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+  :where([data-slot="tab"] > span) {
+    display: flex;
+    align-items: center;
+    min-height: 2.5rem;
+    padding: 0 0.9rem;
+    font-weight: 600;
+    color: var(--muted-foreground);
+    border-block-end: 2px solid transparent;
+    white-space: nowrap;
+  }
+  :where([data-slot="tab"]:has(> input:checked) > span) { color: var(--foreground); border-block-end-color: var(--primary); }
+  :where([data-slot="tab"]:has(> input:focus-visible)) { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: var(--radius); }
+  @media (hover: hover) {
+    :where([data-slot="tab"]:hover > span) { color: var(--primary-hover-ink); }
+  }
+  @media (pointer: coarse) {
+    :where([data-slot="tab"] > span) { min-height: 44px; }
+  }
+  :where([data-slot="tabs"] > [data-slot="tab-panel"]) { display: none; padding-block: var(--space); }
+  :where([data-slot="tabs"] > [data-slot="tab-panel"]:nth-child(2)) { display: block; }
+  :where([data-slot="tabs"]:has(> [data-slot="tab-list"] > [data-slot="tab"]:nth-child(n+2) > input:checked) > [data-slot="tab-panel"]:nth-child(2)) { display: none; }
+  :where([data-slot="tabs"]:has(> [data-slot="tab-list"] > [data-slot="tab"]:nth-child(2) > input:checked) > [data-slot="tab-panel"]:nth-child(3)) { display: block; }
+  :where([data-slot="tabs"]:has(> [data-slot="tab-list"] > [data-slot="tab"]:nth-child(3) > input:checked) > [data-slot="tab-panel"]:nth-child(4)) { display: block; }
+  :where([data-slot="tabs"]:has(> [data-slot="tab-list"] > [data-slot="tab"]:nth-child(4) > input:checked) > [data-slot="tab-panel"]:nth-child(5)) { display: block; }
+  :where([data-slot="tabs"]:has(> [data-slot="tab-list"] > [data-slot="tab"]:nth-child(5) > input:checked) > [data-slot="tab-panel"]:nth-child(6)) { display: block; }
+  :where([data-slot="tabs"]:has(> [data-slot="tab-list"] > [data-slot="tab"]:nth-child(6) > input:checked) > [data-slot="tab-panel"]:nth-child(7)) { display: block; }
+}
+/* @chunk disclosure when=slot:disclosure|accordion */
+@layer tp.primitives {
+  :where([data-slot="disclosure"]) {
+    background: var(--card);
+    color: var(--card-foreground);
+    border: 1px var(--line) var(--border);
+    border-radius: var(--radius);
+    interpolate-size: allow-keywords;
+  }
+  :where([data-slot="disclosure"] > summary) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    min-height: var(--tap);
+    padding: 0.5rem 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    list-style: none;
+  }
+  :where([data-slot="disclosure"] > summary)::-webkit-details-marker { display: none; }
+  :where([data-slot="disclosure"] > summary)::after {
+    content: "";
+    flex: none;
+    width: 0.5em;
+    height: 0.5em;
+    margin-block-start: -0.25em;
+    border-inline-end: 2px solid currentColor;
+    border-block-end: 2px solid currentColor;
+    rotate: 45deg;
+    transition: rotate 0.15s, margin 0.15s;
+  }
+  :where([data-slot="disclosure"][open] > summary)::after { rotate: 225deg; margin-block-start: 0.25em; }
+  :where([data-slot="disclosure"] > summary:focus-visible) { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: var(--radius); }
+  :where([data-slot="disclosure"] > :not(summary)) { margin-inline: 1rem; }
+  :where([data-slot="disclosure"] > :last-child) { margin-block-end: 1rem; }
+  @supports (selector(::details-content)) {
+    @media (prefers-reduced-motion: no-preference) {
+      :where([data-slot="disclosure"])::details-content { block-size: 0; overflow: clip; transition: block-size 0.2s, content-visibility 0.2s allow-discrete; }
+      :where([data-slot="disclosure"][open])::details-content { block-size: auto; }
+    }
+  }
+  :where([data-slot="accordion"]) { display: grid; }
+  :where([data-slot="accordion"] > [data-slot="disclosure"]) { border-radius: 0; }
+  :where([data-slot="accordion"] > [data-slot="disclosure"] + [data-slot="disclosure"]) { margin-block-start: -1px; }
+  :where([data-slot="accordion"] > [data-slot="disclosure"]:first-child) { border-start-start-radius: var(--radius); border-start-end-radius: var(--radius); }
+  :where([data-slot="accordion"] > [data-slot="disclosure"]:last-child) { border-end-start-radius: var(--radius); border-end-end-radius: var(--radius); }
+}

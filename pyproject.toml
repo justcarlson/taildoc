@@ -28,11 +28,13 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 py-modules = ["tailplan_server"]
-packages = ["tailplan_themes", "tailplan_web"]
+packages = ["tailplan_themes", "tailplan_web", "tailplan_ui", "tailplan_ui.color"]
 
 [tool.setuptools.package-data]
 tailplan_themes = ["*.json", "*.css", "palettes/*.json", "typography/*.json", "licenses/*.txt"]
 tailplan_web = ["static/*", "static/fonts/*"]
+tailplan_ui = ["css/*.css", "primitives/*.css", "blocks/*.css", "wireframes/*.css", "wireframes/*.json", "palettes/*.json", "licenses/*.txt", "registry.json"]
+"tailplan_ui.color" = ["*.json"]
 
 [tool.ruff]
 line-length = 100

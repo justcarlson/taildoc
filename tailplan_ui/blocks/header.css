@@ -1,0 +1,88 @@
+/* tp.blocks: document header, verdict banner, and stat strip. */
+/* @chunk doc-header when=slot:doc-header|doc-eyebrow|doc-title|doc-subtitle|doc-meta|doc-status */
+@layer tp.blocks {
+  :where([data-slot="doc-header"]) {
+    display: grid;
+    gap: 0.5rem;
+    padding-block: calc(var(--space) * 1.5) var(--space);
+    margin-block-end: var(--space);
+    border-block-end: 1px var(--line) var(--border);
+  }
+  :where([data-slot="doc-eyebrow"]) { margin: 0; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--primary-ink); }
+  :where([data-slot="doc-title"]) { margin: 0; font-size: clamp(1.5rem, 1.1rem + 2.2vw, 2.4rem); line-height: 1.15; }
+  :where([data-slot="doc-subtitle"]) { margin: 0; max-width: var(--measure); font-size: 1.0625em; color: var(--muted-foreground); }
+  :where([data-slot="doc-meta"]) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 1rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: 0.875rem;
+    color: var(--muted-foreground);
+    font-variant-numeric: tabular-nums;
+  }
+  :where([data-slot="doc-status"]) {
+    --_tone: var(--primary-ink);
+    --_bg: var(--accent-surface);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4em;
+    padding: 0.1em 0.7em;
+    font-size: 0.8125rem;
+    font-weight: 700;
+    color: var(--_tone);
+    background: var(--_bg);
+    border: 1px var(--line) color-mix(in oklab, var(--_tone) 35%, transparent);
+    border-radius: 999px;
+  }
+  :where([data-slot="doc-status"])::before { content: ""; width: 0.5em; height: 0.5em; background: currentColor; border-radius: 50%; }
+  :where([data-slot="doc-status"][data-variant="success"]) { --_tone: var(--success); --_bg: var(--success-surface); }
+  :where([data-slot="doc-status"][data-variant="warning"]) { --_tone: var(--warning); --_bg: var(--warning-surface); }
+  :where([data-slot="doc-status"][data-variant="destructive"]) { --_tone: var(--destructive); --_bg: var(--destructive-surface); }
+  :where([data-slot="doc-status"][data-variant="info"]) { --_tone: var(--info); --_bg: var(--info-surface); }
+}
+/* @chunk verdict when=slot:verdict|verdict-label|verdict-title|verdict-body */
+@layer tp.blocks {
+  :where([data-slot="verdict"]) {
+    --_tone: var(--primary);
+    --_bg: var(--accent-surface);
+    --_edge: var(--accent-border);
+    padding: 1rem 1.25rem;
+    margin-block: var(--space);
+    background: var(--_bg);
+    color: var(--foreground);
+    border: 1px var(--line) var(--_edge);
+    border-inline-start: 5px solid var(--_tone);
+    border-radius: var(--radius);
+  }
+  :where([data-slot="verdict"][data-variant="caution"]) { --_tone: var(--warning); --_bg: var(--warning-surface); --_edge: color-mix(in oklab, var(--warning) 35%, transparent); }
+  :where([data-slot="verdict"][data-variant="blocked"]) { --_tone: var(--destructive); --_bg: var(--destructive-surface); --_edge: color-mix(in oklab, var(--destructive) 35%, transparent); }
+  :where([data-slot="verdict"][data-variant="success"]) { --_tone: var(--success); --_bg: var(--success-surface); --_edge: color-mix(in oklab, var(--success) 35%, transparent); }
+  :where([data-slot="verdict-label"]) { display: block; margin: 0 0 0.25rem; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted-foreground); }
+  :where([data-slot="verdict-title"]) { margin: 0 0 0.35rem; font-family: var(--font-heading); font-size: 1.3rem; line-height: 1.25; color: var(--heading); }
+  :where([data-slot="verdict-body"]) { margin: 0; max-width: var(--measure); }
+}
+/* @chunk stat-strip when=slot:stat-strip|stat|stat-label|stat-value|stat-delta */
+@layer tp.blocks {
+  :where([data-slot="stat-strip"]) {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.5rem), 1fr));
+    gap: 1px;
+    margin-block: var(--space);
+    overflow: hidden;
+    background: var(--border);
+    border: 1px var(--line) var(--border);
+    border-radius: var(--radius);
+  }
+  :where([data-slot="stat"]) { display: grid; align-content: start; gap: 0.2rem; padding: 0.85rem 1rem; background: var(--card); color: var(--card-foreground); }
+  :where([data-slot="stat-label"]) { font-size: 0.8125rem; color: var(--muted-foreground); }
+  :where([data-slot="stat-value"]) { font-size: clamp(1.35rem, 1.05rem + 1.4vw, 1.9rem); font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; color: var(--heading); }
+  :where([data-slot="stat-delta"]) { justify-self: start; display: inline-flex; align-items: center; gap: 0.25em; padding: 0 0.5em; font-size: 0.8125rem; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--muted-foreground); background: var(--muted); border-radius: 999px; }
+  :where([data-slot="stat-delta"][data-trend="up"])::before { content: "\25B2"; font-size: 0.7em; }
+  :where([data-slot="stat-delta"][data-trend="down"])::before { content: "\25BC"; font-size: 0.7em; }
+  :where([data-slot="stat-delta"][data-variant="success"]) { color: var(--success); background: var(--success-surface); }
+  :where([data-slot="stat-delta"][data-variant="warning"]) { color: var(--warning); background: var(--warning-surface); }
+  :where([data-slot="stat-delta"][data-variant="destructive"]) { color: var(--destructive); background: var(--destructive-surface); }
+}

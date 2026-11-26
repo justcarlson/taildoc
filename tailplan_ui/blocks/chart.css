@@ -1,0 +1,32 @@
+/* tp.blocks: chart figure with legend, caption, and a linked source. Series use --chart-1 to --chart-8. */
+/* @chunk chart when=slot:chart|chart-title|chart-legend|legend-item|chart-caption|chart-source */
+@layer tp.blocks {
+  :where([data-slot="chart"]) {
+    display: grid;
+    gap: 0.75rem;
+    margin: var(--space) 0;
+    padding: var(--space);
+    background: var(--card);
+    color: var(--card-foreground);
+    border: 1px var(--line) var(--border);
+    border-radius: var(--radius);
+  }
+  :where([data-slot="chart"] > svg) { width: 100%; height: auto; }
+  :where([data-slot="chart"] svg text) { fill: var(--muted-foreground); font-size: 12px; font-variant-numeric: tabular-nums; }
+  :where([data-slot="chart"] [data-series]) { fill: var(--series); }
+  :where([data-slot="chart"] [data-series][data-mark="line"]) { fill: none; stroke: var(--series); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  :where([data-slot="chart"] [data-series="1"], [data-slot="chart-legend"] [data-series="1"]) { --series: var(--chart-1); }
+  :where([data-slot="chart"] [data-series="2"], [data-slot="chart-legend"] [data-series="2"]) { --series: var(--chart-2); }
+  :where([data-slot="chart"] [data-series="3"], [data-slot="chart-legend"] [data-series="3"]) { --series: var(--chart-3); }
+  :where([data-slot="chart"] [data-series="4"], [data-slot="chart-legend"] [data-series="4"]) { --series: var(--chart-4); }
+  :where([data-slot="chart"] [data-series="5"], [data-slot="chart-legend"] [data-series="5"]) { --series: var(--chart-5); }
+  :where([data-slot="chart"] [data-series="6"], [data-slot="chart-legend"] [data-series="6"]) { --series: var(--chart-6); }
+  :where([data-slot="chart"] [data-series="7"], [data-slot="chart-legend"] [data-series="7"]) { --series: var(--chart-7); }
+  :where([data-slot="chart"] [data-series="8"], [data-slot="chart-legend"] [data-series="8"]) { --series: var(--chart-8); }
+  :where([data-slot="chart-title"]) { margin: 0; font-weight: 600; color: var(--heading); }
+  :where([data-slot="chart-legend"]) { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; margin: 0; padding: 0; list-style: none; }
+  :where([data-slot="legend-item"]) { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.875rem; }
+  :where([data-slot="legend-item"])::before { content: ""; flex: none; width: 0.75rem; height: 0.75rem; background: var(--series, var(--chart-1)); border-radius: 3px; }
+  :where([data-slot="chart-caption"]) { margin: 0; font-size: 0.875rem; color: var(--muted-foreground); }
+  :where([data-slot="chart-source"]) { font-size: 0.8125rem; }
+}

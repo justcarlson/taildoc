@@ -1,0 +1,68 @@
+/* tp.blocks: spec grid, review ledger, and numbered sources. */
+/* @chunk spec when=slot:spec|spec-row|spec-term|spec-value|spec-note */
+@layer tp.blocks {
+  :where([data-slot="spec"]) { margin: var(--space) 0; background: var(--card); color: var(--card-foreground); border: 1px var(--line) var(--border); border-radius: var(--radius); }
+  :where([data-slot="spec-row"]) {
+    display: grid;
+    grid-template-columns: minmax(7rem, 14rem) minmax(0, 1fr);
+    gap: 0.2rem 1rem;
+    padding: 0.6rem 1rem;
+    border-block-end: 1px var(--line) var(--border-subtle);
+  }
+  :where([data-slot="spec-row"]:last-child) { border-block-end: 0; }
+  :where([data-slot="spec-term"]) { margin: 0; font-weight: 600; font-size: 0.9em; color: var(--muted-foreground); }
+  :where([data-slot="spec-value"]) { margin: 0; font-variant-numeric: tabular-nums; }
+  :where([data-slot="spec-value"][data-mono]) { font-family: var(--font-mono); font-size: 0.9em; }
+  :where([data-slot="spec-note"]) { grid-column: 2; margin: 0; font-size: 0.8125rem; color: var(--muted-foreground); }
+  @media (max-width: 560px) {
+    :where([data-slot="spec-row"]) { grid-template-columns: minmax(0, 1fr); }
+    :where([data-slot="spec-note"]) { grid-column: 1; }
+  }
+}
+/* A review-ledger is a scroll wrapper around a table of findings. */
+/* @chunk review-ledger when=slot:review-ledger|ledger-severity|ledger-decision|sources|source|source-title|source-meta */
+@layer tp.blocks {
+  :where([data-slot="review-ledger"]) { max-width: 100%; margin-block: var(--space); overflow-x: auto; border: 1px var(--line) var(--border); border-radius: var(--radius); }
+  :where([data-slot="review-ledger"]:focus-visible) { outline: 2px solid var(--ring); outline-offset: 2px; }
+  :where([data-slot="review-ledger"] table) { width: 100%; min-width: 34rem; border-collapse: collapse; background: var(--card); color: var(--card-foreground); font-size: 0.9em; }
+  :where([data-slot="review-ledger"] :is(th, td)) { padding: 0.5rem 0.7rem; text-align: start; vertical-align: top; border-block-end: 1px var(--line) var(--border-subtle); }
+  :where([data-slot="review-ledger"] thead th) { font-size: 0.8125rem; color: var(--muted-foreground); border-block-end-color: var(--border-strong); white-space: nowrap; }
+  :where([data-slot="review-ledger"] tbody tr:last-child > *) { border-block-end: 0; }
+  :where([data-slot="review-ledger"] td:first-child) { font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
+  :where([data-slot="ledger-severity"], [data-slot="ledger-decision"]) {
+    --_tone: var(--muted-foreground);
+    --_bg: var(--muted);
+    display: inline-block;
+    padding: 0 0.6em;
+    font-size: 0.8125rem;
+    font-weight: 700;
+    white-space: nowrap;
+    color: var(--_tone);
+    background: var(--_bg);
+    border-radius: 999px;
+  }
+  :where([data-slot="ledger-severity"][data-severity="important"]) { --_tone: var(--destructive); --_bg: var(--destructive-surface); }
+  :where([data-slot="ledger-severity"][data-severity="pre_existing"]) { --_tone: var(--warning); --_bg: var(--warning-surface); }
+  :where([data-slot="ledger-decision"][data-decision="accepted"]) { --_tone: var(--success); --_bg: var(--success-surface); }
+  :where([data-slot="ledger-decision"][data-decision="rejected"]) { --_tone: var(--destructive); --_bg: var(--destructive-surface); }
+  :where([data-slot="sources"]) { display: grid; gap: 0.5rem; margin-block: var(--space); padding: 0; list-style: none; counter-reset: tp-source; }
+  :where([data-slot="source"]) { display: grid; grid-template-columns: 1.75rem minmax(0, 1fr); gap: 0 0.6rem; align-items: start; counter-increment: tp-source; padding: 0.4rem 0.5rem; border-radius: var(--radius); }
+  :where([data-slot="source"])::before {
+    content: counter(tp-source);
+    grid-row: 1 / span 2;
+    display: grid;
+    place-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    font-size: 0.75rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--primary-ink);
+    background: var(--accent-surface);
+    border: 1px var(--line) var(--accent-border);
+    border-radius: 999px;
+  }
+  :where([data-slot="source"]:target) { background: var(--accent-surface); }
+  :where([data-slot="source-title"]) { font-weight: 600; }
+  :where([data-slot="source-meta"]) { grid-column: 2; font-size: 0.8125rem; color: var(--muted-foreground); }
+}

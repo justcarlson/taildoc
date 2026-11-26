@@ -1,0 +1,478 @@
+{
+  "schemaVersion": 1,
+  "note": "Source of truth for Tailplan UI slots. Presets, surfaces, accents, and viz sets come from the color package.",
+  "icons": [
+    "check",
+    "x",
+    "alert",
+    "info",
+    "chevron-down",
+    "chevron-right",
+    "arrow-right",
+    "external-link",
+    "copy",
+    "search",
+    "filter",
+    "sliders",
+    "sun",
+    "moon",
+    "monitor",
+    "smartphone",
+    "tablet",
+    "layers",
+    "palette",
+    "code",
+    "terminal",
+    "file-text",
+    "link",
+    "sparkles"
+  ],
+  "items": [
+    {
+      "slot": "button",
+      "category": "primitives",
+      "chunk": "button",
+      "summary": "Action button or link. Touch targets reach 44px.",
+      "subslots": [],
+      "variants": [
+        "primary",
+        "secondary",
+        "outline",
+        "ghost",
+        "destructive"
+      ],
+      "markup": "<button data-slot=\"button\" data-variant=\"primary\" type=\"button\">Save</button>",
+      "zeroJs": true,
+      "sizes": [
+        "sm",
+        "md",
+        "lg",
+        "icon"
+      ]
+    },
+    {
+      "slot": "badge",
+      "category": "primitives",
+      "chunk": "badge",
+      "summary": "Small status label. The chip slot is an alias.",
+      "subslots": [
+        "chip"
+      ],
+      "variants": [
+        "default",
+        "secondary",
+        "outline",
+        "success",
+        "warning",
+        "destructive",
+        "info"
+      ],
+      "markup": "<span data-slot=\"badge\" data-variant=\"success\">Done</span>",
+      "zeroJs": true
+    },
+    {
+      "slot": "kbd",
+      "category": "primitives",
+      "chunk": "kbd-keys",
+      "summary": "Key cap and a shortcut hint. The hint hides on touch screens.",
+      "subslots": [
+        "kbd-hint"
+      ],
+      "variants": [],
+      "markup": "<kbd data-slot=\"kbd\">Ctrl</kbd> <span data-slot=\"kbd-hint\">Press ?</span>",
+      "zeroJs": true
+    },
+    {
+      "slot": "card",
+      "category": "primitives",
+      "chunk": "card",
+      "summary": "Surface with header, content, and footer parts.",
+      "subslots": [
+        "card-header",
+        "card-title",
+        "card-description",
+        "card-action",
+        "card-content",
+        "card-footer"
+      ],
+      "variants": [],
+      "markup": "<article data-slot=\"card\"><header data-slot=\"card-header\"><h3 data-slot=\"card-title\">Title</h3><p data-slot=\"card-description\">Detail</p></header><div data-slot=\"card-content\">Body</div></article>",
+      "zeroJs": true
+    },
+    {
+      "slot": "callout",
+      "category": "primitives",
+      "chunk": "callout",
+      "summary": "Inline note with a tone and an edge.",
+      "subslots": [
+        "callout-title"
+      ],
+      "variants": [
+        "info",
+        "warning",
+        "success",
+        "destructive",
+        "note"
+      ],
+      "markup": "<aside data-slot=\"callout\" data-variant=\"warning\"><strong data-slot=\"callout-title\">Heads up</strong><p>Check the rollout order.</p></aside>",
+      "zeroJs": true
+    },
+    {
+      "slot": "input",
+      "category": "primitives",
+      "chunk": "input",
+      "summary": "Text input and an input group. Text stays at 16px on touch screens.",
+      "subslots": [
+        "input-group",
+        "input-addon"
+      ],
+      "variants": [],
+      "markup": "<input data-slot=\"input\" type=\"text\" placeholder=\"Search\">",
+      "zeroJs": true
+    },
+    {
+      "slot": "select",
+      "category": "primitives",
+      "chunk": "select",
+      "summary": "Native select and textarea.",
+      "subslots": [
+        "textarea"
+      ],
+      "variants": [],
+      "markup": "<select data-slot=\"select\" aria-label=\"Theme\"><option>Auto</option><option>Dark</option></select>",
+      "zeroJs": true
+    },
+    {
+      "slot": "checkbox",
+      "category": "primitives",
+      "chunk": "checkbox",
+      "summary": "Checkbox and switch from native checkbox inputs. No form element.",
+      "subslots": [
+        "switch"
+      ],
+      "variants": [],
+      "markup": "<label><input data-slot=\"switch\" type=\"checkbox\" role=\"switch\"> Dark mode</label>",
+      "zeroJs": true
+    },
+    {
+      "slot": "segmented",
+      "category": "primitives",
+      "chunk": "segmented",
+      "summary": "Segmented control from radio inputs. The checked label shows the choice.",
+      "subslots": [],
+      "variants": [],
+      "markup": "<div data-slot=\"segmented\" role=\"radiogroup\" aria-label=\"View\"><label><input type=\"radio\" name=\"v\" checked><span>Day</span></label><label><input type=\"radio\" name=\"v\"><span>Week</span></label></div>",
+      "zeroJs": true
+    },
+    {
+      "slot": "tabs",
+      "category": "primitives",
+      "chunk": "tabs",
+      "summary": "Tabs from radio inputs. Tab N shows panel N. Up to six tabs.",
+      "subslots": [
+        "tab-list",
+        "tab",
+        "tab-panel"
+      ],
+      "variants": [],
+      "markup": "<div data-slot=\"tabs\"><div data-slot=\"tab-list\" role=\"tablist\"><label data-slot=\"tab\"><input type=\"radio\" name=\"t\" checked><span>One</span></label><label data-slot=\"tab\"><input type=\"radio\" name=\"t\"><span>Two</span></label></div><div data-slot=\"tab-panel\">First</div><div data-slot=\"tab-panel\">Second</div></div>",
+      "zeroJs": true
+    },
+    {
+      "slot": "disclosure",
+      "category": "primitives",
+      "chunk": "disclosure",
+      "summary": "Details element with a smooth marker. Give details a shared name for an accordion.",
+      "subslots": [
+        "accordion"
+      ],
+      "variants": [],
+      "markup": "<details data-slot=\"disclosure\"><summary>More</summary><p>Hidden text.</p></details>",
+      "zeroJs": true
+    },
+    {
+      "slot": "popover",
+      "category": "primitives",
+      "chunk": "popover",
+      "summary": "Popover from the popover attribute. Open it with popovertarget.",
+      "subslots": [],
+      "variants": [],
+      "markup": "<button data-slot=\"button\" popovertarget=\"tip\" type=\"button\">Info</button><div id=\"tip\" data-slot=\"popover\" popover>Short help text.</div>",
+      "zeroJs": true
+    },
+    {
+      "slot": "dialog",
+      "category": "primitives",
+      "chunk": "dialog",
+      "summary": "Modal dialog and sheet. A sheet is a bottom sheet on narrow screens and a right drawer on wide ones.",
+      "subslots": [
+        "sheet",
+        "dialog-header",
+        "dialog-title",
+        "dialog-body",
+        "dialog-footer"
+      ],
+      "variants": [],
+      "markup": "<button data-slot=\"button\" commandfor=\"dlg\" command=\"show-modal\" type=\"button\">Open</button><dialog id=\"dlg\" data-slot=\"dialog\" closedby=\"any\"><div data-slot=\"dialog-body\">Text<button data-slot=\"button\" commandfor=\"dlg\" command=\"close\" type=\"button\">Close</button></div></dialog>",
+      "zeroJs": true
+    },
+    {
+      "slot": "table",
+      "category": "primitives",
+      "chunk": "table",
+      "summary": "Table with tabular numbers. Cells with data-label stack into cards at 700px and below.",
+      "subslots": [
+        "table-wrap"
+      ],
+      "variants": [],
+      "markup": "<table data-slot=\"table\"><thead><tr><th>Name</th><th>Count</th></tr></thead><tbody><tr><td data-label=\"Name\">Alpha</td><td data-label=\"Count\">12</td></tr></tbody></table>",
+      "zeroJs": true
+    },
+    {
+      "slot": "code",
+      "category": "primitives",
+      "chunk": "code",
+      "summary": "Inline code, a code block, and a key-value list.",
+      "subslots": [
+        "kv"
+      ],
+      "variants": [],
+      "markup": "<pre data-slot=\"code\"><code>python3 -m tailplan_ui bundle plan.html</code></pre>",
+      "zeroJs": true
+    },
+    {
+      "slot": "separator",
+      "category": "primitives",
+      "chunk": "separator",
+      "summary": "Rule, progress bar, and loading skeleton.",
+      "subslots": [
+        "progress",
+        "skeleton"
+      ],
+      "variants": [],
+      "markup": "<hr data-slot=\"separator\"><progress data-slot=\"progress\" value=\"40\" max=\"100\"></progress>",
+      "zeroJs": true
+    },
+    {
+      "slot": "icon",
+      "category": "primitives",
+      "chunk": "icon",
+      "summary": "Stroke icon from the sprite that icon_sprite() returns.",
+      "subslots": [],
+      "variants": [],
+      "markup": "<svg data-slot=\"icon\" aria-hidden=\"true\"><use href=\"#tp-icon-check\"/></svg>",
+      "zeroJs": true
+    },
+    {
+      "slot": "cite",
+      "category": "primitives",
+      "chunk": "cite",
+      "summary": "Numbered source citation that links to a source.",
+      "subslots": [],
+      "variants": [
+        "default",
+        "chip"
+      ],
+      "markup": "<a data-slot=\"cite\" href=\"#src-1\">1</a>",
+      "zeroJs": true
+    },
+    {
+      "slot": "doc-header",
+      "category": "blocks",
+      "chunk": "doc-header",
+      "summary": "Page header with eyebrow, title, subtitle, meta strip, and status.",
+      "subslots": [
+        "doc-eyebrow",
+        "doc-title",
+        "doc-subtitle",
+        "doc-meta",
+        "doc-status"
+      ],
+      "variants": [
+        "default",
+        "success",
+        "warning",
+        "destructive",
+        "info"
+      ],
+      "markup": "<header data-slot=\"doc-header\"><p data-slot=\"doc-eyebrow\">Plan</p><h1 data-slot=\"doc-title\">Rollout</h1><p data-slot=\"doc-subtitle\">Three waves.</p><ul data-slot=\"doc-meta\"><li>Nov 25</li></ul></header>",
+      "zeroJs": true
+    },
+    {
+      "slot": "verdict",
+      "category": "blocks",
+      "chunk": "verdict",
+      "summary": "Highlighted recommendation banner.",
+      "subslots": [
+        "verdict-label",
+        "verdict-title",
+        "verdict-body"
+      ],
+      "variants": [
+        "default",
+        "caution",
+        "blocked",
+        "success"
+      ],
+      "markup": "<section data-slot=\"verdict\"><span data-slot=\"verdict-label\">Verdict</span><h2 data-slot=\"verdict-title\">Ship wave 1</h2><p data-slot=\"verdict-body\">Risk is low.</p></section>",
+      "zeroJs": true
+    },
+    {
+      "slot": "stat-strip",
+      "category": "blocks",
+      "chunk": "stat-strip",
+      "summary": "Auto-fit row of key numbers with delta chips.",
+      "subslots": [
+        "stat",
+        "stat-label",
+        "stat-value",
+        "stat-delta"
+      ],
+      "variants": [],
+      "markup": "<div data-slot=\"stat-strip\"><div data-slot=\"stat\"><span data-slot=\"stat-label\">Pages</span><span data-slot=\"stat-value\">42</span><span data-slot=\"stat-delta\" data-trend=\"up\" data-variant=\"success\">+3</span></div></div>",
+      "zeroJs": true
+    },
+    {
+      "slot": "option-grid",
+      "category": "blocks",
+      "chunk": "option-grid",
+      "summary": "Comparison cards. Mark one option with data-recommended.",
+      "subslots": [
+        "option",
+        "option-tag",
+        "option-title",
+        "option-body"
+      ],
+      "variants": [],
+      "markup": "<ul data-slot=\"option-grid\"><li data-slot=\"option\" data-recommended><span data-slot=\"option-tag\">Pick</span><h3 data-slot=\"option-title\">Option A</h3><p data-slot=\"option-body\">Fast.</p></li></ul>",
+      "zeroJs": true
+    },
+    {
+      "slot": "compare-matrix",
+      "category": "blocks",
+      "chunk": "compare-matrix",
+      "summary": "Scrolling feature matrix. A data-state of yes, no, or partial adds a mark.",
+      "subslots": [],
+      "variants": [],
+      "markup": "<div data-slot=\"compare-matrix\" tabindex=\"0\" role=\"region\" aria-label=\"Options\"><table><thead><tr><th></th><th>A</th></tr></thead><tbody><tr><th scope=\"row\">Dark mode</th><td data-state=\"yes\">Yes</td></tr></tbody></table></div>",
+      "zeroJs": true
+    },
+    {
+      "slot": "wave-flow",
+      "category": "blocks",
+      "chunk": "wave-flow",
+      "summary": "Staged rollout. A rail on narrow screens and columns from 701px.",
+      "subslots": [
+        "wave",
+        "wave-label",
+        "wave-title",
+        "wave-body"
+      ],
+      "variants": [],
+      "markup": "<ol data-slot=\"wave-flow\"><li data-slot=\"wave\" data-state=\"active\"><span data-slot=\"wave-label\">Wave 1</span><strong data-slot=\"wave-title\">Foundation</strong><p data-slot=\"wave-body\">Tokens.</p></li></ol>",
+      "zeroJs": true
+    },
+    {
+      "slot": "tier-map",
+      "category": "blocks",
+      "chunk": "tier-map",
+      "summary": "Layered architecture map.",
+      "subslots": [
+        "tier",
+        "tier-label",
+        "tier-items",
+        "tier-item"
+      ],
+      "variants": [],
+      "markup": "<div data-slot=\"tier-map\"><section data-slot=\"tier\"><h3 data-slot=\"tier-label\">Edge</h3><ul data-slot=\"tier-items\"><li data-slot=\"tier-item\">Proxy</li></ul></section></div>",
+      "zeroJs": true
+    },
+    {
+      "slot": "chart",
+      "category": "blocks",
+      "chunk": "chart",
+      "summary": "Chart figure with legend, caption, and a linked source. Series use chart colors 1 to 8.",
+      "subslots": [
+        "chart-title",
+        "chart-legend",
+        "legend-item",
+        "chart-caption",
+        "chart-source"
+      ],
+      "variants": [],
+      "markup": "<figure data-slot=\"chart\"><p data-slot=\"chart-title\">Pages</p><svg viewBox=\"0 0 100 40\" role=\"img\" aria-label=\"Bar\"><rect data-series=\"1\" x=\"10\" y=\"10\" width=\"20\" height=\"30\"/></svg><figcaption data-slot=\"chart-caption\">Source: <a data-slot=\"chart-source\" href=\"#src-1\">report</a></figcaption></figure>",
+      "zeroJs": true
+    },
+    {
+      "slot": "decisions",
+      "category": "blocks",
+      "chunk": "decisions",
+      "summary": "Decision log and a sign-off box.",
+      "subslots": [
+        "decision",
+        "decision-title",
+        "decision-meta",
+        "decision-reason",
+        "signoff",
+        "signoff-title",
+        "signoff-list",
+        "signoff-action"
+      ],
+      "variants": [],
+      "markup": "<ol data-slot=\"decisions\"><li data-slot=\"decision\" data-state=\"accepted\"><span data-slot=\"decision-title\">Use Pigment</span><span data-slot=\"decision-meta\">Nov 25</span><p data-slot=\"decision-reason\">Solved contrast.</p></li></ol>",
+      "zeroJs": true
+    },
+    {
+      "slot": "claims",
+      "category": "blocks",
+      "chunk": "claims",
+      "summary": "Verification claims and a proportional timeline bar.",
+      "subslots": [
+        "claim",
+        "claim-status",
+        "claim-text",
+        "claim-evidence",
+        "timeline-bar",
+        "timeline-track",
+        "timeline-seg",
+        "timeline-legend",
+        "timeline-item"
+      ],
+      "variants": [],
+      "markup": "<ul data-slot=\"claims\"><li data-slot=\"claim\" data-status=\"verified\"><span data-slot=\"claim-status\">Verified</span><p data-slot=\"claim-text\">Tests pass.</p></li></ul>",
+      "zeroJs": true
+    },
+    {
+      "slot": "spec",
+      "category": "blocks",
+      "chunk": "spec",
+      "summary": "Technical spec grid of terms and values.",
+      "subslots": [
+        "spec-row",
+        "spec-term",
+        "spec-value",
+        "spec-note"
+      ],
+      "variants": [],
+      "markup": "<dl data-slot=\"spec\"><div data-slot=\"spec-row\"><dt data-slot=\"spec-term\">Port</dt><dd data-slot=\"spec-value\" data-mono>8080</dd></div></dl>",
+      "zeroJs": true
+    },
+    {
+      "slot": "review-ledger",
+      "category": "blocks",
+      "chunk": "review-ledger",
+      "summary": "Review findings ledger and a numbered sources list.",
+      "subslots": [
+        "ledger-severity",
+        "ledger-decision",
+        "sources",
+        "source",
+        "source-title",
+        "source-meta"
+      ],
+      "variants": [],
+      "markup": "<ol data-slot=\"sources\"><li data-slot=\"source\" id=\"src-1\"><a data-slot=\"source-title\" href=\"https://example.com\">Title</a><span data-slot=\"source-meta\">Publisher, 2026</span></li></ol>",
+      "zeroJs": true
+    }
+  ]
+}

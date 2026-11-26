@@ -4,6 +4,8 @@ import sys
 
 import tailplan_server as server
 import tailplan_themes as themes
+import tailplan_ui as ui
+import tailplan_ui.color.tokens as ui_tokens
 from tailplan_web import assets as web_assets
 import tailplan_web.render as web_render
 
@@ -11,7 +13,7 @@ import tailplan_web.render as web_render
 def main():
     source = Path(sys.argv[1]).resolve() / 'tailplan_themes'
     prefix = Path(sys.prefix).resolve()
-    for module in (server, themes, web_render, web_assets):
+    for module in (server, themes, web_render, web_assets, ui, ui_tokens):
         assert module.__file__ is not None
         assert Path(module.__file__).resolve().is_relative_to(prefix), module.__file__
     expected = [p for p in source.rglob('*') if p.suffix in {'.py', '.css', '.json', '.txt'}]
@@ -45,6 +47,18 @@ def main():
     for original in web_source.glob('*.py'):
         assert (web_assets.ROOT / original.name).read_bytes() == original.read_bytes(), original.name
     assert server.BUILD_ID == web_assets.build_id(server.__file__)
+    ui_source = Path(sys.argv[1]).resolve() / 'tailplan_ui'
+    ui_root = Path(ui.__file__).resolve().parent
+    ui_expected = [p for p in ui_source.rglob('*') if p.is_file() and p.suffix in {'.py', '.css', '.json', '.txt'}
+                   and '__pycache__' not in p.parts and 'examples' not in p.parts]
+    assert any(p.parent.name == 'primitives' for p in ui_expected)
+    for original in ui_expected:
+        installed = ui_root / original.relative_to(ui_source)
+        assert installed.read_bytes() == original.read_bytes(), str(installed)
+    page, _meta = ui.bundle('<!doctype html><html><head><meta name="tailplan-ui" content="1"></head>'
+                     '<body><button data-slot="button">Go</button></body></html>', target='standalone')
+    assert '@layer tp.primitives' in page and 'data-slot="button"' in page
+    assert ui.catalog()['items']
     print(f'Installed artifact: {len(expected)} matching assets; {count} render combinations and {len(web_expected)} web assets passed')
 
 
