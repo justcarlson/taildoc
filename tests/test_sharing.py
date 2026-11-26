@@ -53,7 +53,7 @@ class SharingApiTests(AuthCase):
         status, _body = self.sharing(method="DELETE", suffix="/grants",
                                      payload={"type": "email", "value": "friend@example.test"})
         self.assertEqual(404, status)
-        names = [event["event"] for event in self.events()]
+        names = self.event_names()
         self.assertIn("sharing.grant", names)
         self.assertIn("sharing.revoke", names)
 
