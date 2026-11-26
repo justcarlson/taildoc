@@ -11,7 +11,8 @@ Run the required checks:
 
 ```sh
 uv sync --locked
-uv run --no-sync python -m pytest -q --ignore=tests/test_theme_browser.py --ignore=tests/test_duo_themes.py
+uv run --no-sync python -m pytest -q --ignore=tests/test_theme_browser.py --ignore=tests/test_duo_themes.py \
+  --ignore=tests/test_dashboard_interactive.py
 uv run --no-sync bash tests/smoke.sh
 uv run --no-sync python tests/check_ste100.py
 ```
@@ -23,10 +24,11 @@ Install both browser engines and run the same checks as CI:
 ```sh
 uv run python -m playwright install --with-deps chromium webkit
 TAILPLAN_BROWSER_TESTS=1 uv run python -m pytest -q tests/test_theme_browser.py tests/test_duo_themes.py \
+  tests/test_dashboard_interactive.py \
   --browser chromium --browser webkit --tracing retain-on-failure \
   --screenshot only-on-failure --output test-results/browser \
   --junitxml=test-results/browser.xml
-uv run python tests/check_junit.py test-results/browser.xml --minimum 244
+uv run python tests/check_junit.py test-results/browser.xml --minimum 266
 ```
 
 WebKit exercises the Safari engine, not an actual iPhone.

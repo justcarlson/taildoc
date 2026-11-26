@@ -2542,8 +2542,11 @@ MAX_BULK_DRAFTS = 200
 SEARCH_TEXT_LIMIT = 65536
 
 
-def normalize_tags(value: object) -> list[str]:
-    """Return sorted, unique, lowercase tags. Raise ValueError for a bad tag or list."""
+def normalize_tags(value: object, *, limit: int | None = MAX_TAGS_PER_DRAFT) -> list[str]:
+    """Return sorted, unique, lowercase tags. Raise ValueError for a bad tag or list.
+
+    A `limit` of None accepts any count, for a list of tags to remove.
+    """
     if value is None:
         return []
     if not isinstance(value, (list, tuple)):
@@ -2558,8 +2561,8 @@ def normalize_tags(value: object) -> list[str]:
                 "A tag uses 1 to 32 characters: letters, digits, dot, underscore, or hyphen."
             )
         tags.add(tag)
-    if len(tags) > MAX_TAGS_PER_DRAFT:
-        raise ValueError(f"A draft holds at most {MAX_TAGS_PER_DRAFT} tags.")
+    if limit is not None and len(tags) > limit:
+        raise ValueError(f"A draft holds at most {limit} tags.")
     return sorted(tags)
 
 
@@ -2605,6 +2608,24 @@ def extract_searchable_text(html_doc: str, limit: int = SEARCH_TEXT_LIMIT) -> st
     except Exception:  # A broken page still gives the text that parsed before the error.
         pass
     return " ".join(parser.parts)[:limit]
+
+
+def extract_pages_text(pages, limit: int = SEARCH_TEXT_LIMIT) -> str:
+    """Return the visible text of each page in order, with one cap for all pages.
+
+    Each page gets a new parser, so a broken page does not hide the next page.
+    `pages` can be lazy. The function stops reading pages when the cap is full.
+    """
+    parts: list[str] = []
+    size = 0
+    for doc in pages:
+        text = extract_searchable_text(doc, limit - size) if doc else ""
+        if text:
+            parts.append(text)
+            size += len(text) + 1
+        if size >= limit:
+            break
+    return " ".join(parts)[:limit]
 
 
 def _validate_workspace_schema(data: dict) -> None:
@@ -3424,13 +3445,13 @@ class Store:
             cls._search_row(draft, body),
         )
 
-    def _read_search_file(self, path: Path) -> str:
-        """Read one stored page that lies inside the drafts folder. A bad file gives an empty text."""
+    def _read_search_file(self, path: Path, root: Path) -> str:
+        """Read one stored page that lies inside `root`. A bad file gives an empty text."""
         try:
             if path.is_symlink():
                 return ""
             resolved = path.resolve(strict=True)
-            if (not resolved.is_relative_to(self.drafts.resolve(strict=True)) or not resolved.is_file()
+            if (not resolved.is_relative_to(root) or not resolved.is_file()
                     or resolved.stat().st_size > MAX_HTML_BYTES):
                 return ""
             return resolved.read_bytes().decode("utf-8")
@@ -3442,12 +3463,22 @@ class Store:
 
         The index page comes first. The text has the same cap as at upload.
         """
-        texts = [self._read_search_file(Path(str(draft.get("currentObject") or "")))]
+        try:
+            draft_dir = self.drafts / draft["draftId"]
+            # A symlinked draft folder, or one that resolves outside the drafts folder, gives no text.
+            if draft_dir.is_symlink():
+                return ""
+            root = draft_dir.resolve(strict=True)
+            if not root.is_relative_to(self.drafts.resolve(strict=True)):
+                return ""
+        except (OSError, RuntimeError, ValueError, TypeError):
+            return ""
+        sources = [Path(str(draft.get("currentObject") or ""))]
         latest = draft.get("latestVersionNumber")
         for page_path in sorted(page_paths or []):
-            if page_path != "index.html" and latest:
-                texts.append(self._read_search_file(self.drafts / draft["draftId"] / f"v{latest}" / page_path))
-        return extract_searchable_text(" ".join(text for text in texts if text))
+            if page_path != "index.html" and latest and page_path_problem(page_path) is None:
+                sources.append(root / f"v{latest}" / page_path)
+        return extract_pages_text(self._read_search_file(source, root) for source in sources)
 
     def _backfill_search_locked(self, connection: sqlite3.Connection) -> None:
         """Index live drafts that have no search row. Drop rows for drafts that are gone."""
@@ -4180,8 +4211,8 @@ class Store:
             stored_draft["favoritedAt"] = stored_draft.get("favoritedAt") or stamp
         elif favorite is False:
             stored_draft["favoritedAt"] = None
-        search_body = extract_searchable_text(
-            " ".join(page["html"] for page in sorted(pages, key=lambda p: p["path"] != "index.html"))
+        search_body = extract_pages_text(
+            page["html"] for page in sorted(pages, key=lambda p: (p["path"] != "index.html", p["path"]))
         )
 
         version_url = f"{base_url.rstrip('/')}/d/{target_draft_id}/v/{version}{'/' if multi_page else ''}"
@@ -4532,7 +4563,7 @@ class Store:
         """
         replace = None if tags is None else normalize_tags(tags)
         added = normalize_tags(add_tags)
-        removed = set(normalize_tags(remove_tags))
+        removed = set(normalize_tags(remove_tags, limit=None))
 
         def apply(doc: dict, stamp: str) -> None:
             if replace is not None or added or removed:
@@ -6191,6 +6222,8 @@ def _repo_label(draft: dict) -> str | None:
 
 def _matches_query(draft: dict, parsed: dict, *, granted: set[str], shared_view: bool, now: datetime) -> bool:
     flags = parsed["is"]
+    if "archived" in flags and not draft["archived"]:
+        return False
     if "favorite" in flags and not draft["favorite"]:
         return False
     if "living" in flags and draft["versionCount"] <= 1:
@@ -6265,7 +6298,8 @@ def query_dashboard(
         parsed["repoFacets"].append(repo.strip().lower()[:100])
     no_match = invalid_tag or (
         parsed["blank"] and not parsed["fts"] and not any(
-            parsed[key] for key in ("is", "versions", "tags", "repos", "vis", "ws", "after", "before", "ages")
+            parsed[key] for key in ("is", "versions", "tags", "repos", "repoFacets", "vis", "ws", "after",
+                                    "before", "ages")
         )
     )
     own = store.list_drafts(account_id, base_url, include_archived=True)
@@ -6343,7 +6377,7 @@ def query_dashboard(
                        key=lambda d: d["updatedAt"] or "", reverse=True)
     return {
         "view": view, "q": q if isinstance(q, str) else "", "sort": sort, "direction": direction,
-        "group": group, "tag": tag.strip().lower(), "repo": repo.strip(),
+        "ranked": ranked, "group": group, "tag": tag.strip().lower(), "repo": repo.strip(),
         "counts": counts,
         "tags": [{"tag": name, "count": count}
                  for name, count in sorted(tag_counts.items(), key=lambda item: (-item[1], item[0]))],
@@ -6403,7 +6437,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def send_html(self, status: int, body: str, *, web: bool = False, cookie: str | list[str] | None = None) -> None:
+    def send_html(self, status: int, body: str, *, web: bool = False, cookie: str | list[str] | None = None,
+                  script_nonce: str | None = None) -> None:
+        """Send an HTML page. A management page with `script_nonce` can run only its nonced scripts."""
         raw = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -6411,7 +6447,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         form_policy = "'self'" if web else "'none'"
         font_policy = "font-src 'self'; " if web else ""
-        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'none'; "
+        script_policy = "script-src 'none'; "
+        if web and script_nonce:
+            script_policy = f"script-src 'nonce-{script_nonce}'; connect-src 'self'; "
+        self.send_header("Content-Security-Policy", f"default-src 'none'; {script_policy}"
                          f"style-src 'unsafe-inline'; img-src https: data:; {font_policy}base-uri 'none'; "
                          f"frame-ancestors 'none'; form-action {form_policy}")
         self.send_header("Referrer-Policy", "same-origin" if web else "no-referrer")
@@ -7581,7 +7620,7 @@ class Handler(BaseHTTPRequestHandler):
             self.log_message("oidc discovery error: %s", exc)
             self.send_html(502, web_page("Sign-in unavailable", "<h1>Sign-in is unavailable</h1>"
                                          "<p>Tailplan cannot reach the identity provider. Try again later.</p>",
-                                         self.base_url), web=True)
+                                         self.base_url, theme=self.web_theme()), web=True)
             return
         self.send_response(HTTPStatus.FOUND)
         self.send_header("Location", location)
@@ -7596,7 +7635,7 @@ class Handler(BaseHTTPRequestHandler):
                          detail={"method": "oidc", "reason": reason})
         body = ("<h1>Sign-in failed</h1><p>Tailplan cannot sign you in with this account.</p>"
                 f'<p><a href="{esc(self.base_url.rstrip("/"))}/auth/sign-in">Back to sign-in</a></p>')
-        self.send_html(403, web_page("Sign-in failed", body, self.base_url), web=True,
+        self.send_html(403, web_page("Sign-in failed", body, self.base_url, theme=self.web_theme()), web=True,
                        cookie=self.oidc_cookie_header("", 0))
 
     def oidc_callback(self, client: OIDCClient) -> None:
@@ -8185,6 +8224,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.send_not_found()
             return
+        # Each management page gets a new nonce, so only its own dashboard.js can run.
+        nonce = secrets.token_urlsafe(16)
         if method != "GET":
             self.send_not_found()
         elif path == "/dashboard":
@@ -8201,22 +8242,26 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 owned = [] if state["view"] == "shared" else state["drafts"]
                 self.send_html(200, render_dashboard(self.base_url, session, owned, shared=shared,
-                                                     state=state, theme=state["theme"]), web=True)
+                                                     state=state, theme=state["theme"], script_nonce=nonce),
+                               web=True, script_nonce=nonce)
         elif path == "/cli/activate":
             code = (parse_qs(urlparse(self.path).query).get("code") or [""])[0]
             info = self.store.device_login(code) if code else None
             self.send_html(200, render_activate(self.base_url, session, normalize_user_code(code), info,
-                                                theme=self.web_theme()), web=True)
+                                                theme=self.web_theme(), script_nonce=nonce),
+                           web=True, script_nonce=nonce)
         elif path == "/cli/auth":
             self.send_html(200, render_keys(self.base_url, session, self.store.list_keys(account_id),
-                                            theme=self.web_theme()), web=True)
+                                            theme=self.web_theme(), script_nonce=nonce),
+                           web=True, script_nonce=nonce)
         elif draft_match and draft_match[2] is None:
             detail = self.store.draft_detail(account_id, draft_match[1], self.base_url)
             self.annotate_drafts([detail["draft"]])
             stored = self.store.resolve_draft(draft_match[1]) or {}
             sharing = self.sharing_payload({**stored, "draftId": detail["draft"]["draftId"]})
             self.send_html(200, render_detail(self.base_url, session, detail, sharing=sharing,
-                                              theme=self.web_theme()), web=True)
+                                              theme=self.web_theme(), script_nonce=nonce),
+                           web=True, script_nonce=nonce)
         else:
             self.send_not_found()
 

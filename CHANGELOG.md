@@ -26,6 +26,19 @@ The project uses semantic version numbers.
 - Add `POST /dashboard/bulk`, `POST /dashboard/theme`, and the `archive`, `unarchive`, and `tags` dashboard actions.
   Row actions return JSON when asked, else they redirect to the row.
 - Add `draft.archive`, `draft.unarchive`, `draft.tag`, and `draft.bulk` audit events. They never hold page text or search text.
+- Rebuild the dashboard with view tabs, a search bar, tag and repo filters, a Favorites shelf, and grouped rows.
+  Every management page has one header and a light, dark, or system theme.
+  The server hosts the Geist Sans and Geist Mono fonts at `/assets/`, and `/readyz` checks them.
+- Add the `tailplan tag`, `tailplan archive`, `tailplan unarchive`, and `tailplan list` commands.
+  `tailplan upload` also takes `--tag` and `--favorite`.
+- Add `/assets/dashboard.<hash>.js`, a small script for the management pages.
+  It stars, archives with Undo, accepts tag suggestions, and copies URLs without a page reload.
+  It filters rows as you type, then shows full-text matches and keeps the query in the URL.
+  It adds a command palette on Cmd+K or Ctrl+K, row shortcuts, row checkboxes, and a bulk action bar.
+  Press `?` for the list of shortcuts.
+  Every action still works without the script.
+- Management pages send a new CSP nonce with each response, and only the script with that nonce runs.
+  Draft pages at `/d/` still allow no scripts.
 
 ## 0.6.0 - 2026-11-25
 

@@ -273,7 +273,41 @@ class Dashboard(unittest.TestCase):
     def test_favorite_cards_carry_draft_ids(self) -> None:
         rows = [draft("f1x", "Fav", favorite=True)]
         page = render.render_dashboard(BASE, SESSION, rows, state=state(rows, favorites=rows))
-        self.assertIn('<article class="pin" data-draft-id="f1x" data-favorite="1">', page)
+        self.assertIn('<article class="pin" data-draft-id="f1x" data-favorite="1" data-title="Fav"', page)
+        self.assertIn(f'data-share-url="{BASE}/d/f1x/share" data-detail-url="{BASE}/dashboard/drafts/f1x">', page)
+        self.assertIn('<form class="star-form" data-draft-id="f1x" method="post"', page)
+
+    def test_script_hooks_on_rows_tabs_and_forms(self) -> None:
+        rows = [draft("a1", "Alpha", versionCount=3, tags=[]), draft("b2", "Beta", archived=True)]
+        page = render.render_dashboard(BASE, SESSION, rows, state=state(rows, suggestedTags={"a1": "roadmap"}))
+        self.assertIn('data-versions="3"', page)
+        self.assertIn('<a class="tab" data-view="favorites"', page)
+        self.assertIn('<form class="suggest-form" method="post"', page)
+        self.assertIn('<form class="archive archive-form" method="post"', page)
+
+    def test_relevance_needs_a_ranked_query(self) -> None:
+        page = render.render_dashboard(BASE, SESSION, [], state=state([], q="tag:x", ranked=False))
+        self.assertNotIn("Relevance", page)
+        self.assertIn('<option value="" selected>Updated</option>', page)
+        page = render.render_dashboard(BASE, SESSION, [], state=state([], q="x", sort="relevance", ranked=True))
+        self.assertIn('<option value="relevance" selected>Relevance</option>', page)
+
+    def test_shared_rows_search_without_tags(self) -> None:
+        shared = [draft("s1", "Shared plan", tags=["ownertag"])]
+        page = render.render_dashboard(BASE, SESSION, [], shared=shared, state=state(shared, view="shared"))
+        self.assertIn('data-s="shared plan"', page)
+        self.assertNotIn("ownertag", page)
+
+    def test_script_tag_needs_a_nonce_and_the_asset(self) -> None:
+        url = assets.asset_url(BASE, "dashboard.js")
+        page = render.render_dashboard(BASE, SESSION, [], script_nonce="n0nce-_")
+        self.assertIn(f'<script type="module" nonce="n0nce-_" src="{url}" defer></script></head>', page)
+        self.assertNotIn("<script", render.render_dashboard(BASE, SESSION, []))
+        for page in (render.render_keys(BASE, SESSION, [], script_nonce="n1"),
+                     render.render_activate(BASE, SESSION, None, None, script_nonce="n1")):
+            self.assertIn('nonce="n1"', page)
+        with patch.dict(assets._SOURCE_TO_HASHED, clear=True):
+            self.assertNotIn("<script", render.render_dashboard(BASE, SESSION, [], script_nonce="n2"))
 
     def test_base_url_is_escaped_once(self) -> None:
         page = render.render_dashboard("https://h.example/a&b", SESSION, [], state=state([], q="x"))
@@ -364,6 +398,13 @@ class WebRoutes(unittest.TestCase):
         self.assertIn("script-src 'none'", csp)
         self.assertIn(b' data-theme="dark"', body)
 
+    def test_dashboard_script_asset_route(self) -> None:
+        status, headers, body = self.fetch(assets.asset_url("", "dashboard.js"))
+        self.assertEqual(200, status)
+        self.assertEqual("text/javascript; charset=utf-8", headers["Content-Type"])
+        self.assertIn(b"js-ready", body)
+        self.assertIn("dashboard.js", assets.REQUIRED)
+
     def test_readyz_checks_web_assets(self) -> None:
         status, _headers, body = self.fetch("/readyz")
         self.assertEqual(200, status)
@@ -376,3 +417,26 @@ class WebRoutes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DashboardScriptHooksTests(unittest.TestCase):
+    def test_share_url_attribute_allows_only_http_and_https(self) -> None:
+        session = {"csrf": "c"}
+        for url, kept in (("javascript:alert(1)", False), ("data:text/html,x", False), ("//evil.test/x", False),
+                          ("https://tailnet.example/d/a/share", True), ("http://127.0.0.1:8/d/a/share", True)):
+            draft = {"draftId": "abc", "title": "T", "shareUrl": url}
+            for html in (render._render_dashboard_row(BASE, session, draft), render._render_shared_row(draft)):
+                attr = re.search(r'data-share-url="([^"]*)"', html)[1]
+                self.assertEqual(render.esc(url) if kept else "", attr, url)
+
+    def test_snippet_rows_keep_the_plain_description(self) -> None:
+        draft = {"draftId": "abc", "title": "T", "description": "Plain <text>", "snippet": "a <mark>hit</mark>"}
+        html = render._render_dashboard_row(BASE, {"csrf": "c"}, draft)
+        self.assertIn('data-desc="Plain &lt;text&gt;"', html)
+        self.assertNotIn("data-desc", render._render_dashboard_row(BASE, {"csrf": "c"}, {**draft, "snippet": ""}))
+
+    def test_facet_pills_name_their_kind(self) -> None:
+        html = render._facets(BASE, {"view": "active", "repo": "acme/web", "tags": [{"tag": "ops", "count": 1}],
+                                     "repos": [{"repo": "acme/web", "count": 1}]})
+        self.assertRegex(html, r'data-facet="tag" href="[^"]*repo=acme')
+        self.assertIn('data-facet="repo"', html)
