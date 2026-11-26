@@ -229,10 +229,12 @@ elif "tailplan-share" in args:
 def test_client_installer_installs_and_removes_only_client_files(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     skills_root = tmp_path / "skills"
+    share_dir = tmp_path / "share"
     env = {
         **os.environ,
         "TAILPLAN_BIN_DIR": str(bin_dir),
         "TAILPLAN_SKILLS_ROOT": str(skills_root),
+        "TAILPLAN_SHARE_DIR": str(share_dir),
     }
 
     installed = subprocess.run(
@@ -246,8 +248,11 @@ def test_client_installer_installs_and_removes_only_client_files(tmp_path: Path)
 
     client = bin_dir / "tailplan-share"
     skill = skills_root / "tailplan" / "SKILL.md"
+    ui_dir = share_dir / "tailplan_ui"
     assert client.read_bytes() == REMOTE_CLIENT.read_bytes()
     assert skill.read_bytes() == SKILL.read_bytes()
+    assert (ui_dir / "__init__.py").is_file()
+    assert (ui_dir / "registry.json").is_file()
     assert "Configure the tailplan-server SSH alias" in installed.stdout
     assert not (tmp_path / "token").exists()
 
@@ -261,6 +266,7 @@ def test_client_installer_installs_and_removes_only_client_files(tmp_path: Path)
     )
     assert not client.exists()
     assert not skill.exists()
+    assert not ui_dir.exists()
 
 
 def test_tailplan_skill_routes_plain_language_to_the_app() -> None:

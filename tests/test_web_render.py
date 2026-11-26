@@ -64,8 +64,14 @@ class ThemeShell(unittest.TestCase):
         self.assertIn(' data-theme="dark"', page)
 
     def test_css_has_both_palettes_and_geist_fonts(self) -> None:
+        from tailplan_ui.color import tokens as ui_tokens
+
+        light = ui_tokens.mode_tokens("theme", "graphite", "light")
+        dark = ui_tokens.mode_tokens("theme", "graphite", "dark")
         css = render.WEB_CSS
-        for token in ("#0a0a0a", "#ededed", "#3291ff", "#ffffff", "#171717", "#0070f3",
+        for token in (dark["background"], dark["foreground"], dark["info"],
+                      light["background"], light["foreground"], light["info"],
+                      "--background:", "--foreground:", "--card:", "--destructive:",
                       "prefers-color-scheme:dark", ":root[data-theme=dark]", ":root:not([data-theme=light])",
                       "tabular-nums", "-.03em"):
             self.assertIn(token, css)

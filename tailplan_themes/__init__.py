@@ -8,16 +8,30 @@ import os
 import re
 from pathlib import Path
 
+from tailplan_ui import bundler as ui_bundler
+from tailplan_ui.color import solve as ui_solve
+from tailplan_ui.color import tokens as ui_tokens
+
 from .brief import BriefError, brief_to_body, plain
 from .markdown import markdown_to_body, title_from_content
 
 ROOT = Path(__file__).resolve().parent
 LAYOUTS = {"reading": {"version": 5, "css": ("reading.css",)},
            "brief": {"version": 2, "css": ("reading.css", "brief.css")}}
+RENDER_ENGINES = ("ui", "legacy")
+MODES = ("auto", "light", "dark")
 
 
 class ThemeError(ValueError):
     """A theme or render request is invalid."""
+
+
+def render_engine() -> str:
+    """Return the active render engine: ui (default) or legacy."""
+    raw = os.getenv("TAILPLAN_RENDER_ENGINE", "ui").strip().lower() or "ui"
+    if raw not in RENDER_ENGINES:
+        raise ThemeError("TAILPLAN_RENDER_ENGINE must be ui or legacy")
+    return raw
 
 
 def _validate(value, schema, path="theme"):
@@ -187,8 +201,190 @@ def catalog():
             "layouts": [{"id": ident, "version": spec["version"]} for ident, spec in LAYOUTS.items()]}
 
 
+def _v1_pigment_tokens(palette: dict, *, with_viz: bool) -> dict[str, str]:
+    """Adapt a v1 hex palette into Pigment semantic, status, and chart tokens."""
+    t = palette["tokens"]
+    mode = palette["mode"]
+    bg = ui_solve.normalize_hex(t["background"])
+    surface = ui_solve.normalize_hex(t["surface"])
+    planes = [bg, surface]
+    toward = ui_solve.DARK if mode == ui_solve.LIGHT else ui_solve.LIGHT
+    solved_accent = ui_solve.solve_mode(t["accent"], bg, surface, mode=mode, muted=surface)
+    muted_fg = ui_solve.solve_lightness(t["muted"], planes, ui_solve.TEXT_TARGET, toward=toward)
+    out = {
+        "background": bg,
+        "foreground": ui_solve.normalize_hex(t["text"]),
+        "card": surface,
+        "card-foreground": ui_solve.normalize_hex(t["text"]),
+        "popover": surface,
+        "popover-foreground": ui_solve.normalize_hex(t["text"]),
+        "muted": surface,
+        "muted-foreground": muted_fg,
+        "secondary": surface,
+        "secondary-foreground": ui_solve.normalize_hex(t["text"]),
+        "border": ui_solve.normalize_hex(t["border"]),
+        "border-subtle": ui_solve.mix_oklab(t["border"], bg, 0.5),
+        "border-strong": ui_solve.normalize_hex(t["border"]),
+        "input": ui_solve.normalize_hex(t["border"]),
+        "code-background": ui_solve.normalize_hex(t["code-background"]),
+        "code-foreground": ui_solve.normalize_hex(t["code-text"]),
+        "heading": ui_solve.normalize_hex(t["heading"]),
+        "text": ui_solve.normalize_hex(t["text"]),
+        "surface": surface,
+        "code-text": ui_solve.normalize_hex(t["code-text"]),
+        **solved_accent,
+    }
+    status_L = 0.52 if mode == ui_solve.LIGHT else 0.74
+    for key, spec in ui_tokens.primitives()["status"].items():
+        seed = ui_solve.oklch_hex(status_L, spec["chroma"], spec["hue"])
+        soft = ui_solve.mix_oklab(bg, seed, 0.12 if mode == ui_solve.LIGHT else 0.2)
+        out[f"{key}-surface"] = soft
+        out[key] = ui_solve.solve_lightness(seed, [bg, surface, soft], ui_solve.TEXT_TARGET, toward=toward)
+    if with_viz:
+        viz = ui_tokens.viz_sets()[ui_tokens.DEFAULT_VIZ]
+        charts = [ui_solve.solve_lightness(ui_solve.normalize_hex(c), planes, ui_solve.EDGE_TARGET, toward=toward)
+                  for c in viz[mode]]
+        charts = ui_tokens.spread(charts, planes)
+        for index, color in enumerate(charts, 1):
+            out[f"chart-{index}"] = color
+    return out
+
+
+def _resolve_target(theme: str, document_type: str, mode: str | None) -> dict:
+    """Resolve a theme name and optional mode to a v1 palette or Pigment preset."""
+    if mode is not None and (not isinstance(mode, str) or mode not in MODES):
+        raise ThemeError("Mode must be auto, light, or dark")
+    if not isinstance(theme, str) or not isinstance(document_type, str) or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", document_type):
+        raise ThemeError("Invalid theme or document type")
+    themes = registry()
+    rules = policy(themes)
+    ident = rules["documentTypes"].get(document_type, rules["fallback"]) if theme == "auto" else theme
+    presets = ui_tokens.presets()
+
+    if ident in themes:
+        palette = themes[ident]
+        if ident in ui_tokens.LEGACY_ALIASES:
+            preset_id, legacy_mode = ui_tokens.LEGACY_ALIASES[ident]
+            if ident in ui_tokens.THEME_ALIASES:
+                pinned = legacy_mode if mode in (None, "auto") else mode
+            elif mode is None:
+                pinned = legacy_mode
+            elif mode == "auto":
+                pinned = None
+            else:
+                pinned = mode
+            return {"kind": "preset", "id": ident, "preset": preset_id, "pinned": pinned, "v1": palette}
+        if mode is not None and mode != "auto" and mode != palette["mode"]:
+            raise ThemeError(f"Custom theme {ident} supports only {palette['mode']} mode")
+        return {"kind": "v1", "id": ident, "preset": None, "pinned": palette["mode"], "v1": palette}
+
+    if ident in presets:
+        pinned = None if mode in (None, "auto") else mode
+        return {"kind": "preset", "id": ident, "preset": ident, "pinned": pinned, "v1": None}
+
+    raise ThemeError(f"Unknown theme: {ident}. List themes with tailplan themes --json")
+
+
+def _ui_base_css() -> str:
+    """Return the shared Tailplan UI layers, reset, density, and base chunks."""
+    out = []
+    for name, ident, condition, css in ui_bundler.chunks():
+        if name in ui_bundler.CSS_FILES and condition in ("always", "standalone"):
+            out.append(css)
+    return "".join(out)
+
+
+def _theme_color_metas(target: dict) -> str:
+    """Return theme-color metadata tags for pinned or dual-mode themes."""
+    if target["pinned"] is not None:
+        if target["v1"] is not None and target["pinned"] == target["v1"]["mode"]:
+            color = target["v1"]["tokens"]["background"]
+        else:
+            color = ui_tokens.neutral_tokens("theme", target["preset"], target["pinned"])["background"]
+        return f'<meta name="theme-color" content="{color}">'
+    colors = ui_tokens.theme_color("theme", target["preset"])
+    return ('<meta name="color-scheme" content="light dark">'
+            f'<meta name="theme-color" media="(prefers-color-scheme: light)" content="{colors["light"]}">'
+            f'<meta name="theme-color" media="(prefers-color-scheme: dark)" content="{colors["dark"]}">')
+
+
+def _token_decls(target: dict, *, with_viz: bool) -> list[str]:
+    """Return Pigment CSS token declarations for the resolved theme target."""
+    if target["kind"] == "v1":
+        tokens = _v1_pigment_tokens(target["v1"], with_viz=with_viz)
+        return [f"color-scheme:{target['pinned']}"] + [f"--{k}:{v}" for k, v in tokens.items()]
+    pinned = target["pinned"]
+    decls = ui_tokens.context_decls("theme", target["preset"], pinned=pinned, with_viz=with_viz)
+    if pinned is None:
+        decls.insert(0, "color-scheme:light dark")
+    return decls
+
+
+def _legacy_variables(target: dict, fonts: dict, *, with_viz: bool) -> tuple[str, str]:
+    """Return color-scheme and CSS declarations for TAILPLAN_RENDER_ENGINE=legacy."""
+    if target["v1"] is not None and target["pinned"] == target["v1"]["mode"]:
+        palette = target["v1"]
+        adapted = _v1_pigment_tokens(palette, with_viz=with_viz)
+        merged = {**adapted, **palette["tokens"], **fonts["tokens"]}
+        merged["foreground"] = palette["tokens"]["text"]
+        merged["card"] = palette["tokens"]["surface"]
+        merged["muted-foreground"] = adapted["muted-foreground"]
+        merged["muted"] = palette["tokens"]["surface"]
+        merged["code-foreground"] = palette["tokens"]["code-text"]
+        merged["primary-ink"] = palette["tokens"]["accent"]
+        merged["primary-edge"] = palette["tokens"]["accent"]
+        merged["ring"] = palette["tokens"]["accent"]
+        return palette["mode"], "; ".join(f"--{k}: {v}" for k, v in merged.items())
+    decls = _token_decls(target, with_viz=with_viz) + [f"--{k}:{v}" for k, v in fonts["tokens"].items()]
+    scheme = target["pinned"] or "light dark"
+    return scheme, "; ".join(d for d in decls if not d.startswith("color-scheme:"))
+
+
+def _frozen_metadata(target: dict, fonts: dict, layout: str, css: str,
+                     document_type: str, selection: str, engine: str) -> dict:
+    font_json = json.dumps(fonts, sort_keys=True, separators=(",", ":"))
+    if target["v1"] is not None:
+        palette = target["v1"]
+        canonical = json.dumps(palette, sort_keys=True, separators=(",", ":"))
+        frozen = {
+            "id": palette["id"], "version": palette["version"], "schemaVersion": 1,
+            "sha256": hashlib.sha256(canonical.encode()).hexdigest(),
+            "tokens": dict(palette["tokens"]), "source": dict(palette["source"]),
+            "typography": {**fonts, "sha256": hashlib.sha256(font_json.encode()).hexdigest()},
+            "layout": layout, "layoutVersion": LAYOUTS[layout]["version"],
+            "layoutSha256": hashlib.sha256(css.encode()).hexdigest(),
+            "rendererVersion": 4, "documentType": document_type, "selection": selection,
+        }
+        if target["pinned"] != palette["mode"]:
+            frozen["mode"] = target["pinned"] or "auto"
+        return frozen
+
+    preset = ui_tokens.presets()[target["preset"]]
+    canonical = json.dumps(preset, sort_keys=True, separators=(",", ":"))
+    mode_key = target["pinned"] or ui_solve.LIGHT
+    solved = ui_tokens.mode_tokens("theme", target["preset"], mode_key)
+    return {
+        "id": target["id"], "version": preset["version"], "schemaVersion": 2,
+        "sha256": hashlib.sha256(canonical.encode()).hexdigest(),
+        "mode": target["pinned"] or "auto",
+        "engine": engine,
+        "tokens": {
+            "background": solved["background"], "text": solved["foreground"],
+            "heading": solved["heading"], "accent": solved["primary-ink"],
+            "surface": solved["card"], "border": solved["border"],
+            "muted": solved["muted-foreground"],
+            "code-background": solved["code-background"], "code-text": solved["code-foreground"],
+        },
+        "source": dict(preset["source"]),
+        "typography": {**fonts, "sha256": hashlib.sha256(font_json.encode()).hexdigest()},
+        "layout": layout, "layoutVersion": LAYOUTS[layout]["version"],
+        "layoutSha256": hashlib.sha256(css.encode()).hexdigest(),
+        "rendererVersion": 4, "documentType": document_type, "selection": selection,
+    }
+
+
 def render(content, *, format="markdown", filename="document.md", theme="auto",
-           document_type="document", layout="reading", typography=None):
+           document_type="document", layout="reading", typography=None, mode=None):
     if not isinstance(content, str) or not content.strip():
         raise ThemeError("Content must be a nonempty string")
     if not isinstance(format, str) or format not in {"markdown", "text"}:
@@ -199,39 +395,44 @@ def render(content, *, format="markdown", filename="document.md", theme="auto",
         raise ThemeError("The brief layout requires Markdown content")
     if not isinstance(filename, str):
         raise ThemeError("Filename must be a string")
-    palette = resolve(theme, document_type)
-    css = "\n".join(_asset(ROOT / name) for name in LAYOUTS[layout]["css"])
+    engine = render_engine()
+    target = _resolve_target(theme, document_type, mode)
+    layout_css = "\n".join(_asset(ROOT / name) for name in LAYOUTS[layout]["css"])
     fonts = resolve_typography(typography)
-    font_json = json.dumps(fonts, sort_keys=True, separators=(",", ":"))
-    canonical = json.dumps(palette, sort_keys=True, separators=(",", ":"))
-    frozen = {"id": palette["id"], "version": palette["version"], "schemaVersion": 1,
-              "sha256": hashlib.sha256(canonical.encode()).hexdigest(),
-              "tokens": dict(palette["tokens"]), "source": dict(palette["source"]),
-              "typography": {**fonts, "sha256": hashlib.sha256(font_json.encode()).hexdigest()},
-              "layout": layout, "layoutVersion": LAYOUTS[layout]["version"],
-              "layoutSha256": hashlib.sha256(css.encode()).hexdigest(),
-              "rendererVersion": 4, "documentType": document_type, "selection": theme}
-    variables = "; ".join(f"--{key}: {value}" for key, value in {**palette["tokens"], **fonts["tokens"]}.items())
+    with_viz = layout == "brief"
+    frozen = _frozen_metadata(target, fonts, layout, layout_css, document_type, theme, engine)
+
     title = title_from_content(Path(filename), content)
+    body_mode = target["pinned"] or "auto"
     if layout == "brief":
         try:
             body, brief_title = brief_to_body(content)
         except BriefError as error:
             raise ThemeError(str(error)) from error
         title = (html.unescape(plain(brief_title)) if brief_title else title)[:100]
-        body_class, file_label = f' class="brief" data-mode="{palette["mode"]}"', ""
+        body_class, file_label = f' class="brief" data-mode="{body_mode}"', ""
     else:
         body = markdown_to_body(content) if format == "markdown" else '<div class="plain-text">' + html.escape(content) + '</div>'
         body_class, file_label = "", f'<div class="meta">{html.escape(filename)}</div>'
     body = body.replace('<div class="table-wrap">', '<div class="table-wrap" tabindex="0" role="region" aria-label="Table">')
     body = body.replace("<pre>", '<pre tabindex="0" role="region" aria-label="Code block">')
+
+    if engine == "ui":
+        token_rule = "@layer tp.tokens{" + ui_tokens.rule(":root", _token_decls(target, with_viz=with_viz)) + "}"
+        font_decls = "; ".join(f"--{k}: {v}" for k, v in fonts["tokens"].items())
+        style_css = (
+            _ui_base_css() + token_rule + "\n"
+            f"@layer tp.blocks {{ :root {{ {font_decls}; }} body {{ padding-bottom: 0; }}\n{layout_css}\n}}"
+        )
+    else:
+        scheme, variables = _legacy_variables(target, fonts, with_viz=with_viz)
+        style_css = f":root {{ color-scheme: {scheme}; {variables}; }}\n{layout_css}"
+
     metadata = html.escape(json.dumps(frozen, sort_keys=True, separators=(",", ":")), quote=True)
     doc = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
            '<meta name="viewport" content="width=device-width, initial-scale=1">'
-           f'<meta name="theme-color" content="{palette["tokens"]["background"]}">'
+           f'{_theme_color_metas(target)}'
            f'<meta name="tailplan-theme" content="{metadata}">'
-           f'<title>{html.escape(title)}</title><style>'
-           f':root {{ color-scheme: {palette["mode"]}; {variables}; }}\n{css}'
-           f'</style></head><body{body_class}><main>'
-           f'{file_label}{body}</main></body></html>\n')
+           f'<title>{html.escape(title)}</title><style>{style_css}</style></head>'
+           f'<body{body_class}><main>{file_label}{body}</main></body></html>\n')
     return doc, frozen

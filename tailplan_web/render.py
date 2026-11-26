@@ -10,6 +10,8 @@ import re
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote, urlencode, urlparse
 
+from tailplan_ui.color import solve as ui_solve
+from tailplan_ui.color import tokens as ui_tokens
 from tailplan_web.assets import asset_url
 
 __all__ = [
@@ -20,16 +22,46 @@ __all__ = [
 
 THEMES = ("system", "light", "dark")
 
-_LIGHT = (
-    "--bg:#ffffff;--surface:#fafafa;--hover:#f5f5f5;--border:rgba(0,0,0,.08);--border-strong:rgba(0,0,0,.14);"
-    "--text:#171717;--muted:#666666;--accent:#0070f3;--star:#d97706;--danger:#c92a2a;--danger-bg:#c92a2a;"
-    "--mark-bg:rgba(0,112,243,.14);--focus:rgba(0,112,243,.45);color-scheme:light"
-)
-_DARK = (
-    "--bg:#0a0a0a;--surface:#111111;--hover:#181818;--border:rgba(255,255,255,.09);"
-    "--border-strong:rgba(255,255,255,.16);--text:#ededed;--muted:#888888;--accent:#3291ff;"
-    "--star:#f59e0b;--danger:#ff6b6b;--danger-bg:#d92d20;--mark-bg:rgba(50,145,255,.22);--focus:rgba(50,145,255,.55);color-scheme:dark"
-)
+
+def _graphite_vars(mode: str) -> str:
+    """Build Pigment graphite and shadcn role declarations for one mode."""
+    t = ui_tokens.mode_tokens("theme", "graphite", mode)
+    danger_fg = ui_solve.oklch_hex(1.0, 0.0, 0.0)
+    danger_bg = ui_solve.solve_lightness(t["destructive"], [danger_fg], ui_solve.TEXT_TARGET, toward=ui_solve.DARK)
+    mark_mix = "16%" if mode == ui_solve.LIGHT else "24%"
+    focus_mix = "48%" if mode == ui_solve.LIGHT else "56%"
+    pairs = (
+        ("background", t["background"]),
+        ("foreground", t["foreground"]),
+        ("card", t["card"]),
+        ("muted-surface", t["muted"]),
+        ("muted-foreground", t["muted-foreground"]),
+        ("border", t["border"]),
+        ("border-strong", t["border-strong"]),
+        ("primary", t["primary"]),
+        ("primary-foreground", t["primary-foreground"]),
+        ("destructive", t["destructive"]),
+        ("warning", t["warning"]),
+        ("info", t["info"]),
+        ("ring", t["info"]),
+        ("bg", t["background"]),
+        ("surface", t["card"]),
+        ("hover", t["muted"]),
+        ("text", t["foreground"]),
+        ("muted", t["muted-foreground"]),
+        ("accent", t["info"]),
+        ("star", t["warning"]),
+        ("danger", t["destructive"]),
+        ("danger-bg", danger_bg),
+        ("danger-fg", danger_fg),
+        ("mark-bg", f"color-mix(in oklab,{t['info']} {mark_mix},transparent)"),
+        ("focus", f"color-mix(in oklab,{t['info']} {focus_mix},transparent)"),
+    )
+    return ";".join(f"--{name}:{value}" for name, value in pairs) + f";color-scheme:{mode}"
+
+
+_LIGHT = _graphite_vars(ui_solve.LIGHT)
+_DARK = _graphite_vars(ui_solve.DARK)
 
 _BASE_CSS = """
 :root{%(light)s;--sans:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;--mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--radius:8px}
@@ -78,7 +110,7 @@ button,.button{font:inherit;font-size:14px;font-weight:500;background:var(--text
 button:hover,.button:hover{opacity:.88;text-decoration:none}
 button.secondary,.button.secondary{background:var(--bg);color:var(--text);border-color:var(--border-strong)}
 button.secondary:hover,.button.secondary:hover{background:var(--hover);opacity:1}
-button.danger{background:var(--danger-bg);border-color:var(--danger-bg);color:#fff}
+button.danger{background:var(--danger-bg);border-color:var(--danger-bg);color:var(--danger-fg)}
 button.sm,.button.sm{min-height:28px;padding:0 10px;font-size:13px}
 input,select{font:inherit;font-size:14px;padding:0 10px;height:36px;border:1px solid var(--border-strong);border-radius:6px;width:100%%;max-width:600px;background:var(--bg);color:var(--text)}
 input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--mark-bg)}
@@ -208,7 +240,7 @@ _DASH_CSS = """
 .toasts{bottom:20px;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
 .has-bulk .toasts{bottom:88px}
 .toast{pointer-events:auto;display:flex;align-items:center;gap:10px;max-width:100%%;padding:6px 6px 6px 14px;min-height:40px;border-radius:var(--radius);background:var(--text);color:var(--bg);font-size:13px;box-shadow:0 8px 30px rgba(0,0,0,.2);overflow-wrap:anywhere}
-.toast.error{background:var(--danger-bg);color:#fff}
+.toast.error{background:var(--danger-bg);color:var(--danger-fg)}
 .toast button{background:none;border:0;color:inherit;min-height:28px;padding:0 8px;font-size:13px;font-weight:600}
 .toast kbd{background:none;color:inherit;border-color:currentColor;opacity:.7;margin-left:6px}
 .bulk-bar{bottom:20px;display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px;border:1px solid var(--border-strong);border-radius:12px;background:var(--bg);box-shadow:0 10px 40px rgba(0,0,0,.18);width:max-content}
@@ -287,7 +319,7 @@ _ICON = {
                '<circle cx="5.5" cy="12" r="1.5"/><circle cx="6.5" cy="8" r="1.5"/></svg>',
 }
 # The browser bar color for each theme. It matches --bg, so the Safari side strip blends in.
-THEME_COLORS = {"light": "#ffffff", "dark": "#0a0a0a"}
+THEME_COLORS = ui_tokens.theme_color("theme", "graphite")
 
 
 _CURRENT_PAGE = ' aria-current="page"'

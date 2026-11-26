@@ -278,10 +278,6 @@ CSS_IMPORT_RE = re.compile(
 STORE_LOCK = threading.RLock()
 BUILD_ID = web_assets.build_id(__file__)
 
-CSS = """
-*{box-sizing:border-box}html,body{width:100%;max-width:100%;margin:0;background:#fff;color:#111827;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.home{width:min(100% - 32px,760px);margin:48px auto;padding:0;line-height:1.55}.home h1{margin:0 0 12px;font-size:clamp(2rem,8vw,40px);line-height:1.1}.home p{color:#374151;font-size:17px;overflow-wrap:anywhere}.home pre{max-width:100%;overflow-x:auto;padding:14px;border:1px solid #d1d5db;background:#fff;border-radius:6px}@media(max-width:640px){.home{width:min(100% - 24px,760px);margin:32px auto}}
-""".strip()
-
 
 # Copyright: Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved.
 #  Bitstream Vera is a trademark of Bitstream, Inc.
@@ -7252,9 +7248,10 @@ class Handler(BaseHTTPRequestHandler):
                 document_type=payload.get("documentType", "document"),
                 layout=payload.get("layout", "reading"),
                 typography=payload.get("typography"),
+                mode=payload.get("mode"),
             )
             return [{"path": "index.html", "html": html_doc}], frozen_theme
-        if any(key in payload for key in ("theme", "documentType", "layout", "format", "typography")):
+        if any(key in payload for key in ("theme", "documentType", "layout", "format", "typography", "mode")):
             raise tailplan_themes.ThemeError("Theme options require Markdown or text content")
         if "files" in payload:
             if "html" in payload:
@@ -8377,25 +8374,42 @@ class Handler(BaseHTTPRequestHandler):
 
 
 
-def page(title: str, body: str) -> str:
-    return f"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{html.escape(title)}</title><style>{CSS}</style></head><body>{body}</body></html>"
+_SHELL_CSS = (
+    ".home{width:min(100% - 32px,760px);margin:48px auto;padding:0;line-height:1.55}"
+    ".home h1{margin:0 0 12px;font-family:var(--font-sans);font-size:clamp(2rem,8vw,40px);line-height:1.1}"
+    ".home p{color:var(--muted-foreground);font-size:17px;overflow-wrap:anywhere}"
+    ".home pre{max-width:100%;overflow-x:auto;padding:14px;border:1px solid var(--border);"
+    "background:var(--code-background);color:var(--code-foreground);border-radius:var(--radius)}"
+    "@media(max-width:480px){.home{width:min(100% - 24px,760px);margin:32px auto}}"
+)
+
+
+def _shell_page(title: str, body: str) -> str:
+    raw = (
+        '<!doctype html><html lang="en" data-ui-theme="graphite"><head>'
+        '<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<meta name="tailplan-ui" content="1">'
+        f'<title>{html.escape(title)}</title><style>{_SHELL_CSS}</style></head>'
+        f'<body>{body}</body></html>'
+    )
+    return tailplan_ui.bundle(raw, target="standalone")[0]
 
 
 def home(base_url: str) -> str:
     base = html.escape(base_url.rstrip("/"))
-    return page("Tailplan", f'<main class="home"><h1>Tailplan</h1>'
-                '<p>Publish a draft. Keep its URL. Track every version.</p>'
-                '<pre>tailplan upload ./plan.md</pre>'
-                f'<p><a href="{base}/dashboard">My drafts</a> · '
-                f'<a href="{base}/cli/auth">CLI setup</a></p>'
-                f'<p>Health: <a href="{base}/healthz">/healthz</a></p></main>')
+    return _shell_page("Tailplan", f'<main class="home"><h1>Tailplan</h1>'
+                       '<p>Publish a draft. Keep its URL. Track every version.</p>'
+                       '<pre>tailplan upload ./plan.md</pre>'
+                       f'<p><a href="{base}/dashboard">My drafts</a> · '
+                       f'<a href="{base}/cli/auth">CLI setup</a></p>'
+                       f'<p>Health: <a href="{base}/healthz">/healthz</a></p></main>')
 
 
 def not_found(sign_in_url: str | None = None) -> str:
     """Return the 404 page. Every 404 is the same, so it never shows that a draft exists."""
     sign_in = f'<p><a href="{html.escape(sign_in_url, quote=True)}">Sign in</a></p>' if sign_in_url else ""
-    return page("Draft not found", "<main class=\"home\"><h1>Draft not found</h1>"
-                "<p>The requested Tailplan draft is unavailable.</p>" + sign_in + "</main>")
+    return _shell_page("Draft not found", '<main class="home"><h1>Draft not found</h1>'
+                       '<p>The requested Tailplan draft is unavailable.</p>' + sign_in + '</main>')
 
 
 def create_servers(
