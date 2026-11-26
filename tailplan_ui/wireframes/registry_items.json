@@ -1,0 +1,290 @@
+[
+  {
+    "slot": "device-frame",
+    "category": "wireframes",
+    "chunk": "device-frame",
+    "summary": "Container-queried device viewport frame. Set data-device to pick a size.",
+    "subslots": [],
+    "variants": [
+      "duo-folded",
+      "duo-landscape",
+      "duo-unfolded",
+      "duo-wide",
+      "iphone",
+      "ipad",
+      "browser"
+    ],
+    "markup": "<div data-slot=\"device-frame\" data-device=\"duo-folded\"><div data-slot=\"device-screen\">…</div></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "device-screen",
+    "category": "wireframes",
+    "chunk": "device-frame",
+    "summary": "Screen of a device frame. It is the size container named screen.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"device-screen\"><div data-slot=\"app-shell\">…</div></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "duo-folded",
+    "category": "wireframes",
+    "chunk": "device-frame",
+    "summary": "Alias frame, 382×580. Same as device-frame with data-device=duo-folded.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"duo-folded\"><div data-slot=\"device-screen\">…</div></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "duo-landscape",
+    "category": "wireframes",
+    "chunk": "device-frame",
+    "summary": "Alias frame, 594×368. Same as device-frame with data-device=duo-landscape.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"duo-landscape\"><div data-slot=\"device-screen\">…</div></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "duo-unfolded",
+    "category": "wireframes",
+    "chunk": "device-frame",
+    "summary": "Alias frame, 669×867. Same as device-frame with data-device=duo-unfolded.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"duo-unfolded\"><div data-slot=\"device-screen\">…</div></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "duo-wide",
+    "category": "wireframes",
+    "chunk": "device-frame",
+    "summary": "Alias frame, 951×585. Same as device-frame with data-device=duo-wide.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"duo-wide\"><div data-slot=\"device-screen\">…</div></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "iphone",
+    "category": "wireframes",
+    "chunk": "device-frame",
+    "summary": "Alias frame, 390×844. Same as device-frame with data-device=iphone.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"iphone\"><div data-slot=\"device-screen\">…</div></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "ipad",
+    "category": "wireframes",
+    "chunk": "device-frame",
+    "summary": "Alias frame, 768×1024. Same as device-frame with data-device=ipad.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"ipad\"><div data-slot=\"device-screen\">…</div></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "browser",
+    "category": "wireframes",
+    "chunk": "device-frame",
+    "summary": "Alias frame, 1280×800. Same as device-frame with data-device=browser.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"browser\"><div data-slot=\"device-screen\">…</div></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "safari-pill",
+    "category": "wireframes",
+    "chunk": "wf-overlays",
+    "summary": "Safari 27.1 floating URL pill, 56px high. Put it inside a device-screen.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"safari-pill\">example.com/plan</div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "safari-strip",
+    "category": "wireframes",
+    "chunk": "wf-overlays",
+    "summary": "Safari 27.1 side strip, 84pt wide. Use data-side=end for the other edge.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"safari-strip\" data-side=\"start\">84 pt</div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "ruler-mark",
+    "category": "wireframes",
+    "chunk": "wf-overlays",
+    "summary": "Dimension ruler. Set --ruler to its length in pixels. data-axis=y makes it vertical.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"ruler-mark\" style=\"--ruler:402\">382 pt</div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "pin",
+    "category": "wireframes",
+    "chunk": "wf-overlays",
+    "summary": "Numbered callout pin. Set --x and --y on a positioned parent.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<span data-slot=\"pin\" style=\"--x:50%;--y:10%\">1</span>",
+    "zeroJs": true
+  },
+  {
+    "slot": "pin-legend",
+    "category": "wireframes",
+    "chunk": "wf-overlays",
+    "summary": "Legend list that numbers itself to match the pins.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<ol data-slot=\"pin-legend\"><li>First note</li><li>Second note</li></ol>",
+    "zeroJs": true
+  },
+  {
+    "slot": "wire-box",
+    "category": "wireframes",
+    "chunk": "wf-overlays",
+    "summary": "Placeholder box. Hatched in wire, a clean card in other themes. data-shape=image adds a cross.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"wire-box\" data-shape=\"image\" data-label=\"Image\"></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "app-shell",
+    "category": "wireframes",
+    "chunk": "app-shell",
+    "summary": "App layout. One column with tab-bar on a narrow screen, sidebar from 620px of screen width.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"app-shell\"><header data-slot=\"app-bar\">…</header><nav data-slot=\"sidebar\">…</nav><div data-part=\"body\">…</div><nav data-slot=\"tab-bar\">…</nav></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "app-bar",
+    "category": "wireframes",
+    "chunk": "app-shell",
+    "summary": "Top bar with a title and action buttons.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<header data-slot=\"app-bar\"><button type=\"button\" data-part=\"action\" aria-label=\"Back\">‹</button><span data-part=\"title\">Inbox</span></header>",
+    "zeroJs": true
+  },
+  {
+    "slot": "tab-bar",
+    "category": "wireframes",
+    "chunk": "app-shell",
+    "summary": "Bottom tab bar. It hides when the screen is wide.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<nav data-slot=\"tab-bar\"><span aria-current=\"page\"><span data-part=\"icon\">I</span>Inbox</span><span><span data-part=\"icon\">P</span>Plans</span></nav>",
+    "zeroJs": true
+  },
+  {
+    "slot": "sidebar",
+    "category": "wireframes",
+    "chunk": "app-shell",
+    "summary": "Left rail. It shows when the screen is 620px wide or more.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<nav data-slot=\"sidebar\"><span data-part=\"title\">App</span><span aria-current=\"page\">Inbox</span><span>Plans</span></nav>",
+    "zeroJs": true
+  },
+  {
+    "slot": "filter-bar",
+    "category": "wireframes",
+    "chunk": "app-browse",
+    "summary": "Wrapping row of filter chips.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"filter-bar\"><span aria-pressed=\"true\">All</span><span>Open</span></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "search",
+    "category": "wireframes",
+    "chunk": "app-browse",
+    "summary": "Search field with an icon. Text is 16px or more. It is not a form.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"search\"><span data-part=\"placeholder\">Search</span></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "shelf-strip",
+    "category": "wireframes",
+    "chunk": "app-browse",
+    "summary": "Horizontal shelf of cards that scrolls.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"shelf-strip\"><div>One</div><div>Two</div><div>Three</div></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "list-row",
+    "category": "wireframes",
+    "chunk": "app-browse",
+    "summary": "List row with icon, title, subtitle, meta and chevron.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"list-row\"><span data-part=\"icon\">A</span><span data-part=\"title\">Ada</span><span data-part=\"meta\">9:41</span><span data-part=\"subtitle\">Note</span><span data-part=\"chevron\"></span></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "sheet-preview",
+    "category": "wireframes",
+    "chunk": "app-layers",
+    "summary": "Bottom sheet over a device-screen, with a grab handle and a scrim.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"sheet-preview\"><div data-part=\"title\">Share</div></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "command-palette",
+    "category": "wireframes",
+    "chunk": "app-layers",
+    "summary": "Command palette over a device-screen.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"command-palette\"><div data-slot=\"search\"><span data-part=\"placeholder\">Type a command</span></div><div data-part=\"item\" aria-selected=\"true\">New plan</div></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "inspector-grid",
+    "category": "wireframes",
+    "chunk": "app-data",
+    "summary": "Key and value inspector. It uses two pairs per row on a wide screen.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<dl data-slot=\"inspector-grid\"><dt>Status</dt><dd>Open</dd></dl>",
+    "zeroJs": true
+  },
+  {
+    "slot": "empty-state",
+    "category": "wireframes",
+    "chunk": "app-data",
+    "summary": "Centered empty state with art, title, hint and action.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"empty-state\"><div data-part=\"art\"></div><div data-part=\"title\">Nothing yet</div><p data-part=\"hint\">Add one.</p><button type=\"button\" data-part=\"action\">Add</button></div>",
+    "zeroJs": true
+  },
+  {
+    "slot": "mockup-stage",
+    "category": "wireframes",
+    "chunk": "mockup-stage",
+    "summary": "Zero-JS stage. Radios with data-ctl=fidelity|mode|viewport|view and a value set the state. Put data-ui-theme=wire|graphite islands inside data-part=preview.",
+    "subslots": [],
+    "variants": [],
+    "markup": "<div data-slot=\"mockup-stage\"><div data-part=\"controls\"><div data-part=\"group\"><span data-part=\"seg\"><label><input type=\"radio\" name=\"s-fidelity\" data-ctl=\"fidelity\" value=\"wire\" checked>Wire</label><label><input type=\"radio\" name=\"s-fidelity\" data-ctl=\"fidelity\" value=\"graphite\">Hi-fi</label></span></div><div data-part=\"group\"><span data-part=\"seg\"><label><input type=\"radio\" name=\"s-view\" data-ctl=\"view\" value=\"side\" checked>Side by side</label><label><input type=\"radio\" name=\"s-view\" data-ctl=\"view\" value=\"before\">Before</label></span></div></div><div data-part=\"preview\"><div data-part=\"panes\"><div data-part=\"pane\" data-pane=\"before\"><div data-ui-theme=\"wire\">…</div><div data-ui-theme=\"graphite\">…</div></div><div data-part=\"pane\" data-pane=\"after\"><div data-ui-theme=\"wire\">…</div><div data-ui-theme=\"graphite\">…</div></div></div></div></div>",
+    "zeroJs": true
+  }
+]

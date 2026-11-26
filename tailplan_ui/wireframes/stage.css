@@ -1,0 +1,69 @@
+/* tp.wireframes: the zero-JS mockup stage. Radio inputs plus :has() drive four switches. No form, no script. */
+/* Each radio carries data-ctl (fidelity, mode, viewport, view) and a value. Use a unique name per stage. */
+/* @chunk mockup-stage when=slot:mockup-stage */
+@layer tp.wireframes {
+  :where([data-slot="mockup-stage"]) {
+    container: stage / inline-size; display: grid; gap: var(--space, 1rem); min-inline-size: 0;
+  }
+  :where([data-slot="mockup-stage"] [data-part="controls"]) {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.25rem; min-inline-size: 0;
+  }
+  :where([data-slot="mockup-stage"] [data-part="group"]) { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-inline-size: 0; }
+  :where([data-slot="mockup-stage"] [data-part="legend"]) { font-size: 0.8rem; color: var(--muted-foreground); }
+  :where([data-slot="mockup-stage"] [data-part="seg"]) {
+    display: inline-flex; flex-wrap: wrap; overflow: hidden; border: 1px var(--line, solid) var(--border-strong); border-radius: var(--radius);
+  }
+  :where([data-slot="mockup-stage"] [data-part="seg"] > label) {
+    position: relative; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;
+    min-block-size: var(--tap, 32px); padding: 0.25rem 0.75rem; font-size: 0.85rem; cursor: pointer;
+    background: var(--card); color: var(--foreground);
+  }
+  :where([data-slot="mockup-stage"] [data-part="seg"] > label + label) { border-inline-start: 1px var(--line, solid) var(--border-strong); }
+  :where([data-slot="mockup-stage"] [data-part="seg"] > label > input) {
+    position: absolute; inset: 0; inline-size: 100%; block-size: 100%; margin: 0; opacity: 0; cursor: pointer;
+  }
+  :where([data-slot="mockup-stage"] [data-part="seg"] > label:has(input:checked)) {
+    background: var(--primary); color: var(--primary-foreground); font-weight: 600;
+  }
+  :where([data-slot="mockup-stage"] [data-part="seg"] > label:has(input:focus-visible)) { outline: 2px solid var(--ring); outline-offset: -2px; }
+  :where([data-slot="mockup-stage"] [data-part="preview"]) {
+    display: grid; gap: var(--space, 1rem); min-inline-size: 0; padding: 0.75rem; box-sizing: border-box;
+    background: var(--background); color: var(--foreground); border: 1px var(--line, solid) var(--border); border-radius: var(--radius);
+  }
+  :where([data-slot="mockup-stage"] [data-part="panes"]) { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space, 1rem); min-inline-size: 0; }
+  :where([data-slot="mockup-stage"] [data-part="pane"]) { display: grid; align-content: start; gap: 0.5rem; min-inline-size: 0; }
+  :where([data-slot="mockup-stage"] [data-part="caption"]) { font-size: 0.8rem; color: var(--muted-foreground); text-align: center; }
+  :where([data-slot="mockup-stage"] [data-variant]) { box-sizing: border-box; min-inline-size: 0; padding: 0.75rem; border-radius: var(--radius); }
+  /* Side by side from 920px of stage width. Narrower stages stack. */
+  @container stage (min-width: 920px) {
+    :where([data-slot="mockup-stage"] [data-part="panes"]) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  /* The rules below set state. They use :where(), so they add no specificity. They come last in the layer, so they win by order. */
+  /* Fidelity. A data-variant or a data-ui-theme island inside the preview hides when the other fidelity is on. */
+  :where([data-slot="mockup-stage"]:has([data-ctl="fidelity"][value="wire"]:checked) [data-part="preview"] :is([data-variant="graphite"], [data-ui-theme]:not([data-ui-theme="wire"]))),
+  :where([data-slot="mockup-stage"]:has([data-ctl="fidelity"][value="graphite"]:checked) [data-part="preview"] :is([data-variant="wire"], [data-ui-theme="wire"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="view"][value="before"]:checked) [data-pane="after"]), :where([data-slot="mockup-stage"]:has([data-ctl="view"][value="after"]:checked) [data-pane="before"]) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="view"][value="before"]:checked) [data-part="panes"]), :where([data-slot="mockup-stage"]:has([data-ctl="view"][value="after"]:checked) [data-part="panes"]) { grid-template-columns: minmax(0, 1fr); }
+  /* Viewport. Frames with data-device and alias frames hide unless they match. A plain device-frame takes its size from the radio. */
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-folded"]:checked) :is([data-device]:not([data-device="duo-folded"]), [data-slot="duo-landscape"], [data-slot="duo-unfolded"], [data-slot="duo-wide"], [data-slot="iphone"], [data-slot="ipad"], [data-slot="browser"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-landscape"]:checked) :is([data-device]:not([data-device="duo-landscape"]), [data-slot="duo-folded"], [data-slot="duo-unfolded"], [data-slot="duo-wide"], [data-slot="iphone"], [data-slot="ipad"], [data-slot="browser"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-unfolded"]:checked) :is([data-device]:not([data-device="duo-unfolded"]), [data-slot="duo-folded"], [data-slot="duo-landscape"], [data-slot="duo-wide"], [data-slot="iphone"], [data-slot="ipad"], [data-slot="browser"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-wide"]:checked) :is([data-device]:not([data-device="duo-wide"]), [data-slot="duo-folded"], [data-slot="duo-landscape"], [data-slot="duo-unfolded"], [data-slot="iphone"], [data-slot="ipad"], [data-slot="browser"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="iphone"]:checked) :is([data-device]:not([data-device="iphone"]), [data-slot="duo-folded"], [data-slot="duo-landscape"], [data-slot="duo-unfolded"], [data-slot="duo-wide"], [data-slot="ipad"], [data-slot="browser"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="ipad"]:checked) :is([data-device]:not([data-device="ipad"]), [data-slot="duo-folded"], [data-slot="duo-landscape"], [data-slot="duo-unfolded"], [data-slot="duo-wide"], [data-slot="iphone"], [data-slot="browser"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="browser"]:checked) :is([data-device]:not([data-device="browser"]), [data-slot="duo-folded"], [data-slot="duo-landscape"], [data-slot="duo-unfolded"], [data-slot="duo-wide"], [data-slot="iphone"], [data-slot="ipad"])) { display: none; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-folded"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 382; --dh: 580; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-landscape"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 594; --dh: 368; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-unfolded"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 669; --dh: 867; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-wide"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 951; --dh: 585; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="iphone"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 390; --dh: 844; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="ipad"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 768; --dh: 1024; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="browser"]:checked) [data-slot="device-frame"]:not([data-device])) { --dw: 1280; --dh: 800; }
+  /* A wide device needs the whole row, so the panes stack. */
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-landscape"]:checked) [data-part="panes"]),
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="duo-wide"]:checked) [data-part="panes"]),
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="ipad"]:checked) [data-part="panes"]),
+  :where([data-slot="mockup-stage"]:has([data-ctl="viewport"][value="browser"]:checked) [data-part="panes"]) { grid-template-columns: minmax(0, 1fr); }
+  :where([data-slot="mockup-stage"]:has([data-ctl="mode"][value="light"]:checked) [data-part="preview"]) { color-scheme: light; }
+  :where([data-slot="mockup-stage"]:has([data-ctl="mode"][value="dark"]:checked) [data-part="preview"]) { color-scheme: dark; }
+}
