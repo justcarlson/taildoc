@@ -35,7 +35,7 @@ exec $engine run --rm --ipc=host $userns --user "$(id -u):$(id -g)" \
     pip install -q --disable-pip-version-check --user uv
     export PATH=/tmp/.local/bin:$PATH
     uv sync -q --locked --extra oidc
-    uv run --no-sync python -m pytest -q -p no:cacheprovider tests/test_theme_browser.py tests/test_oidc_browser.py \
+    uv run --no-sync python -m pytest -q -p no:cacheprovider tests/test_theme_browser.py tests/test_duo_themes.py tests/test_oidc_browser.py \
       --browser "$browser" --tracing retain-on-failure --screenshot only-on-failure \
       --output /out --junitxml=/out/browser.xml "$@"
     uv run --no-sync python tests/check_junit.py /out/browser.xml --minimum 45
