@@ -195,3 +195,42 @@ def test_frame_children_stack_in_flow_and_the_strip_scales_with_the_screen():
     frames = (WIRE_DIR / 'frames.css').read_text(encoding='utf-8')
     assert 'grid-area: 1 / 1' not in frames
     assert 'min(84px, 14.14cqw)' in frames and 'min(84px, 14.14cqw)' in (WIRE_DIR / 'overlays.css').read_text(encoding='utf-8')
+
+
+HARDWARE = {
+    'frames.css': ['calc(var(--radius, 4px) * 5)', 'calc(var(--radius, 4px) * 3)'],
+    'overlays.css': ['999px', '50%'],
+    'app.css': ['50%'],
+}
+
+
+def test_app_slots_are_flat_and_only_hardware_chrome_keeps_a_radius():
+    for name in ('app.css', 'stage.css'):
+        radii = re.findall(r'border-radius:\s*([^;}]+)', (WIRE_DIR / name).read_text(encoding='utf-8'))
+        # app.css keeps two circles: the round avatar and the search lens glyph. stage.css keeps none.
+        assert all(r.strip() in ('0', '50%') for r in radii), (name, radii)
+        assert radii.count('50%') == (2 if name == 'app.css' else 0), name
+    app = (WIRE_DIR / 'app.css').read_text(encoding='utf-8')
+    assert app.count('--wf-pill: 0;') == 2 and '999px' not in app
+    assert '--radius' not in ' '.join(re.findall(r'border-radius:[^;}]+', app))
+    overlays = (WIRE_DIR / 'overlays.css').read_text(encoding='utf-8')
+    assert re.findall(r'border-radius:\s*([^;}]+)', overlays).count('999px') == 1
+    assert re.findall(r'border-radius:\s*([^;}]+)', overlays).count('50%') == 1
+    for name, values in HARDWARE.items():
+        text = (WIRE_DIR / name).read_text(encoding='utf-8')
+        assert all(v in text for v in values), name
+
+
+def test_registry_documents_the_hardware_chrome_allowlist():
+    by_slot = {i['slot']: i['summary'] for i in registry()}
+    for slot in ('device-frame', 'device-screen', 'safari-pill', 'pin'):
+        assert 'Hardware chrome' in by_slot[slot], slot
+    assert 'round avatar' in by_slot['list-row']
+    assert 'hairlines' in by_slot['filter-bar'] and 'chips' not in by_slot['filter-bar']
+    assert 'hairlines' in by_slot['shelf-strip'] and 'cards' not in by_slot['shelf-strip']
+
+
+def test_example_island_is_open_not_a_rounded_card():
+    html = EXAMPLE.read_text(encoding='utf-8')
+    rule = re.search(r'\.island \{[^}]*\}', html).group(0)
+    assert 'border-radius: 0' in rule and 'border-block-start' in rule and 'var(--radius)' not in rule

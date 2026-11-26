@@ -11,7 +11,7 @@
   :where([data-slot="mockup-stage"] [data-part="group"]) { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-inline-size: 0; }
   :where([data-slot="mockup-stage"] [data-part="legend"]) { font-size: 0.8rem; color: var(--muted-foreground); }
   :where([data-slot="mockup-stage"] [data-part="seg"]) {
-    display: inline-flex; flex-wrap: wrap; overflow: hidden; border: 1px var(--line, solid) var(--border-strong); border-radius: var(--radius);
+    display: inline-flex; flex-wrap: wrap; overflow: hidden; border: 1px var(--line, solid) var(--border-strong); border-radius: 0;
   }
   :where([data-slot="mockup-stage"] [data-part="seg"] > label) {
     position: relative; display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box;
@@ -28,12 +28,12 @@
   :where([data-slot="mockup-stage"] [data-part="seg"] > label:has(input:focus-visible)) { outline: 2px solid var(--ring); outline-offset: -2px; }
   :where([data-slot="mockup-stage"] [data-part="preview"]) {
     display: grid; gap: var(--space, 1rem); min-inline-size: 0; padding: 0.75rem; box-sizing: border-box;
-    background: var(--background); color: var(--foreground); border: 1px var(--line, solid) var(--border); border-radius: var(--radius);
+    background: var(--background); color: var(--foreground); border: 1px var(--line, solid) var(--border); border-radius: 0;
   }
   :where([data-slot="mockup-stage"] [data-part="panes"]) { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space, 1rem); min-inline-size: 0; }
-  :where([data-slot="mockup-stage"] [data-part="pane"]) { display: grid; align-content: start; gap: 0.5rem; min-inline-size: 0; }
+  :where([data-slot="mockup-stage"] [data-part="pane"]) { display: grid; align-content: start; gap: 0.5rem; min-inline-size: 0; border-radius: 0; }
   :where([data-slot="mockup-stage"] [data-part="caption"]) { font-size: 0.8rem; color: var(--muted-foreground); text-align: center; }
-  :where([data-slot="mockup-stage"] [data-variant]) { box-sizing: border-box; min-inline-size: 0; padding: 0.75rem; border-radius: var(--radius); }
+  :where([data-slot="mockup-stage"] [data-variant]) { box-sizing: border-box; min-inline-size: 0; padding: 0.75rem; border-radius: 0; }
   /* Side by side from 920px of stage width. Narrower stages stack. */
   @container stage (min-width: 920px) {
     :where([data-slot="mockup-stage"] [data-part="panes"]) { grid-template-columns: repeat(2, minmax(0, 1fr)); }

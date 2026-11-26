@@ -1,4 +1,5 @@
 /* tp.wireframes: the 7 device frames. */
+/* The bezel and the screen clip depict hardware, so they keep their rounded corners. */
 /* A frame keeps the real aspect ratio and shrinks to fit the host. Its screen is a size container named screen. */
 /* App content asks @container screen, so it follows the rendered screen and never the host viewport. */
 /* @chunk device-frame when=slot:device-frame|device-screen|duo-folded|duo-landscape|duo-unfolded|duo-wide|iphone|ipad|browser */
@@ -35,7 +36,7 @@
   :where([data-slot="device-frame"][data-device="browser"], [data-slot="browser"])::after {
     content: attr(data-url); position: absolute; inset-block-start: 7px; inset-inline-start: 76px;
     box-sizing: border-box; inline-size: min(calc(100% - 96px), 26rem); block-size: 22px; overflow: hidden; white-space: nowrap;
-    padding-inline: 0.75rem; border: 1px var(--line, solid) var(--border); border-radius: var(--wf-pill, 999px);
+    padding-inline: 0.75rem; border: 1px var(--line, solid) var(--border); border-radius: var(--wf-pill, 0);
     background: var(--background); color: var(--muted-foreground); font-size: 11px; line-height: 20px;
   }
   :where([data-slot="device-screen"]) {

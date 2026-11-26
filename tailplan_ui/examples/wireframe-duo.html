@@ -10,7 +10,7 @@ main { max-width: 80rem; margin: 0 auto; padding: var(--gutter); display: grid; 
 header p, figcaption { color: var(--muted-foreground); margin: 0; }
 section, figure { min-width: 0; margin: 0; display: grid; gap: var(--space); }
 figure { gap: 0.5rem; }
-.island { padding: var(--gutter); border: 1px var(--line) var(--border); border-radius: var(--radius); }
+.island { padding: var(--gutter) 0 0; border: 0; border-block-start: 1px var(--line) var(--border-strong); border-radius: 0; }
 .island h3 { margin: 0; }
 .pair { display: grid; gap: var(--space); grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); }
 </style>

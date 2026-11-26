@@ -1,13 +1,13 @@
 /* tp.wireframes: device chrome overlays and annotation helpers. */
 /* @chunk wf-overlays when=slot:safari-pill|safari-strip|ruler-mark|pin|pin-legend|wire-box */
 @layer tp.wireframes {
-  /* Safari 27.1 floating URL pill. Put it inside a device-screen. */
+  /* Safari 27.1 floating URL pill. Put it inside a device-screen. It depicts OS chrome, so it stays a pill in every theme. */
   :where([data-slot="safari-pill"]) {
     position: absolute; inset-inline: 0; inset-block-end: max(8px, env(safe-area-inset-bottom, 0px)); z-index: 2;
     margin-inline: auto; box-sizing: border-box; inline-size: min(calc(100% - 24px), 22rem); block-size: 56px;
     display: grid; place-items: center; padding-inline: 1rem; overflow: hidden; pointer-events: none;
     background: color-mix(in oklab, var(--background) 78%, transparent); color: var(--foreground);
-    border: 1px var(--line, solid) var(--border-strong); border-radius: var(--wf-pill, 999px);
+    border: 1px var(--line, solid) var(--border-strong); border-radius: 999px;
     box-shadow: var(--wf-shadow, none); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
     font-size: 0.8rem; line-height: 1.2; text-align: center;
   }
@@ -39,7 +39,7 @@
   :where([data-slot="ruler-mark"][data-axis="y"])::before, :where([data-slot="ruler-mark"][data-axis="y"])::after {
     border-block-start: 0; border-inline-start: 1px solid var(--border-strong);
   }
-  /* A numbered pin sits on a positioned parent at --x and --y. */
+  /* A numbered pin sits on a positioned parent at --x and --y. The round dot is a callout mark, so it stays round. */
   :where([data-slot="pin"]) {
     position: absolute; inset-inline-start: var(--x, 50%); inset-block-start: var(--y, 50%); z-index: 3;
     display: grid; place-items: center; box-sizing: border-box; inline-size: 1.4rem; block-size: 1.4rem;
@@ -55,18 +55,18 @@
   }
   :where([data-slot="pin-legend"] > li)::before {
     content: counter(pin); display: grid; place-items: center; box-sizing: border-box; inline-size: 1.4rem; block-size: 1.4rem;
-    border-radius: 50%; background: var(--primary); color: var(--primary-foreground);
+    border-radius: 0; background: var(--primary); color: var(--primary-foreground);
     font-family: var(--font-mono); font-size: 0.7rem; font-weight: 700;
   }
   /* A placeholder box. Wire draws hatching and a cross. Other themes draw a clean card. */
   :where([data-slot="wire-box"]) {
     position: relative; display: grid; place-items: center; box-sizing: border-box; min-inline-size: 0; min-block-size: 4rem; padding: 0.5rem;
-    border: 1px var(--line, solid) var(--border); border-radius: var(--radius);
+    border: 1px var(--line, solid) var(--border); border-radius: 0;
     background-color: var(--muted); background-image: var(--wf-hatch, none);
     color: var(--muted-foreground); font-size: 0.75rem; text-align: center; overflow: hidden;
   }
   :where([data-slot="wire-box"])::before {
-    content: attr(data-label); position: relative; padding: 0.1rem 0.4rem; background: var(--background); border-radius: var(--radius);
+    content: attr(data-label); position: relative; padding: 0.1rem 0.4rem; background: var(--background); border-radius: 0;
   }
   :where([data-slot="wire-box"][data-shape="image"]) {
     background-image:

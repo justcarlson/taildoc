@@ -1,17 +1,18 @@
 /* tp.wireframes: the 12 app primitives. They read the Pigment tokens, so a wire island is lo-fi and any other theme island is hi-fi. */
+/* App slots are flat: square corners, hairline rules, no pills and no cards. Only hardware chrome stays round: the device bezel, the screen clip, the Safari pill, the pin dot and the round avatar. */
 /* Every size query asks the named screen container, never the host viewport. */
 /* @chunk wf-base when=slot:device-frame|device-screen|duo-folded|duo-landscape|duo-unfolded|duo-wide|iphone|ipad|browser|safari-pill|safari-strip|ruler-mark|pin|pin-legend|wire-box|app-shell|app-bar|tab-bar|sidebar|filter-bar|search|shelf-strip|list-row|sheet-preview|command-palette|inspector-grid|empty-state|mockup-stage */
 @layer tp.wireframes {
   /* Hi-fi values are the default. The wire rule comes later, so it wins on a wire island, a wire surface or a wire meta tag. */
   :where(:root, [data-ui-theme]:not([data-ui-theme="wire"]), [data-ui-surface]:not([data-ui-surface="wire"])) {
     --wf-font: var(--font-sans);
-    --wf-pill: 999px;
+    --wf-pill: 0;
     --wf-shadow: 0 1px 3px color-mix(in oklab, var(--foreground) 18%, transparent);
     --wf-hatch: none;
   }
   :where([data-ui-theme="wire"], [data-ui-surface="wire"], :root:has(meta[name="tailplan-ui"][content*="theme=wire"])) {
     --wf-font: var(--font-mono);
-    --wf-pill: var(--radius, 3px);
+    --wf-pill: 0;
     --wf-shadow: none;
     --wf-hatch: repeating-linear-gradient(135deg, transparent 0 6px, var(--border) 6px 7px);
   }
@@ -24,9 +25,10 @@
   :where([data-part="icon"]) {
     display: inline-grid; place-items: center; flex: none; box-sizing: border-box;
     inline-size: 1.75rem; block-size: 1.75rem; border: 1px var(--line, solid) var(--border-strong);
-    border-radius: var(--radius, 4px); background: var(--muted); color: var(--muted-foreground);
+    border-radius: 0; background: var(--muted); color: var(--muted-foreground);
     font-size: 0.7rem; line-height: 1;
   }
+  /* Hardware allowlist: a round avatar depicts a photo and stays round. */
   :where([data-part="icon"][data-shape="round"]) { border-radius: 50%; }
   :where([data-part="chevron"]) {
     display: inline-block; flex: none; inline-size: 0.5rem; block-size: 0.5rem;
@@ -60,7 +62,7 @@
   :where([data-slot="app-bar"] > [data-part="action"]) {
     display: inline-grid; place-items: center; flex: none; box-sizing: border-box;
     min-inline-size: var(--tap, 32px); min-block-size: var(--tap, 32px); padding-inline: 0.4rem;
-    border: 1px var(--line, solid) var(--border); border-radius: var(--radius); background: transparent; color: inherit;
+    border: 1px var(--line, solid) var(--border); border-radius: 0; background: transparent; color: inherit;
   }
   :where([data-slot="tab-bar"]) {
     display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); padding-inline: 4px;
@@ -85,7 +87,7 @@
   }
   :where([data-slot="sidebar"] > :not([data-part])) {
     display: flex; align-items: center; gap: 8px; min-inline-size: 0; min-block-size: var(--tap, 32px);
-    padding: 0.4rem 0.6rem; border: 1px solid transparent; border-radius: var(--radius); font-size: 0.9rem;
+    padding: 0.4rem 0.6rem; border: 1px solid transparent; border-radius: 0; font-size: 0.9rem;
   }
   :where([data-slot="sidebar"] > :is([aria-current], [data-active])) {
     background: var(--accent); color: var(--accent-foreground); border: 1px var(--line, solid) var(--accent-border); font-weight: 600;
@@ -103,20 +105,27 @@
 }
 /* @chunk app-browse when=slot:filter-bar|search|shelf-strip|list-row */
 @layer tp.wireframes {
-  :where([data-slot="filter-bar"]) { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-inline-size: 0; }
+  /* A filter bar is a flat text row. Hairlines split the items. The active item is bold with a 2px underline. */
+  :where([data-slot="filter-bar"]) {
+    display: flex; flex-wrap: wrap; align-items: stretch; gap: 0; min-inline-size: 0;
+    border-block-end: 1px var(--line, solid) var(--border);
+  }
   :where([data-slot="filter-bar"] > *) {
-    display: inline-flex; align-items: center; min-block-size: 1.75rem; padding: 0 0.75rem; box-sizing: border-box;
-    border: 1px var(--line, solid) var(--border); border-radius: var(--wf-pill, 999px);
-    background: var(--card); color: var(--foreground); font-size: 0.8rem; white-space: nowrap;
+    display: inline-flex; align-items: center; min-block-size: 2rem; padding: 0 0.75rem; box-sizing: border-box;
+    margin-block-end: -1px; border: 0; border-block-end: 2px solid transparent; border-radius: 0;
+    background: transparent; color: var(--muted-foreground); font-size: 0.8rem; white-space: nowrap;
   }
+  :where([data-slot="filter-bar"] > * + *) { border-inline-start: 1px var(--line, solid) var(--border); }
   :where([data-slot="filter-bar"] > :is([aria-pressed="true"], [aria-current], [data-active])) {
-    background: var(--primary); color: var(--primary-foreground); border-color: var(--primary-edge);
+    color: var(--foreground); font-weight: 700; border-block-end-color: var(--foreground);
   }
+  /* A search field is an underline, not a box. */
   :where([data-slot="search"]) {
     display: flex; align-items: center; gap: 8px; box-sizing: border-box; min-inline-size: 0;
-    min-block-size: max(var(--tap, 32px), 2.5rem); padding-inline: 0.75rem; font-size: max(16px, 1em);
-    border: 1px var(--line, solid) var(--border-strong); border-radius: var(--radius); background: var(--card); color: var(--foreground);
+    min-block-size: max(var(--tap, 32px), 2.5rem); padding-inline: 0.25rem; font-size: max(16px, 1em);
+    border: 0; border-block-end: 1px var(--line, solid) var(--border-strong); border-radius: 0; background: transparent; color: var(--foreground);
   }
+  /* The magnifier lens is a glyph, so it stays a circle. */
   :where([data-slot="search"])::before {
     content: ""; flex: none; box-sizing: border-box; inline-size: 0.8rem; block-size: 0.8rem;
     border: 2px solid var(--muted-foreground); border-radius: 50%;
@@ -128,14 +137,15 @@
   :where([data-slot="search"] > input:focus-visible) { outline: none; }
   :where([data-slot="search"]:focus-within) { outline: 2px solid var(--ring); outline-offset: 2px; }
   :where([data-slot="shelf-strip"]) {
-    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(8rem, 38%); gap: 8px; min-inline-size: 0;
+    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(8rem, 38%); gap: 0; min-inline-size: 0;
     overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; scrollbar-width: thin;
   }
   :where([data-slot="shelf-strip"] > *) {
     display: grid; align-content: space-between; gap: 0.25rem; min-inline-size: 0; min-block-size: 4.5rem; box-sizing: border-box;
     padding: 0.6rem; scroll-snap-align: start; font-size: 0.8rem;
-    border: 1px var(--line, solid) var(--border); border-radius: var(--radius); background: var(--card); box-shadow: var(--wf-shadow, none);
+    border: 0; border-inline-start: 1px var(--line, solid) var(--border); border-radius: 0; background: transparent; box-shadow: none;
   }
+  :where([data-slot="shelf-strip"] > :first-child) { border-inline-start: 0; padding-inline-start: 0; }
   :where([data-slot="list-row"]) {
     display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; grid-template-areas: "icon title meta chev" "icon sub sub chev";
     align-items: center; column-gap: 0.75rem; row-gap: 2px; box-sizing: border-box; min-inline-size: 0;
@@ -155,25 +165,25 @@
     position: absolute; inset-inline: 0; inset-block-end: 0; z-index: 1; box-sizing: border-box; max-block-size: 72%; overflow: hidden;
     padding: 0.5rem 1rem 1rem; background: var(--card); color: var(--card-foreground, var(--foreground));
     border: 1px var(--line, solid) var(--border-strong); border-block-end: 0;
-    border-start-start-radius: calc(var(--radius, 4px) * 3); border-start-end-radius: calc(var(--radius, 4px) * 3);
+    border-radius: 0;
     box-shadow: 0 0 0 200vmax light-dark(oklch(0% 0 0 / 32%), oklch(0% 0 0 / 56%));
   }
   :where([data-slot="sheet-preview"])::before {
     content: ""; display: block; inline-size: 2.25rem; block-size: 4px; margin: 0 auto 0.6rem;
-    border-radius: 999px; background: var(--border-strong);
+    border-radius: 0; background: var(--border-strong);
   }
   :where([data-slot="sheet-preview"] > [data-part="title"]) { margin-block-end: 0.5rem; }
   @container screen (min-width: 620px) {
     :where([data-slot="sheet-preview"]) {
       inset-inline: 0; inset-block-end: 1.5rem; margin-inline: auto; inline-size: min(32rem, calc(100% - 3rem));
-      border-block-end: 1px var(--line, solid) var(--border-strong); border-radius: calc(var(--radius, 4px) * 3);
+      border-block-end: 1px var(--line, solid) var(--border-strong);
     }
   }
   :where([data-slot="command-palette"]) {
     position: absolute; inset-block-start: 12%; inset-inline: 0; z-index: 1; margin-inline: auto; box-sizing: border-box;
     inline-size: min(30rem, calc(100% - 24px)); max-block-size: 76%; overflow: hidden;
     background: var(--popover, var(--card)); color: var(--popover-foreground, var(--foreground));
-    border: 1px var(--line, solid) var(--border-strong); border-radius: calc(var(--radius, 4px) * 2);
+    border: 1px var(--line, solid) var(--border-strong); border-radius: 0;
     box-shadow: 0 0 0 200vmax light-dark(oklch(0% 0 0 / 32%), oklch(0% 0 0 / 56%));
   }
   :where([data-slot="command-palette"] > [data-slot="search"]) { border: 0; border-block-end: 1px var(--line, solid) var(--border); border-radius: 0; }
@@ -183,7 +193,7 @@
   }
   :where([data-slot="command-palette"] > [data-part="item"][aria-selected="true"]) { background: var(--accent); color: var(--accent-foreground); }
   :where([data-part="kbd"]) {
-    flex: none; padding: 0 0.4rem; border: 1px var(--line, solid) var(--border); border-radius: var(--radius);
+    flex: none; padding: 0 0.4rem; border: 1px var(--line, solid) var(--border); border-radius: 0;
     background: var(--muted); color: var(--muted-foreground); font-family: var(--font-mono); font-size: 0.7rem;
   }
 }
@@ -191,7 +201,7 @@
 @layer tp.wireframes {
   :where([data-slot="inspector-grid"]) {
     display: grid; grid-template-columns: minmax(5rem, 38%) minmax(0, 1fr); margin: 0; min-inline-size: 0;
-    border: 1px var(--line, solid) var(--border); border-radius: var(--radius); background: var(--card); overflow: hidden;
+    border: 0; border-block: 1px var(--line, solid) var(--border); border-radius: 0; background: transparent; overflow: hidden;
   }
   :where([data-slot="inspector-grid"] > :is(dt, dd)) {
     margin: 0; min-inline-size: 0; padding: 0.4rem 0.6rem; font-size: 0.8rem;
@@ -208,12 +218,12 @@
   }
   :where([data-slot="empty-state"] > [data-part="art"]) {
     inline-size: 4.5rem; block-size: 4.5rem; box-sizing: border-box; border: 1px var(--line, solid) var(--border-strong);
-    border-radius: var(--radius); background-color: var(--muted); background-image: var(--wf-hatch, none);
+    border-radius: 0; background-color: var(--muted); background-image: var(--wf-hatch, none);
   }
   :where([data-slot="empty-state"] > [data-part="title"]) { font-size: 1.05rem; }
   :where([data-slot="empty-state"] > [data-part="hint"]) { margin: 0; max-inline-size: 28ch; color: var(--muted-foreground); font-size: 0.85rem; }
   :where([data-slot="empty-state"] > [data-part="action"]) {
     display: inline-grid; place-items: center; box-sizing: border-box; min-block-size: max(var(--tap, 32px), 2.5rem); padding-inline: 1rem;
-    border: 1px solid var(--primary-edge); border-radius: var(--radius); background: var(--primary); color: var(--primary-foreground);
+    border: 1px solid var(--primary-edge); border-radius: 0; background: var(--primary); color: var(--primary-foreground);
   }
 }

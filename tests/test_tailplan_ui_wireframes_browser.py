@@ -95,8 +95,10 @@ def test_wire_and_graphite_islands_paint_differently(new_context, example_html, 
       const get = (sel, props) => { const cs = getComputedStyle(root.querySelector(sel)); return props.map(p => cs[p]); };
       return {row: get('[data-slot=list-row]', ['borderBottomStyle', 'borderBottomColor', 'fontFamily']),
               bar: get('[data-slot=app-bar]', ['backgroundColor', 'borderBottomStyle', 'borderBottomColor']),
-              search: get('[data-slot=search]', ['borderTopStyle', 'borderTopColor', 'borderTopLeftRadius']),
-              chip: get('[data-slot=filter-bar] > :first-child', ['borderTopLeftRadius']),
+              search: get('[data-slot=search]', ['borderBottomStyle', 'borderBottomColor', 'borderTopStyle']),
+              chip: get('[data-slot=filter-bar] > :nth-child(2)', ['borderLeftStyle', 'borderBottomLeftRadius']),
+              active: get('[data-slot=filter-bar] > :first-child', ['fontWeight', 'borderBottomWidth', 'borderBottomStyle']),
+              shelf: get('[data-slot=shelf-strip] > :nth-child(2)', ['borderLeftStyle', 'borderTopStyle', 'borderBottomStyle']),
               box: get('[data-slot=wire-box]', ['backgroundImage', 'borderTopStyle']),
               art: get('[data-slot=empty-state] [data-part=art]', ['backgroundImage'])};
     }"""
@@ -106,7 +108,11 @@ def test_wire_and_graphite_islands_paint_differently(new_context, example_html, 
     assert wire['row'][2] != hifi['row'][2] and 'monospace' in wire['row'][2] and 'system-ui' in hifi['row'][2]
     assert wire['bar'][0] != hifi['bar'][0] and wire['bar'][2] != hifi['bar'][2]
     assert wire['search'][:2] != hifi['search'][:2]
-    assert wire['chip'] != hifi['chip']
+    # Fidelity shows in the line style, never in a radius: wire is dashed, hi-fi is solid.
+    assert wire['chip'] == ['dashed', '0px'] and hifi['chip'] == ['solid', '0px']
+    assert wire['active'][:2] == hifi['active'][:2] == ['700', '2px']
+    assert wire['shelf'] == ['dashed', 'none', 'none'] and hifi['shelf'] == ['solid', 'none', 'none']
+    assert wire['search'][2] == hifi['search'][2] == 'none'
     assert 'gradient' in wire['box'][0] and 'gradient' in hifi['box'][0]
     assert wire['box'][1] == 'dashed' and hifi['box'][1] == 'solid'
     assert 'gradient' in wire['art'][0] and hifi['art'][0] == 'none'
@@ -263,3 +269,34 @@ def test_stage_works_with_theme_islands_alias_frames_and_one_resizable_frame(new
         assert [shown(f'[data-alias="{d}"]') for d in DEVICES] == [d == device for d in DEVICES]
         size = pg.evaluate("() => { const e = document.querySelector('#one [data-slot=device-screen]'); return [e.clientWidth, e.clientHeight]; }")
         assert size == [w, h], (device, size)
+
+
+FLAT_JS = """() => {
+  const sel = {
+    icon: '[data-part=icon]:not([data-shape=round])', action: '[data-slot=app-bar] > [data-part=action]',
+    chip: '[data-slot=filter-bar] > *', search: '[data-slot=search]', shelf: '[data-slot=shelf-strip] > *',
+    box: '[data-slot=wire-box]', inspector: '[data-slot=inspector-grid]', empty: '[data-slot=empty-state] [data-part=art]',
+    emptyAction: '[data-slot=empty-state] [data-part=action]', sheet: '[data-slot=sheet-preview]',
+    palette: '[data-slot=command-palette]', kbd: '[data-part=kbd]', side: '[data-slot=sidebar] > [aria-current]',
+    seg: '[data-part=seg]', preview: '[data-part=preview]', variant: '[data-variant]', pane: '[data-part=pane]'};
+  const radii = e => ['borderTopLeftRadius', 'borderTopRightRadius', 'borderBottomLeftRadius', 'borderBottomRightRadius'].map(p => getComputedStyle(e)[p]);
+  const out = {};
+  for (const [k, s] of Object.entries(sel)) out[k] = [...document.querySelectorAll(s)].flatMap(radii);
+  const hw = s => radii(document.querySelector(s));
+  return {flat: out, frame: hw('[data-slot=device-frame]'), screen: hw('[data-slot=device-screen]'),
+          pill: hw('[data-slot=safari-pill]'), pin: hw('[data-slot=pin]'), avatar: hw('[data-part=icon][data-shape=round]')};
+}"""
+
+
+@pytest.mark.parametrize('scheme', ['light', 'dark'])
+def test_app_slots_have_square_corners_and_hardware_chrome_stays_rounded(new_context, example_html, scheme):
+    pg, _ = open_page(new_context, example_html, 1280, 800, scheme)
+    info = pg.evaluate(FLAT_JS)
+    for name, values in info['flat'].items():
+        assert values, name
+        assert set(values) == {'0px'}, (name, values)
+    for name in ('frame', 'screen'):
+        assert all(float(v[:-2]) > 0 for v in info[name]), (name, info[name])
+    assert info['pill'] == ['999px'] * 4 or all(float(v[:-2]) >= 28 for v in info['pill']), info['pill']
+    assert all(v.endswith('%') or float(v[:-2]) >= 10 for v in info['avatar']), info['avatar']
+    assert all(v.endswith('%') or float(v[:-2]) >= 10 for v in info['pin']), info['pin']
