@@ -35,7 +35,7 @@ jobs:
       - run: uv sync --locked --python "$pythonLocation/bin/python"
       - run: uv run --no-sync tailplan-server --help
       - run: uv run --no-sync python -m pytest -q -rs --strict-config --strict-markers --ignore=tests/test_theme_browser.py --ignore=tests/test_duo_themes.py --ignore=tests/test_oidc_browser.py --ignore=tests/test_dashboard_interactive.py --ignore=tests/test_oidc_interop.py --ignore=tests/test_tailplan_ui_wireframes_browser.py --ignore=tests/test_ui_gallery_browser.py -k "not (system or failed_rotation_restores_both_private_token_copies) or system_install_requires_root" --junitxml=test-results/unit.xml
-      - run: uv run --no-sync python tests/check_junit.py test-results/unit.xml --minimum 573
+      - run: uv run --no-sync python tests/check_junit.py test-results/unit.xml --minimum 582
       - run: uv run --no-sync bash tests/smoke.sh
       - run: uv run --no-sync python tests/check_ste100.py
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

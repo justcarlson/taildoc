@@ -60,6 +60,7 @@ for source in \
   bin/tailplan-share \
   tailplan_ui/__init__.py \
   tailplan_ui/bundler.py \
+  tailplan_ui/cli.py \
   tailplan_ui/registry.py \
   tailplan_ui/registry.json \
   tailplan_ui/color/tokens.py; do

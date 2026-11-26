@@ -45,6 +45,12 @@ def _share_dir_candidates() -> list[Path]:
     candidates.append(_SCRIPT_PATH.parents[1])
     candidates.append(Path.home() / ".local" / "share" / "tailplan")
     candidates.append(Path("/usr/local/lib/tailplan"))
+    # install.sh puts the server packages in the app directory.
+    app_dir = os.getenv("TAILPLAN_APP_DIR")
+    if app_dir:
+        candidates.append(Path(app_dir).expanduser())
+    candidates.append(Path.home() / "apps" / "tailplan")
+    candidates.append(Path("/opt/tailplan"))
     return candidates
 
 
@@ -3240,7 +3246,10 @@ def ui_main(argv: list[str]) -> int:
     """Run tailplan ui offline. It needs no server and no SSH."""
     ui = _import_tailplan_ui()
     if ui is None:
-        print("tailplan ui: the tailplan_ui package is missing. Run install-client.sh again.", file=sys.stderr)
+        message = "the tailplan_ui package is missing. Run install-client.sh again."
+        print(f"tailplan ui: {message}", file=sys.stderr)
+        if "--json" in argv:
+            print(json.dumps({"ok": False, "error": message}))
         return 2
     from tailplan_ui.cli import main as cli_main
     return cli_main(argv, prog="tailplan ui")

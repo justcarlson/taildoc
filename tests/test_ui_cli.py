@@ -229,3 +229,125 @@ def test_installed_client_runs_ui_offline(no_ssh, tmp_path):
                                 capture_output=True, text=True, env=env, cwd=work, timeout=120)
         assert result.returncode == 0, (args, result.stderr)
     assert 'data-tailplan-ui="' in (work / "out.html").read_text(encoding="utf-8")
+
+
+def ui(capsys, *args, stdin=None, monkeypatch=None):
+    """Run the CLI in this process. Return (exit code, stdout, stderr)."""
+    from tailplan_ui import cli
+    if stdin is not None:
+        monkeypatch.setattr(sys, "stdin", stdin)
+    code = cli.main(list(args), prog="tailplan ui")
+    out, err = capsys.readouterr()
+    return code, out, err
+
+
+def test_init_json_stdout_and_symlink_guard(capsys, tmp_path):
+    code, out, _ = ui(capsys, "init", "-", "--theme", "nord", "--json")
+    doc = json.loads(out)
+    assert code == 0 and doc["ok"] and doc["output"] == "-" and doc["html"].startswith("<!doctype html>")
+    assert doc["attributes"] == {"data-ui-theme": "nord"}
+    code, out, _ = ui(capsys, "init", "-", "--title", "Raw")
+    assert code == 0 and out.startswith("<!doctype html>") and "<title>Raw</title>" in out
+
+    page = tmp_path / "p.html"
+    code, out, _ = ui(capsys, "init", str(page), "--json")
+    assert code == 0 and json.loads(out)["output"] == str(page) and page.is_file()
+    code, out, _ = ui(capsys, "init", str(page), "--json")
+    assert code == 1 and not json.loads(out)["ok"] and "--force" in json.loads(out)["error"]
+
+    target = tmp_path / "elsewhere.html"
+    link = tmp_path / "link.html"
+    link.symlink_to(target)
+    code, _, err = ui(capsys, "init", str(link))
+    assert code == 1 and "--force" in err and not target.exists()
+
+
+def test_read_and_write_errors_are_usage_errors(capsys, monkeypatch, tmp_path):
+    import io
+    bad = io.TextIOWrapper(io.BytesIO(b"\xff\xfe<p>"), encoding="utf-8")
+    code, _, err = ui(capsys, "verify", "-", stdin=bad, monkeypatch=monkeypatch)
+    assert code == 2 and "cannot read -" in err
+    missing = tmp_path / "no-such-dir" / "p.html"
+    code, _, err = ui(capsys, "init", str(missing))
+    assert code == 2 and "cannot write" in err
+    src = tmp_path / "s.html"
+    src.write_text('<meta name="tailplan-ui" content="1"><p>x</p>', encoding="utf-8")
+    code, out, _ = ui(capsys, "bundle", str(src), "-o", str(missing), "--json")
+    assert code == 2 and "cannot write" in json.loads(out)["error"]
+
+
+HEAD_OK = '<!doctype html><html><head><meta name="tailplan-ui" content="1"><title>T</title></head><body>'
+
+
+def test_verify_finds_stamps_by_parsing_not_by_text():
+    from tailplan_ui import bundle
+    from tailplan_ui.bundler import UI_VERSION
+    from tailplan_ui.cli import verify_html
+    sample = (HEAD_OK + '<code>data-tailplan-ui="1.0.0"</code><!-- data-tailplan-ui="1.0.0" -->'
+              '<p data-slot="badge">x</p></body></html>')
+    report = verify_html(sample)
+    assert not report["bundled"] and "ui-stale-bundle" not in {w["code"] for w in report["warnings"]}
+
+    page, _ = bundle(HEAD_OK + '<p data-slot="badge">x</p></body></html>')
+    single = page.replace(f'data-tailplan-ui="{UI_VERSION}"', f"data-tailplan-ui='{UI_VERSION}'")
+    assert single != page
+    report = verify_html(single)
+    assert report["bundled"] and report["optedIn"]
+
+
+def test_verify_safety_parser_handles_rcdata_comments_and_obfuscated_urls():
+    from tailplan_ui.cli import verify_html
+    quiet = HEAD_OK + ('<textarea><script>x</script><form></form></textarea>'
+                       '<!-- <script>y</script> --><a href="https://example.com">ok</a></body></html>')
+    assert verify_html(quiet)["errors"] == []
+    for href in ("java&#9;script:alert(1)", "&#x20;JavaScript:alert(1)", "vb\nscript:x", "\x01 javascript:x"):
+        report = verify_html(HEAD_OK + f'<a href="{href}">x</a></body></html>')
+        assert [e["code"] for e in report["errors"]] == ["ui-javascript-url"], href
+    title = '<!doctype html><html><head><meta name="tailplan-ui" content="1"><title><script>t</script></title></head><body></body></html>'
+    assert verify_html(title)["errors"] == []
+
+
+def test_verify_reports_each_meta_key_and_hue_warning_once():
+    from tailplan_ui.cli import verify_html
+    page = ('<!doctype html><html><head><meta name="tailplan-ui" content="1; colour=red"><title>T</title>'
+            '<style>.x { --tp-hue: 200 }</style></head><body><p class="x">x</p></body></html>')
+    warnings = verify_html(page)["warnings"]
+    meta = [w for w in warnings if w["code"] == "ui-meta-key"]
+    assert len(meta) == 1 and "colour" in meta[0]["message"] and meta[0]["fix"]
+    hue = [w for w in warnings if w["code"] == "ui-hue-var"]
+    assert len(hue) == 1 and "--tp-hue" in hue[0]["message"]
+    assert not [w for w in warnings if w["code"] == "ui-attribute"]
+
+
+def test_show_and_init_use_the_active_prog(capsys, tmp_path):
+    from tailplan_ui import cli
+    assert cli.main(["show", "verdct"], prog="python3 -m tailplan_ui") == 2
+    assert capsys.readouterr().err.startswith("python3 -m tailplan_ui: ")
+    assert cli.main(["init", str(tmp_path / "a.html")], prog="python3 -m tailplan_ui") == 0
+    assert "python3 -m tailplan_ui bundle" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("layout", ["app-dir-env", "home-apps"])
+def test_server_install_layout_runs_ui_without_pythonpath(no_ssh, tmp_path, layout):
+    """Lay out the host as install.sh does. tailplan-share must find tailplan_ui with no PYTHONPATH."""
+    env, _ = no_ssh
+    home = tmp_path / "home"
+    app = tmp_path / "app" if layout == "app-dir-env" else home / "apps" / "tailplan"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    home.mkdir()
+    shutil.copy(ROOT / "bin" / "tailplan-share", bin_dir / "tailplan-share")
+    env = {k: v for k, v in env.items() if k not in ("PYTHONPATH", "TAILPLAN_SHARE_DIR", "TAILPLAN_APP_DIR")}
+    env["HOME"] = str(home)
+    # -I -S: no site-packages, no script directory, no PYTHONPATH. Only the share lookup can find tailplan_ui.
+    command = [sys.executable, "-I", "-S", str(bin_dir / "tailplan-share"), "ui", "list", "--json"]
+    result = subprocess.run(command, capture_output=True, text=True, env=env, cwd=tmp_path, timeout=120)
+    if not Path("/opt/tailplan/tailplan_ui").is_dir():
+        assert result.returncode == 2 and json.loads(result.stdout) == {
+            "ok": False, "error": "the tailplan_ui package is missing. Run install-client.sh again."}
+    shutil.copytree(ROOT / "tailplan_ui", app / "tailplan_ui", ignore=shutil.ignore_patterns("__pycache__"))
+    if layout == "app-dir-env":
+        env["TAILPLAN_APP_DIR"] = str(app)
+    result = subprocess.run(command, capture_output=True, text=True, env=env, cwd=tmp_path, timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["count"] == 58

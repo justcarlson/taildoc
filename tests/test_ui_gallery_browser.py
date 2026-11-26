@@ -121,8 +121,10 @@ def test_every_preset_shows_only_its_own_stage(new_context, page_html, preset):
     assert pg.evaluate('document.documentElement.scrollWidth <= document.documentElement.clientWidth')
 
 
-def test_dialog_and_popover_open_without_script(new_context, page_html):
+def test_dialog_popover_and_icon_work_without_script(new_context, page_html):
     pg, problems = open_page(new_context, page_html)
+    box = pg.locator('#slot-icon .g-live use').first.evaluate('e => { const r = e.getBoundingClientRect(); return [r.width, r.height]; }')
+    assert box[0] > 0 and box[1] > 0
     dialog = pg.locator('#slot-dialog dialog')
     assert not dialog.evaluate('d => d.open')
     pg.locator('#slot-dialog button[command="show-modal"]').click()

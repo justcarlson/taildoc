@@ -354,7 +354,8 @@ def source_html(base_url: str = "") -> str:
         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
         '<meta name="tailplan-ui" content="1"><title>Tailplan UI</title>'
         f'<style>{GALLERY_CSS}{mixer_css()}</style></head>'
-        f'<body><main class="g">{body}</main></body></html>'
+        # The icon cards point at symbols in this sprite. Without it they draw nothing.
+        f'<body>{tailplan_ui.icon_sprite()}<main class="g">{body}</main></body></html>'
     )
 
 

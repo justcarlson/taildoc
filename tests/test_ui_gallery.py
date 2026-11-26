@@ -27,6 +27,11 @@ class GalleryPage(unittest.TestCase):
         self.assertEqual([], bundler.bundle(ui_gallery.source_html(""))[1]["warnings"])
         self.assertIs(page, ui_gallery.render_gallery(""))
 
+    def test_icon_cards_have_their_sprite(self) -> None:
+        page = ui_gallery.render_gallery("")
+        self.assertIn('<symbol id="tp-icon-check"', page)
+        self.assertLess(page.index('id="tp-icon-check"'), page.index('href="#tp-icon-check"'))
+
     def test_every_catalog_item_has_a_card_with_markup(self) -> None:
         page = ui_gallery.render_gallery("")
         items = catalog()["items"]

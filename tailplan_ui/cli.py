@@ -12,11 +12,10 @@ import json
 import os
 import re
 import sys
-from html.parser import HTMLParser
 from pathlib import Path
 
 from . import lint as L
-from .bundler import TARGETS, UI_VERSION, bundle, is_hue, scan, strip_stamp
+from .bundler import TARGETS, UI_VERSION, _Parser as _HTMLParser, bundle, is_hue, scan, strip_stamp
 from .color import solve as S
 from .color import tokens as T
 from .color import validate as V
@@ -28,7 +27,10 @@ ROLE_KEYS = ("background", "foreground", "card", "muted", "border", "primary", "
              "primary-ink", "accent", "success", "warning", "destructive", "info")
 SEED_KEYS = ("primary", "primary-foreground", "primary-ink", "primary-edge", "ring",
              "accent", "accent-surface", "accent-border")
-JS_URL_RE = re.compile(r"^\s*(?:javascript|vbscript)\s*:", re.I)
+JS_URL_RE = re.compile(r"^(?:javascript|vbscript):", re.I)
+# Browsers drop control characters and spaces from a URL scheme, so java&#9;script: still runs.
+URL_JUNK_RE = re.compile(r"[\x00-\x20]+")
+META_KEYS = ("theme", "surface", "accent", "seed", "hue", "viz", "mode", "contrast")
 
 
 class UsageError(Exception):
@@ -58,14 +60,21 @@ def _swatch(value: str) -> str:
 
 
 def _read(path: str) -> str:
-    if path == "-":
-        return sys.stdin.read()
     try:
+        if path == "-":
+            return sys.stdin.read()
         return Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
         raise UsageError(f"file not found: {path}") from None
     except (OSError, UnicodeError) as exc:
         raise UsageError(f"cannot read {path}: {exc}") from None
+
+
+def _write(path: Path, text: str) -> None:
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise UsageError(f"cannot write {path}: {exc}") from None
 
 
 def _seed(value: str):
@@ -128,7 +137,7 @@ def cmd_show(args) -> int:
         if args.json:
             _json({"ok": False, "error": message, "suggestion": close[0] if close else None})
         else:
-            print(f"{PROG}: {message}", file=sys.stderr)
+            print(f"{args.prog}: {message}", file=sys.stderr)
         return 2
     if args.json:
         _json(item)
@@ -231,15 +240,32 @@ def starter_html(title: str, attrs: list[tuple[str, str]]) -> str:
 
 
 def cmd_init(args) -> int:
-    path = Path(args.file)
     attrs = init_attrs(args)
-    if path.exists() and not args.force:
-        print(f"{PROG}: {path} exists. Use --force to replace it.", file=sys.stderr)
+    page = starter_html(args.title, attrs)
+    report = {"ok": True, "output": args.file, "attributes": {f"data-ui-{k}": v for k, v in attrs},
+              "bytes": len(page.encode("utf-8"))}
+    if args.file == "-":
+        if args.json:
+            _json({**report, "html": page})
+        else:
+            sys.stdout.write(page)
+        return 0
+    path = Path(args.file)
+    # A broken symlink is not exists(), but writing to it still follows the link.
+    if (path.exists() or path.is_symlink()) and not args.force:
+        message = f"{path} exists. Use --force to replace it."
+        if args.json:
+            _json({"ok": False, "error": message, "output": args.file})
+        else:
+            print(f"{args.prog}: {message}", file=sys.stderr)
         return 1
-    path.write_text(starter_html(args.title, attrs), encoding="utf-8")
+    _write(path, page)
+    if args.json:
+        _json(report)
+        return 0
     _out(f"Wrote {path}")
-    _out(f"Preview: {PROG} bundle {path} -o preview.html")
-    _out(f"Check:   {PROG} verify {path}")
+    _out(f"Preview: {args.prog} bundle {path} -o preview.html")
+    _out(f"Check:   {args.prog} verify {path}")
     return 0
 
 
@@ -254,7 +280,7 @@ def cmd_bundle(args) -> int:
     out, meta = bundle(source, target=args.target)
     path = args.input if args.in_place else (args.output if args.output and args.output != "-" else None)
     if path:
-        Path(path).write_text(out, encoding="utf-8")
+        _write(Path(path), out)
     report = {**meta, "input": args.input, "output": path or "-",
               "inputBytes": len(source.encode("utf-8")), "outputBytes": len(out.encode("utf-8"))}
     if args.json:
@@ -276,29 +302,30 @@ def cmd_bundle(args) -> int:
 
 # verify
 
-class _SafetyParser(HTMLParser):
-    """Find script, form, event handler, and javascript: URL use in real markup."""
+class _SafetyParser(_HTMLParser):
+    """Find script, form, event handler, and javascript: URL use in real markup.
+
+    The bundler parser skips comments and treats title and textarea as RCDATA on every Python version.
+    """
 
     def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
+        super().__init__()
         self.errors: list[dict] = []
 
     def _add(self, code: str, message: str, fix: str) -> None:
         self.errors.append({"code": code, "message": message, "fix": fix, "line": self.getpos()[0]})
 
-    def handle_starttag(self, tag, attrs):
+    def start(self, tag: str, attrs: dict, closed: bool) -> None:
         if tag == "script":
             self._add("ui-script", "The page has a script element.", "Remove it. Tailplan UI needs no JavaScript.")
         elif tag == "form":
             self._add("ui-form", "The page has a form element.", "Remove it. Use native inputs without a form.")
-        for name, value in attrs:
-            name = name.lower()
+        for name, value in attrs.items():
             if name.startswith("on"):
                 self._add("ui-event-handler", f"The {tag} element has an {name} attribute.", "Remove the handler.")
-            elif name in ("href", "src", "action", "formaction") and value and JS_URL_RE.match(value):
+            elif (name in ("href", "src", "action", "formaction", "xlink:href")
+                  and JS_URL_RE.match(URL_JUNK_RE.sub("", value))):
                 self._add("ui-javascript-url", f"The {tag} element has a javascript: URL.", "Use a real link.")
-
-    handle_startendtag = handle_starttag
 
 
 def verify_html(source: str) -> dict:
@@ -308,16 +335,20 @@ def verify_html(source: str) -> dict:
     parser.close()
     errors = parser.errors
     warnings = [dict(item) for item in L.lint(source)]
-    features = scan(strip_stamp(source))
-    stamped = 'data-tailplan-ui="' in source
+    # strip_stamp parses the page, so a stamp in a comment or a code sample does not count.
+    unstamped = strip_stamp(source)
+    stamped = unstamped != source
+    features = scan(unstamped)
     outputs = {t: bundle(source, target=t) for t in (TARGETS if stamped else TARGETS[:1])}
-    # The bundler also checks the root attributes, so its warnings cover more than scan.
+    # The bundler checks the meta tag and the root attributes, so its warnings cover more than scan.
     for message in dict.fromkeys(outputs[TARGETS[0]][1]["warnings"]):
-        warnings.append({"code": "ui-attribute", "message": message,
-                         "fix": f'Run "{PROG} color presets" for the valid values.'})
-    for key in features.meta:
-        if key not in ("theme", "surface", "accent", "seed", "hue", "viz", "mode", "contrast"):
-            warnings.append({"code": "ui-meta-key", "message": f"Unknown tailplan-ui meta key: {key}"})
+        if message.startswith("Unknown tailplan-ui meta key:"):
+            code, fix = "ui-meta-key", f"Use only these keys: {', '.join(META_KEYS)}."
+        elif "--tp-hue" in message:
+            code, fix = "ui-hue-var", "Add data-ui-hue-var to the elements that the style sheet gives --tp-hue."
+        else:
+            code, fix = "ui-attribute", f'Run "{PROG} color presets" for the valid values.'
+        warnings.append({"code": code, "message": message, "fix": fix})
     if not features.opted_in:
         warnings.append({"code": "ui-not-opted-in", "message": "The page has no tailplan-ui meta tag, so it gets no Tailplan UI CSS.",
                          "fix": 'Add <meta name="tailplan-ui" content="1"> to the head.'})
@@ -525,6 +556,7 @@ def cmd_solve(args) -> int:
 def build_parser(prog: str = PROG) -> argparse.ArgumentParser:
     parser = _Parser(prog=prog, description="Browse, start, bundle, and check Tailplan UI pages offline.")
     parser.add_argument("--version", action="version", version=f"tailplan-ui {UI_VERSION}")
+    parser.set_defaults(prog=prog)
     sub = parser.add_subparsers(dest="command", required=True, parser_class=_Parser, metavar="COMMAND")
 
     p = sub.add_parser("list", help="list the catalog slots")
@@ -538,7 +570,7 @@ def build_parser(prog: str = PROG) -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_show)
 
     p = sub.add_parser("init", help="write an opt-in starter page")
-    p.add_argument("file")
+    p.add_argument("file", help="HTML file, or - for stdout")
     p.add_argument("--theme", help="preset id, such as graphite")
     p.add_argument("--surface", help="neutral surface id, such as slate")
     p.add_argument("--accent", help="accent id, such as cobalt")
@@ -547,6 +579,7 @@ def build_parser(prog: str = PROG) -> argparse.ArgumentParser:
     p.add_argument("--mode", choices=MODES, default="auto")
     p.add_argument("--title", default="Untitled plan")
     p.add_argument("--force", action="store_true", help="replace an existing file")
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
     p.set_defaults(func=cmd_init)
 
     p = sub.add_parser("bundle", help="stamp the Tailplan UI style block into a page")
