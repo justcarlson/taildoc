@@ -21,7 +21,7 @@ def video(sections, extra=''):
 
 def test_fixture_renders_header_run_of_show_and_metadata():
     doc, metadata = render(FIXTURE.read_text(encoding='utf-8'))
-    assert metadata['layout'] == 'brief' and metadata['layoutVersion'] == 1
+    assert metadata['layout'] == 'brief' and metadata['layoutVersion'] == 2
     assert '<body class="brief" data-mode="light">' in doc
     assert '<title>Harbor Hour #42</title>' in doc
     assert 'class="meta"' not in doc

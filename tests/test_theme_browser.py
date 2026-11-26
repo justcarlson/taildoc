@@ -38,7 +38,7 @@ def test_reading_layout_table_code_and_print(page, tmp_path, ident, width, typog
     }''')
     assert metrics['scroll'] == width
     assert metrics['column'] <= 690
-    assert metrics['padding'] == '24px'
+    assert metrics['padding'] == ('16px' if width <= 480 else '24px')
     assert metrics['font'] == '17px'
     assert float(metrics['line'].removesuffix('px')) == pytest.approx(26.35, abs=0.001)
     assert 'system-ui' in metrics['family']

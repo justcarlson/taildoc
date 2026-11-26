@@ -41,6 +41,7 @@ def test_palette_schema_contrast_and_deterministic_document(ident):
     assert '<script>' not in doc
     assert '<table role="table">' in doc and 'aria-label="Code block"><code' in doc
     assert frozen['tokens'] == palette['tokens']
+    assert f'<meta name="theme-color" content="{palette["tokens"]["background"]}">' in doc
     assert (themes.ROOT / palette['source']['licenseFile']).is_file()
 
 

@@ -87,7 +87,8 @@ These are document adaptations of upstream colors.
 All palettes share the reading and brief layouts.
 Typography defaults to semibold Iowan Old Style headings and system sans-serif body text.
 Only code uses a monospace font.
-The reading column is at most 690px, with 24px side padding and 17px body text at 1.55 line height.
+The reading column is at most 690px, with 17px body text at 1.55 line height.
+Side padding is 24px, or 16px at widths up to 480px.
 
 Warm editorial uses cream `#faf6ee`, text `#26352e`, olive `#536447`, sage `#e9ecdf`, and border `#d8d7c9`.
 Catppuccin uses mauve headings and its text color for links to maintain contrast on shaded blocks.
@@ -132,7 +133,7 @@ Increase the palette version when its values change. Keep the ID stable.
 `reading.css` owns layout, code typography, mobile rules, and print rules.
 Typography presets supply heading and body font stacks.
 Palette files contain no content or layout CSS.
-The layout IDs are `reading`, version 4, and `brief`, version 1. Other layout IDs return an error.
+The layout IDs are `reading`, version 5, and `brief`, version 2. Other layout IDs return an error.
 `brief.css` loads after `reading.css` and adds the brief header, contents, sections, callouts, and claim badges.
 Read [briefs](briefs.md) for the brief format.
 The content parser supports escaped Markdown headings, paragraphs, links, lists, quotes, pipe tables, and fenced code.

@@ -13,7 +13,7 @@ body.brief[data-mode="dark"] {
   --unverified-fg: #c9c4b5; --unverified-bg: #302e28; --false-fg: #f2a595; --false-bg: #3f2520;
   --other-fg: #d6d6d6; --other-bg: #333333;
 }
-body.brief main { max-width: 720px; margin: 40px auto 80px; padding: 0 16px; }
+body.brief main { max-width: 720px; margin: 40px auto 80px; padding: 0 16px calc(64px + env(safe-area-inset-bottom, 0px)); }
 .brief h1 { margin: 0; }
 .brief .kicker { font-size: 0.8rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0 0 0.6rem; }
 .brief .dek { font-family: var(--font-heading); font-size: 1.15rem; color: var(--muted); margin: 0.6rem 0 1.1rem; }
@@ -76,7 +76,18 @@ body.brief main { max-width: 720px; margin: 40px auto 80px; padding: 0 16px; }
   .brief .badge { justify-self: start; }
   .brief .callout { padding: 16px; }
 }
+@media screen and (max-height: 640px) {
+  body.brief main { margin-top: 20px; }
+  .brief .callout { margin: 1.4rem 0; }
+  .brief .ros { margin-top: 1.6rem; }
+}
+@media screen and (max-height: 440px) {
+  body.brief main { margin-top: 14px; }
+  .brief .callout { margin: 1rem 0; }
+  .brief .ros { margin-top: 1.2rem; }
+}
 @media print {
+  body.brief main { padding-bottom: 0; }
   .brief .bar a, .brief .badge, .brief .legend span::before { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .brief section.seg, .brief .claims li { break-inside: avoid; }
 }
