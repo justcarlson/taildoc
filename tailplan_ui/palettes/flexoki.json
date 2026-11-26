@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 2,
+  "id": "flexoki",
+  "version": 1,
+  "kind": "designer",
+  "name": "Flexoki",
+  "description": "Inky reading colors by Steph Ango.",
+  "variants": {
+    "light": "Paper",
+    "dark": "Black"
+  },
+  "source": {
+    "url": "https://github.com/kepano/flexoki/blob/8d723bac4a9ac46adfdf99d42155286977aac72a/css/flexoki.css",
+    "revision": "8d723bac4a9ac46adfdf99d42155286977aac72a",
+    "license": "MIT",
+    "licenseFile": "licenses/flexoki.txt"
+  },
+  "radius": "6px",
+  "line": "solid",
+  "viz": "editorial",
+  "modes": {
+    "light": {
+      "background": "#fffcf0",
+      "foreground": "#100f0f",
+      "card": "#f2f0e5",
+      "muted": "#e6e4d9",
+      "muted-foreground": "#6f6e69",
+      "border": "#dad8ce",
+      "border-strong": "#b7b5ac",
+      "code-background": "#f2f0e5",
+      "code-foreground": "#100f0f",
+      "accent": "#205ea6",
+      "destructive": "#af3029",
+      "warning": "#ad8301",
+      "success": "#66800b",
+      "info": "#24837b"
+    },
+    "dark": {
+      "background": "#100f0f",
+      "foreground": "#cecdc3",
+      "card": "#1c1b1a",
+      "muted": "#282726",
+      "muted-foreground": "#878580",
+      "border": "#343331",
+      "border-strong": "#575653",
+      "code-background": "#1c1b1a",
+      "code-foreground": "#cecdc3",
+      "accent": "#4385be",
+      "destructive": "#d14d41",
+      "warning": "#d0a215",
+      "success": "#879a39",
+      "info": "#3aa99f"
+    }
+  }
+}

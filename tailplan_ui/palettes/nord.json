@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 2,
+  "id": "nord",
+  "version": 1,
+  "kind": "designer",
+  "name": "Nord",
+  "description": "Arctic, north-bluish colors by Sven Greb.",
+  "variants": {
+    "light": "Snow Storm",
+    "dark": "Polar Night"
+  },
+  "source": {
+    "url": "https://github.com/nordtheme/nord/blob/1cef71605416a222e57225b544540ce0fcec18d4/src/nord.scss",
+    "revision": "1cef71605416a222e57225b544540ce0fcec18d4",
+    "license": "MIT",
+    "licenseFile": "licenses/nord.txt"
+  },
+  "radius": "6px",
+  "line": "solid",
+  "viz": "editorial",
+  "modes": {
+    "light": {
+      "background": "#eceff4",
+      "foreground": "#2e3440",
+      "card": "#e5e9f0",
+      "muted": "#d8dee9",
+      "muted-foreground": "#4c566a",
+      "border": "#d8dee9",
+      "border-strong": "#a7b1c2",
+      "code-background": "#e5e9f0",
+      "code-foreground": "#2e3440",
+      "accent": "#5e81ac",
+      "destructive": "#bf616a",
+      "warning": "#d08770",
+      "success": "#a3be8c",
+      "info": "#81a1c1"
+    },
+    "dark": {
+      "background": "#2e3440",
+      "foreground": "#eceff4",
+      "card": "#3b4252",
+      "muted": "#434c5e",
+      "muted-foreground": "#d8dee9",
+      "border": "#4c566a",
+      "border-strong": "#616e88",
+      "code-background": "#3b4252",
+      "code-foreground": "#eceff4",
+      "accent": "#88c0d0",
+      "destructive": "#bf616a",
+      "warning": "#ebcb8b",
+      "success": "#a3be8c",
+      "info": "#81a1c1"
+    }
+  }
+}

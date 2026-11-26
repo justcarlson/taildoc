@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 2,
+  "id": "dracula",
+  "version": 1,
+  "kind": "designer",
+  "name": "Dracula",
+  "description": "The Dracula dark theme and its Alucard light variant.",
+  "variants": {
+    "light": "Alucard",
+    "dark": "Dracula"
+  },
+  "source": {
+    "url": "https://github.com/dracula/dracula-theme/blob/5962daae54e4608d281cb6f4eee2349e605d9e3c/README.md",
+    "revision": "5962daae54e4608d281cb6f4eee2349e605d9e3c",
+    "license": "MIT",
+    "licenseFile": "licenses/dracula.txt",
+    "modes": {
+      "light": "https://spec.draculatheme.com",
+      "dark": "https://github.com/dracula/dracula-theme/blob/5962daae54e4608d281cb6f4eee2349e605d9e3c/README.md"
+    }
+  },
+  "radius": "8px",
+  "line": "solid",
+  "viz": "editorial",
+  "modes": {
+    "light": {
+      "background": "#fffbeb",
+      "foreground": "#1f1f1f",
+      "card": "#f5f1de",
+      "muted": "#cfcfde",
+      "muted-foreground": "#6c664b",
+      "border": "#cfcfde",
+      "border-strong": "#9e9cb8",
+      "code-background": "#f5f1de",
+      "code-foreground": "#1f1f1f",
+      "accent": "#644ac9",
+      "destructive": "#cb3a2a",
+      "warning": "#846e15",
+      "success": "#14710a",
+      "info": "#036a96"
+    },
+    "dark": {
+      "background": "#282a36",
+      "foreground": "#f8f8f2",
+      "card": "#21222c",
+      "muted": "#44475a",
+      "muted-foreground": "#c6c8d8",
+      "border": "#44475a",
+      "border-strong": "#6272a4",
+      "code-background": "#44475a",
+      "code-foreground": "#f8f8f2",
+      "accent": "#bd93f9",
+      "destructive": "#ff5555",
+      "warning": "#f1fa8c",
+      "success": "#50fa7b",
+      "info": "#8be9fd"
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 2,
+  "id": "gruvbox",
+  "version": 1,
+  "kind": "designer",
+  "name": "Gruvbox",
+  "description": "Retro groove colors by morhetz.",
+  "variants": {
+    "light": "Light",
+    "dark": "Dark"
+  },
+  "source": {
+    "url": "https://github.com/morhetz/gruvbox/blob/5d15b2765f59754d7ac263c88a0f6e3e58124951/colors/gruvbox.vim",
+    "revision": "5d15b2765f59754d7ac263c88a0f6e3e58124951",
+    "license": "MIT",
+    "licenseFile": "licenses/gruvbox.txt"
+  },
+  "radius": "4px",
+  "line": "solid",
+  "viz": "editorial",
+  "modes": {
+    "light": {
+      "background": "#fbf1c7",
+      "foreground": "#3c3836",
+      "card": "#f2e5bc",
+      "muted": "#ebdbb2",
+      "muted-foreground": "#504945",
+      "border": "#d5c4a1",
+      "border-strong": "#bdae93",
+      "code-background": "#ebdbb2",
+      "code-foreground": "#3c3836",
+      "accent": "#076678",
+      "destructive": "#9d0006",
+      "warning": "#b57614",
+      "success": "#79740e",
+      "info": "#427b58"
+    },
+    "dark": {
+      "background": "#282828",
+      "foreground": "#ebdbb2",
+      "card": "#32302f",
+      "muted": "#3c3836",
+      "muted-foreground": "#a89984",
+      "border": "#504945",
+      "border-strong": "#665c54",
+      "code-background": "#3c3836",
+      "code-foreground": "#ebdbb2",
+      "accent": "#83a598",
+      "destructive": "#fb4934",
+      "warning": "#fabd2f",
+      "success": "#b8bb26",
+      "info": "#8ec07c"
+    }
+  }
+}
