@@ -617,6 +617,13 @@ def _remote_download(argv: list[str], target: str) -> int:
 
 def main() -> int:
     argv = sys.argv[1:]
+    if argv and argv[0] == "ui":
+        # tailplan ui runs on this machine. It needs no SSH, and its --target means a bundle target.
+        try:
+            return _load_library()["ui_main"](argv[1:])
+        except RuntimeError as exc:
+            print(f"tailplan: {exc}", file=sys.stderr)
+            return 2
     target = os.getenv("TAILPLAN_SSH_TARGET", DEFAULT_TARGET)
     if "--target" in argv:
         index = argv.index("--target")
