@@ -26,36 +26,47 @@ import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 
-CSS = """
-:root { color-scheme: light; }
-* { box-sizing: border-box; }
-html { max-width: 100%; overflow-x: hidden; }
-body { margin: 0; max-width: 100%; overflow-x: hidden; background: #f8fafc; color: #111827; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.58; }
-main { width: min(100% - 32px, 920px); margin: 40px auto 64px; padding: 0; }
-h1 { font-size: clamp(1.8rem, 7vw, 2.25rem); line-height: 1.12; margin: 0 0 1rem; letter-spacing: -0.035em; }
-h2 { font-size: clamp(1.25rem, 5vw, 1.45rem); margin: 2rem 0 0.75rem; border-top: 1px solid #e5e7eb; padding-top: 1.25rem; }
-h3 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
-p, ul, ol, pre, .table-wrap, blockquote { margin: 0.8rem 0; }
-p, li, blockquote, td, th { overflow-wrap: anywhere; }
-ul, ol { padding-left: 1.4rem; }
-li { margin: 0.25rem 0; }
-pre { max-width: 100%; overflow-x: auto; background: #0f172a; color: #e5e7eb; border-radius: 10px; padding: 14px 16px; -webkit-overflow-scrolling: touch; }
-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
-p code, li code { background: #e5e7eb; border-radius: 4px; padding: 0.1rem 0.28rem; }
-blockquote { border-left: 4px solid #94a3b8; padding-left: 1rem; color: #475569; }
-.table-wrap { width: 100%; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-table { border-collapse: collapse; width: 100%; min-width: 100%; }
-th, td { border: 1px solid #d1d5db; padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; }
-th { background: #f1f5f9; }
-img, svg, video { max-width: 100%; height: auto; }
-a { color: #2563eb; overflow-wrap: anywhere; }
-.meta { color: #64748b; font-size: 0.9rem; margin-bottom: 1.5rem; }
-@media (max-width: 640px) {
-  main { width: min(100% - 24px, 920px); margin: 24px auto 48px; }
-  table { min-width: 40rem; }
-  th, td { padding: 0.4rem 0.5rem; }
-}
-""".strip()
+_SCRIPT_PATH = Path(__file__).resolve()
+
+
+def _share_dir_candidates() -> list[Path]:
+    """Return candidate directories that may hold an installed tailplan_ui package."""
+    candidates: list[Path] = []
+    env_dir = os.getenv("TAILPLAN_SHARE_DIR")
+    if env_dir:
+        candidates.append(Path(env_dir).expanduser())
+    marker = _SCRIPT_PATH.with_name(".tailplan-share-dir")
+    try:
+        recorded = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        recorded = ""
+    if recorded:
+        candidates.append(Path(recorded).expanduser())
+    candidates.append(_SCRIPT_PATH.parents[1])
+    candidates.append(Path.home() / ".local" / "share" / "tailplan")
+    candidates.append(Path("/usr/local/lib/tailplan"))
+    return candidates
+
+
+def _import_tailplan_ui():
+    """Return tailplan_ui, appending an installed share directory only if needed."""
+    try:
+        import tailplan_ui
+        return tailplan_ui
+    except ImportError:
+        pass
+    for root in _share_dir_candidates():
+        if (root / "tailplan_ui" / "__init__.py").is_file():
+            entry = str(root)
+            if entry not in sys.path:
+                sys.path.append(entry)
+            try:
+                import tailplan_ui
+                return tailplan_ui
+            except ImportError:
+                continue
+    return None
+
 
 CLI_VERSION = "0.6.0"
 VISIBILITIES = ("private", "workspace", "authenticated", "link")
@@ -1824,8 +1835,29 @@ def title_from_content(path: Path, text: str) -> str:
     return path.stem.replace("-", " ").replace("_", " ").strip().title() or "Tailplan Draft"
 
 
+_LOCAL_DOC_CSS = (
+    "main{max-width:690px;margin:48px auto 72px;padding:0 var(--gutter)}"
+    ".meta{color:var(--muted-foreground);font-size:.85rem;margin-bottom:1.5rem}"
+    ".table-wrap{width:100%;overflow-x:auto}"
+)
+
+
 def html_document(title: str, body: str, source_name: str) -> str:
-    return f"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{html.escape(title)}</title>\n<style>{CSS}</style>\n</head>\n<body>\n<main>\n<div class=\"meta\">Published from {html.escape(source_name)} via Tailplan.</div>\n{body}\n</main>\n</body>\n</html>\n"
+    raw = (
+        '<!doctype html>\n<html lang="en" data-ui-theme="warm-editorial">\n<head>\n'
+        '<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        '<meta name="tailplan-ui" content="1">\n'
+        f'<title>{html.escape(title)}</title>\n'
+        f'<style>{_LOCAL_DOC_CSS}</style>\n'
+        '</head>\n<body>\n<main>\n<div data-slot="prose">\n'
+        f'<div class="meta">Published from {html.escape(source_name)} via Tailplan.</div>\n'
+        f'{body}\n</div>\n</main>\n</body>\n</html>\n'
+    )
+    ui = _import_tailplan_ui()
+    if ui is None:
+        raise ConfigurationFailure("tailplan_ui package is missing; re-run install-client.sh.")
+    return ui.bundle(raw, target="standalone")[0]
 
 
 def build_html(path: Path, *, home: Path | None = None) -> Path:
@@ -2796,6 +2828,7 @@ def _publish_locked(
     document_type: str | None = None,
     layout: str | None = None,
     typography: str | None = None,
+    mode: str | None = None,
     slug: str | None = None,
     files: list[dict] | None = None,
     filename_override: str | None = None,
@@ -2810,7 +2843,7 @@ def _publish_locked(
     state_dir = state_home / ".tailplan"
     is_folder = files is not None or resolved_source.is_dir()
     is_html = is_folder or resolved_source.suffix.lower() in {".html", ".htm"}
-    if is_html and any(value is not None for value in (theme, document_type, layout, typography)):
+    if is_html and any(value is not None for value in (theme, document_type, layout, typography, mode)):
         return _emit_failure("theme", "Theme options require Markdown or text input.",
                              json_output=json_output, stdout=stdout, stderr=stderr)
     upload_files = files
@@ -2833,10 +2866,12 @@ def _publish_locked(
                                "layout": layout or "reading"}
             if typography is not None:
                 content_request["typography"] = typography
+            if mode is not None:
+                content_request["mode"] = mode
         except (OSError, UnicodeError):
             return _emit_failure("file", "Cannot read UTF-8 input.", json_output=json_output,
                                  stdout=stdout, stderr=stderr)
-    if upload_files is not None:
+    if upload_files is not None or (content_request is not None and verifier is None):
         html_path = resolved_source
     else:
         try:
@@ -2903,6 +2938,8 @@ def _publish_locked(
     if upload_files is not None:
         index_entry = next((p for p in upload_files if p.get("path") == "index.html"), None)
         expected = index_entry["html"] if index_entry else ""
+    elif content_request is not None and verifier is None:
+        expected = ""
     else:
         try:
             expected = final_html(html_path)
@@ -3098,6 +3135,7 @@ def publish(
     document_type: str | None = None,
     layout: str | None = None,
     typography: str | None = None,
+    mode: str | None = None,
     slug: str | None = None,
     files: list[dict] | None = None,
     filename_override: str | None = None,
@@ -3128,6 +3166,7 @@ def publish(
             document_type=document_type,
             layout=layout,
             typography=typography,
+            mode=mode,
             slug=slug,
             files=files,
             filename_override=filename_override,
@@ -3156,6 +3195,7 @@ def publish(
                 document_type=document_type,
                 layout=layout,
                 typography=typography,
+                mode=mode,
                 slug=slug,
                 files=files,
                 filename_override=filename_override,
@@ -3225,6 +3265,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--document-type", help="Deterministic selection hint, such as plan or technical")
     parser.add_argument("--typography", help="Font preset ID; list with tailplan typography")
     parser.add_argument("--layout", help="Document layout: reading or brief")
+    parser.add_argument("--mode", choices=("auto", "light", "dark"), help="Color mode: auto, light, or dark")
     parser.add_argument("--metadata-file", help="Read source provenance from a JSON file")
     parser.add_argument("--workspace", help="Put a new draft in this workspace")
     parser.add_argument("--visibility", choices=VISIBILITIES, help="Set who can read the draft")
@@ -3397,6 +3438,7 @@ def main(argv: list[str] | None = None) -> int:
         document_type=args.document_type,
         layout=args.layout,
         typography=args.typography,
+        mode=args.mode,
         slug=args.slug,
         files=upload_files,
         filename_override=filename_override,

@@ -97,6 +97,19 @@ Solarized uses base02 for body text, code, and links, with base01 for secondary 
 These choices preserve upstream colors while meeting the document contrast checks.
 Print uses black text and a white background for every palette.
 
+## Pigment dual-mode families and render engine
+
+Ten Pigment families support light, dark, and automatic dual-mode rendering with `light-dark()`:
+`catppuccin`, `dracula`, `flexoki`, `graphite`, `gruvbox`, `nord`, `radix-sand`, `solarized`, `tokyo-night`, and `warm-editorial`.
+Pass `--mode auto|light|dark` on the CLI or `"mode"` in `POST /api/uploads`.
+Unsuffixed Pigment-only families default to `auto`.
+Legacy suffixed IDs such as `flexoki-light` and `catppuccin-latte` stay single-mode.
+
+The server renders Markdown and briefs through `tailplan_ui` and Pigment by default.
+Set `TAILPLAN_RENDER_ENGINE=legacy` to switch back to the unlayered v1 token path.
+Invalid values fail server startup and `/readyz`.
+Stored drafts keep their original bytes and are never rewritten.
+
 ## Add a palette
 
 1. Copy `tailplan_themes/palettes/warm-editorial.json` to a new JSON file.

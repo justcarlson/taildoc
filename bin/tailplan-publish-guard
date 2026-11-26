@@ -332,12 +332,14 @@ def execute(argv: list[str]) -> None:
                 continue
             if option not in {
                 "--draft", "--slug", "--description", "--metadata-file",
-                "--theme", "--document-type", "--layout", "--typography",
+                "--theme", "--document-type", "--layout", "--typography", "--mode",
             } or not options:
                 deny("publish option is invalid")
             value, *options = options
             if option in {"--theme", "--document-type", "--layout", "--typography"} and not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", value):
                 deny("theme option is invalid")
+            if option == "--mode" and value not in {"auto", "light", "dark"}:
+                deny("mode option is invalid")
             if option == "--draft" and DRAFT_RE.fullmatch(value) is None:
                 deny("draft option is invalid")
             if option == "--slug" and SLUG_RE.fullmatch(value) is None:

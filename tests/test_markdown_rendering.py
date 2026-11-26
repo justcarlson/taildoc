@@ -317,16 +317,16 @@ After table.
 
 
 class DocumentRenderingTests(unittest.TestCase):
-    def test_generated_css_has_mobile_overflow_guards(self) -> None:
-        css = mod.CSS
-        self.assertIn("overflow-x: hidden", css)
-        self.assertIn("width: min(100% - 24px", css)
-        self.assertIn(".table-wrap", css)
-        self.assertIn("overflow-x: auto", css)
-        self.assertIn("-webkit-overflow-scrolling: touch", css)
-        self.assertIn("table { min-width: 40rem; }", css)
-        self.assertIn("overflow-wrap: anywhere", css)
-        self.assertIn("pre { max-width: 100%; overflow-x: auto", css)
+    def test_generated_css_uses_tailplan_ui_without_legacy_css_block(self) -> None:
+        self.assertFalse(hasattr(mod, "CSS"))
+        doc = mod.html_document("Title", "<p>Body</p>", "notes.md")
+        self.assertIn('id="tp-ui"', doc)
+        self.assertIn("@layer tp.reset", doc)
+        self.assertIn("overflow-wrap:anywhere", doc)
+        self.assertIn("overflow-x:auto", doc)
+        self.assertIn("max-width:480px", doc)
+        self.assertNotIn("#2563eb", doc)
+        self.assertNotIn("640px", doc)
 
     def test_generated_document_is_deterministic_and_has_one_source_marker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -341,13 +341,13 @@ class DocumentRenderingTests(unittest.TestCase):
 
         self.assertEqual(first_path, second_path)
         self.assertEqual(first_document, second_document)
-        self.assertTrue(first_document.startswith("<!doctype html>\n<html lang=\"en\">"))
+        self.assertTrue(first_document.startswith("<!doctype html>\n<html lang=\"en\""))
         self.assertIn("<title>Plan &lt;Q&gt;</title>", first_document)
         self.assertIn(
             '<meta name="viewport" content="width=device-width, initial-scale=1">',
             first_document,
         )
-        self.assertIn("@media (max-width: 640px)", first_document)
+        self.assertIn('id="tp-ui"', first_document)
         source_marker = "Published from kitchen-&amp;-sink.md via Tailplan."
         self.assertEqual(first_document.count(source_marker), 1)
         self.assertEqual(first_document.count("<main>"), 1)

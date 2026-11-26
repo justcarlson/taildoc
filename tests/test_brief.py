@@ -134,15 +134,22 @@ def test_callouts_and_claims_only_change_brief_output():
 
 @pytest.mark.parametrize('ident', list(themes.registry()))
 def test_topic_and_verdict_colors_meet_contrast(ident):
+    from tailplan_ui.color import tokens as ui_tokens
+
     css = (Path(themes.__file__).parent / 'brief.css').read_text(encoding='utf-8')
-    light, dark = css.split('body.brief[data-mode="dark"]', 1)
-    palette = themes.registry()[ident]
-    block = dark.split('}', 1)[0] if palette['mode'] == 'dark' else light.split('}', 1)[0]
-    values = dict(re.findall(r'--([a-z0-9-]+):\s*(#[0-9a-f]{6})', block))
-    for verdict in ('ok', 'partial', 'unverified', 'false', 'other'):
-        assert themes.contrast(values[f'{verdict}-fg'], values[f'{verdict}-bg']) >= 4.5, verdict
+    assert not re.search(r'#[0-9a-fA-F]{3,6}', css)
+    preset_id, mode = ui_tokens.LEGACY_ALIASES[ident]
+    solved = ui_tokens.mode_tokens('theme', preset_id, mode)
+    for fg, bg in (
+        ('success', 'success-surface'),
+        ('warning', 'warning-surface'),
+        ('muted-foreground', 'muted'),
+        ('destructive', 'destructive-surface'),
+        ('foreground', 'muted'),
+    ):
+        assert themes.contrast(solved[fg], solved[bg]) >= 4.5, (ident, fg, bg)
     for slot in range(1, brief.TOPIC_SLOTS + 1):
-        assert themes.contrast(values[f'k{slot}'], palette['tokens']['background']) >= 3, (ident, slot)
+        assert themes.contrast(solved[f'chart-{slot}'], solved['background']) >= 3, (ident, slot)
 
 
 def test_long_sources_keep_seconds_in_section_times():

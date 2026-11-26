@@ -176,6 +176,7 @@ def share_file(
     document_type: str | None = None,
     layout: str | None = None,
     typography: str | None = None,
+    mode: str | None = None,
     slug: str | None = None,
     files_json_path: Path | None = None,
     sharing: list[tuple[str, str | list[str] | None]] | None = None,
@@ -224,6 +225,10 @@ def share_file(
                 if not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", value):
                     raise ValueError("Invalid theme, document type, layout, or typography")
                 command.extend([option, value])
+        if mode is not None:
+            if mode not in {"auto", "light", "dark"}:
+                raise ValueError("Mode must be auto, light, or dark")
+            command.extend(["--mode", mode])
         if new:
             command.append("--new")
         elif draft:
@@ -689,6 +694,7 @@ def main() -> int:
     parser.add_argument("--document-type")
     parser.add_argument("--typography", help="Font preset ID; list with tailplan typography")
     parser.add_argument("--layout")
+    parser.add_argument("--mode", choices=("auto", "light", "dark"), help="Color mode: auto, light, or dark")
     parser.add_argument("--description")
     parser.add_argument("--workspace", help="Put a new draft in this workspace")
     parser.add_argument("--visibility", choices=VISIBILITIES, help="Set who can read the draft")
@@ -763,7 +769,7 @@ def main() -> int:
                     source, target=args.target, new=args.new, draft=selected,
                     description=args.description, json_output=True, metadata_path=metadata_path,
                     theme=args.theme, document_type=args.document_type, layout=args.layout,
-                    typography=args.typography, slug=slug, files_json_path=files_json_path,
+                    typography=args.typography, mode=args.mode, slug=slug, files_json_path=files_json_path,
                     sharing=upload_sharing, favorite=args.favorite,
                     tags=tags_for_upload(explicit_tags, default_tags, new_draft=creates_draft(selected)),
                 )
@@ -788,7 +794,7 @@ def main() -> int:
                     source, target=args.target, new=(not slug_mismatch and slug is None), draft=None,
                     description=args.description, json_output=True, metadata_path=metadata_path,
                     theme=args.theme, document_type=args.document_type, layout=args.layout,
-                    typography=args.typography, slug=slug, files_json_path=files_json_path,
+                    typography=args.typography, mode=args.mode, slug=slug, files_json_path=files_json_path,
                     sharing=upload_sharing, favorite=args.favorite,
                     tags=tags_for_upload(explicit_tags, default_tags, new_draft=creates_draft(None)),
                 )

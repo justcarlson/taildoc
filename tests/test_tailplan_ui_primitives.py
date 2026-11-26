@@ -112,26 +112,18 @@ def style_selectors(text):
 ALL_CSS = sorted(p for d in ('primitives', 'blocks', 'wireframes') for p in (UI / d).glob('*.css'))
 PSEUDO_ELEMENTS_ONLY = re.compile(r'(?:::[a-z-]+(?:\([^)]*\))?)*')
 COMBINATORS = re.compile(r'\s*[>+~]\s*|\s+')
-# Wave U2 selectors that add a pseudo-class after :where(...). Wave U2 owns those files.
-# Remove an entry when U2 moves the pseudo-class inside :where().
-U2_PSEUDO_CLASS_DEBT = {'wireframes/app.css': {':focus-visible', ':focus-within'}}
 
 
 @pytest.mark.parametrize('path', ALL_CSS, ids=lambda p: f'{p.parent.name}/{p.name}')
 def test_every_selector_is_wrapped_in_where(path):
     """Specificity stays at zero: only a combinator or a pseudo-element may sit outside :where(...)."""
-    allowed = U2_PSEUDO_CLASS_DEBT.get(f'{path.parent.name}/{path.name}', set())
     found = 0
     for selector in style_selectors(path.read_text(encoding='utf-8')):
         found += 1
         assert selector.startswith(':where('), selector
         rest = COMBINATORS.sub('', strip_where(selector))
-        assert PSEUDO_ELEMENTS_ONLY.fullmatch(rest) or rest in allowed, selector
+        assert PSEUDO_ELEMENTS_ONLY.fullmatch(rest), selector
     assert found, path.name
-
-
-def test_the_pseudo_class_debt_is_only_in_wireframes():
-    assert all(key.startswith('wireframes/') for key in U2_PSEUDO_CLASS_DEBT)
 
 
 def test_layer_order_puts_primitives_before_blocks_after_base():
