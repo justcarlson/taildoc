@@ -1,0 +1,76 @@
+/* tp.wireframes: device chrome overlays and annotation helpers. */
+/* @chunk wf-overlays when=slot:safari-pill|safari-strip|ruler-mark|pin|pin-legend|wire-box */
+@layer tp.wireframes {
+  /* Safari 27.1 floating URL pill. Put it inside a device-screen. */
+  :where([data-slot="safari-pill"]) {
+    position: absolute; inset-inline: 0; inset-block-end: max(8px, env(safe-area-inset-bottom, 0px)); z-index: 2;
+    margin-inline: auto; box-sizing: border-box; inline-size: min(calc(100% - 24px), 22rem); block-size: 56px;
+    display: grid; place-items: center; padding-inline: 1rem; overflow: hidden; pointer-events: none;
+    background: color-mix(in oklab, var(--background) 78%, transparent); color: var(--foreground);
+    border: 1px var(--line, solid) var(--border-strong); border-radius: var(--wf-pill, 999px);
+    box-shadow: var(--wf-shadow, none); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+    font-size: 0.8rem; line-height: 1.2; text-align: center;
+  }
+  /* Safari 27.1 side strip, 84pt wide. Use data-side="end" for the other edge. */
+  :where([data-slot="safari-strip"]) {
+    position: absolute; top: 0; bottom: 0; left: 0; z-index: 2; box-sizing: border-box; width: 84px;
+    display: grid; place-items: center; pointer-events: none; writing-mode: vertical-rl;
+    background: repeating-linear-gradient(135deg, color-mix(in oklab, var(--foreground) 14%, transparent) 0 1px, transparent 1px 8px);
+    border-right: 1px dashed var(--border-strong); color: var(--muted-foreground); font-size: 0.7rem;
+  }
+  :where([data-slot="safari-strip"][data-side="end"]) {
+    left: auto; right: 0; border-right: 0; border-left: 1px dashed var(--border-strong);
+  }
+  /* A ruler spans a length. Set --ruler to its pixel length. data-axis="y" makes it vertical. */
+  :where([data-slot="ruler-mark"]) {
+    display: flex; align-items: center; gap: 0.5rem; box-sizing: border-box; inline-size: 100%;
+    max-inline-size: calc(var(--ruler, 99999) * 1px); min-block-size: 14px; margin-inline: auto; padding-inline: 0.5rem;
+    border-inline: 1px solid var(--border-strong); color: var(--muted-foreground);
+    font-family: var(--font-mono); font-size: 0.75rem; line-height: 1.2; text-align: center;
+  }
+  :where([data-slot="ruler-mark"])::before, :where([data-slot="ruler-mark"])::after {
+    content: ""; flex: 1; border-block-start: 1px solid var(--border-strong);
+  }
+  :where([data-slot="ruler-mark"][data-axis="y"]) {
+    inline-size: auto; max-inline-size: none; block-size: 100%; max-block-size: calc(var(--ruler, 99999) * 1px);
+    flex-direction: column; margin-inline: 0; padding-inline: 0; padding-block: 0.5rem;
+    border-inline: 0; border-block: 1px solid var(--border-strong); writing-mode: vertical-rl;
+  }
+  :where([data-slot="ruler-mark"][data-axis="y"])::before, :where([data-slot="ruler-mark"][data-axis="y"])::after {
+    border-block-start: 0; border-inline-start: 1px solid var(--border-strong);
+  }
+  /* A numbered pin sits on a positioned parent at --x and --y. */
+  :where([data-slot="pin"]) {
+    position: absolute; inset-inline-start: var(--x, 50%); inset-block-start: var(--y, 50%); z-index: 3;
+    display: grid; place-items: center; box-sizing: border-box; inline-size: 1.4rem; block-size: 1.4rem;
+    transform: translate(-50%, -50%); border: 2px solid var(--background); border-radius: 50%;
+    background: var(--primary); color: var(--primary-foreground);
+    font-family: var(--font-mono); font-size: 0.7rem; font-weight: 700; line-height: 1;
+  }
+  :where([data-slot="pin-legend"]) {
+    display: grid; gap: 0.4rem; margin: 0; padding: 0; list-style: none; counter-reset: pin; min-inline-size: 0;
+  }
+  :where([data-slot="pin-legend"] > li) {
+    display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 0.6rem; counter-increment: pin; font-size: 0.9rem;
+  }
+  :where([data-slot="pin-legend"] > li)::before {
+    content: counter(pin); display: grid; place-items: center; box-sizing: border-box; inline-size: 1.4rem; block-size: 1.4rem;
+    border-radius: 50%; background: var(--primary); color: var(--primary-foreground);
+    font-family: var(--font-mono); font-size: 0.7rem; font-weight: 700;
+  }
+  /* A placeholder box. Wire draws hatching and a cross. Other themes draw a clean card. */
+  :where([data-slot="wire-box"]) {
+    position: relative; display: grid; place-items: center; box-sizing: border-box; min-inline-size: 0; min-block-size: 4rem; padding: 0.5rem;
+    border: 1px var(--line, solid) var(--border); border-radius: var(--radius);
+    background-color: var(--muted); background-image: var(--wf-hatch, none);
+    color: var(--muted-foreground); font-size: 0.75rem; text-align: center; overflow: hidden;
+  }
+  :where([data-slot="wire-box"])::before {
+    content: attr(data-label); position: relative; padding: 0.1rem 0.4rem; background: var(--background); border-radius: var(--radius);
+  }
+  :where([data-slot="wire-box"][data-shape="image"]) {
+    background-image:
+      linear-gradient(to top right, transparent calc(50% - 0.5px), var(--border) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px)),
+      linear-gradient(to bottom right, transparent calc(50% - 0.5px), var(--border) calc(50% - 0.5px) calc(50% + 0.5px), transparent calc(50% + 0.5px));
+  }
+}

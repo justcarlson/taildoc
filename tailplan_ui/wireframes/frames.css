@@ -1,0 +1,53 @@
+/* tp.wireframes: the 7 device frames. */
+/* A frame keeps the real aspect ratio and shrinks to fit the host. Its screen is a size container named screen. */
+/* App content asks @container screen, so it follows the rendered screen and never the host viewport. */
+/* @chunk device-frame when=slot:device-frame|device-screen|duo-folded|duo-landscape|duo-unfolded|duo-wide|iphone|ipad|browser */
+@layer tp.wireframes {
+  :where([data-slot="device-frame"][data-device="duo-folded"], [data-slot="duo-folded"]) { --dw: 382; --dh: 580; }
+  :where([data-slot="device-frame"][data-device="duo-landscape"], [data-slot="duo-landscape"]) { --dw: 594; --dh: 368; }
+  :where([data-slot="device-frame"][data-device="duo-unfolded"], [data-slot="duo-unfolded"]) { --dw: 669; --dh: 867; }
+  :where([data-slot="device-frame"][data-device="duo-wide"], [data-slot="duo-wide"]) { --dw: 951; --dh: 585; }
+  :where([data-slot="device-frame"][data-device="iphone"], [data-slot="iphone"]) { --dw: 390; --dh: 844; }
+  :where([data-slot="device-frame"][data-device="ipad"], [data-slot="ipad"]) { --dw: 768; --dh: 1024; }
+  :where([data-slot="device-frame"][data-device="browser"], [data-slot="browser"]) { --dw: 1280; --dh: 800; }
+  :where([data-slot="device-frame"], [data-slot="duo-folded"], [data-slot="duo-landscape"], [data-slot="duo-unfolded"],
+         [data-slot="duo-wide"], [data-slot="iphone"], [data-slot="ipad"], [data-slot="browser"]) {
+    --bezel: 10px;
+    position: relative; display: grid; grid-template-columns: minmax(0, 1fr); box-sizing: border-box; min-inline-size: 0;
+    inline-size: min(100%, calc(var(--dw, 390) * 1px + var(--bezel) * 2 + 4px)); max-inline-size: 100%; margin-inline: auto;
+    padding: var(--bezel); background: var(--muted); color: var(--foreground);
+    border: 2px var(--line, solid) var(--border-strong); border-radius: calc(var(--radius, 4px) * 5);
+    box-shadow: var(--wf-shadow, none);
+  }
+  :where([data-slot="device-frame"][data-device="browser"], [data-slot="browser"]) {
+    --bezel: 0px; grid-template-rows: 36px auto; overflow: hidden; border-radius: calc(var(--radius, 4px) * 2);
+  }
+  /* The browser chrome is a bar with three dots and a URL pill. data-url sets the pill text. */
+  :where([data-slot="device-frame"][data-device="browser"], [data-slot="browser"])::before {
+    content: ""; display: block; min-inline-size: 0;
+    background:
+      radial-gradient(circle 5px at 18px 50%, var(--border-strong) 96%, transparent),
+      radial-gradient(circle 5px at 36px 50%, var(--border-strong) 96%, transparent),
+      radial-gradient(circle 5px at 54px 50%, var(--border-strong) 96%, transparent),
+      var(--card);
+    border-block-end: 1px var(--line, solid) var(--border-strong);
+  }
+  :where([data-slot="device-frame"][data-device="browser"], [data-slot="browser"])::after {
+    content: attr(data-url); position: absolute; inset-block-start: 7px; inset-inline-start: 76px;
+    box-sizing: border-box; inline-size: min(calc(100% - 96px), 26rem); block-size: 22px; overflow: hidden; white-space: nowrap;
+    padding-inline: 0.75rem; border: 1px var(--line, solid) var(--border); border-radius: var(--wf-pill, 999px);
+    background: var(--background); color: var(--muted-foreground); font-size: 11px; line-height: 20px;
+  }
+  :where([data-slot="device-screen"]) {
+    container: screen / size; position: relative; isolation: isolate; overflow: hidden;
+    display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr); box-sizing: border-box; min-inline-size: 0;
+    inline-size: 100%; aspect-ratio: var(--dw, 390) / var(--dh, 844);
+    background: var(--background); color: var(--foreground); border-radius: calc(var(--radius, 4px) * 3);
+  }
+  :where([data-slot="device-frame"][data-device="browser"], [data-slot="browser"]) > :where([data-slot="device-screen"]) { border-radius: 0; }
+  :where([data-slot="device-screen"] > *) { grid-area: 1 / 1; }
+  /* data-safe-area insets the screen content by the 84pt Safari side strips in landscape. */
+  :where([data-slot="device-frame"][data-device="duo-landscape"][data-safe-area], [data-slot="duo-landscape"][data-safe-area]) {
+    --screen-inset: 84px;
+  }
+}
