@@ -45,6 +45,12 @@ def _share_dir_candidates() -> list[Path]:
     candidates.append(_SCRIPT_PATH.parents[1])
     candidates.append(Path.home() / ".local" / "share" / "tailplan")
     candidates.append(Path("/usr/local/lib/tailplan"))
+    # install.sh puts the server packages in the app directory.
+    app_dir = os.getenv("TAILPLAN_APP_DIR")
+    if app_dir:
+        candidates.append(Path(app_dir).expanduser())
+    candidates.append(Path.home() / "apps" / "tailplan")
+    candidates.append(Path("/opt/tailplan"))
     return candidates
 
 
@@ -87,7 +93,7 @@ MAX_PAGE_PATH_SEGMENTS = 6
 RESERVED_SLUGS = {
     "admin", "api", "app", "assets", "auth", "blog", "cdn", "cli", "d",
     "dashboard", "docs", "files", "help", "login", "mail", "postplan", "raw",
-    "signin", "static", "status", "support", "taildoc", "tailplan", "www",
+    "signin", "static", "status", "support", "taildoc", "tailplan", "ui", "www",
 }
 RESERVED_PAGE_ROOTS = {
     "v", "raw", "content", "share", "preview.png", "api", "healthz",
@@ -3236,8 +3242,23 @@ def _load_files_json(path: Path) -> tuple[list[dict], str | None]:
     return files, filename
 
 
+def ui_main(argv: list[str]) -> int:
+    """Run tailplan ui offline. It needs no server and no SSH."""
+    ui = _import_tailplan_ui()
+    if ui is None:
+        message = "the tailplan_ui package is missing. Run install-client.sh again."
+        print(f"tailplan ui: {message}", file=sys.stderr)
+        if "--json" in argv:
+            print(json.dumps({"ok": False, "error": message}))
+        return 2
+    from tailplan_ui.cli import main as cli_main
+    return cli_main(argv, prog="tailplan ui")
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and raw_argv[0] == "ui":
+        return ui_main(raw_argv[1:])
     if raw_argv and raw_argv[0] in {
         "auth", "whoami", "list", "history", "keys", "disable", "enable", "delete",
         "themes", "typography", "check", "favorite", "unfavorite", "download", "share",
@@ -3251,7 +3272,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Share a markdown/text/html artifact or HTML folder through Tailplan.",
         epilog=(
             "Commands: upload, check, download, share, favorite, unfavorite, tag, archive, "
-            "unarchive, list, history, whoami, auth, keys, disable, enable, delete. "
+            "unarchive, list, history, whoami, auth, keys, disable, enable, delete, ui. "
             "Use COMMAND --help."
         ),
     )

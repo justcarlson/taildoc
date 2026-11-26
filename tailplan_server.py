@@ -42,6 +42,7 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 import tailplan_ui
 from tailplan_ui import lint as ui_lint
 from tailplan_web import assets as web_assets
+from tailplan_web import ui_gallery
 from tailplan_web.render import (  # noqa: F401
     VISIBILITY_LABELS,
     WEB_CSS,
@@ -89,7 +90,7 @@ MAX_IDEMPOTENCY_RECEIPTS = 4096
 RESERVED_SLUGS = {
     "admin", "api", "app", "assets", "auth", "blog", "cdn", "cli", "d",
     "dashboard", "docs", "files", "help", "login", "mail", "postplan", "raw",
-    "signin", "static", "status", "support", "taildoc", "tailplan", "www",
+    "signin", "static", "status", "support", "taildoc", "tailplan", "ui", "www",
 }
 RESERVED_PAGE_ROOTS = {
     "v", "raw", "content", "share", "preview.png", "api", "healthz",
@@ -7131,6 +7132,10 @@ class Handler(BaseHTTPRequestHandler):
         if source_match:
             self.serve_source(source_match.group(1))
             return
+        if path in {"/ui", "/ui/"}:
+            # Public and read-only. The page has no script and no form, so the strict CSP holds.
+            self.send_html(200, ui_gallery.render_gallery(self.base_url))
+            return
         if path == "/api/ui":
             try:
                 self.send_json(200, tailplan_ui.catalog())
@@ -8402,7 +8407,8 @@ def home(base_url: str) -> str:
                        '<p>Publish a draft. Keep its URL. Track every version.</p>'
                        '<pre>tailplan upload ./plan.md</pre>'
                        f'<p><a href="{base}/dashboard">My drafts</a> · '
-                       f'<a href="{base}/cli/auth">CLI setup</a></p>'
+                       f'<a href="{base}/cli/auth">CLI setup</a> · '
+                       f'<a href="{base}/ui">UI kit</a></p>'
                        f'<p>Health: <a href="{base}/healthz">/healthz</a></p></main>')
 
 

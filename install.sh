@@ -581,12 +581,14 @@ for source in \
   tailplan_web/__init__.py \
   tailplan_web/assets.py \
   tailplan_web/render.py \
+  tailplan_web/ui_gallery.py \
   tailplan_web/static/tailplan-mark.svg \
   tailplan_web/static/dashboard.js \
   tailplan_web/static/fonts/geist-sans.woff2 \
   tailplan_web/static/fonts/geist-mono.woff2 \
   tailplan_ui/__init__.py \
   tailplan_ui/bundler.py \
+  tailplan_ui/cli.py \
   tailplan_ui/registry.py \
   tailplan_ui/registry.json \
   tailplan_ui/color/__init__.py \

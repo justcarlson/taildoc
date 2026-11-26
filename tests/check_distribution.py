@@ -59,6 +59,11 @@ def main():
                      '<body><button data-slot="button">Go</button></body></html>', target='standalone')
     assert '@layer tp.primitives' in page and 'data-slot="button"' in page
     assert ui.catalog()['items']
+    from tailplan_ui.cli import verify_html
+    from tailplan_web import ui_gallery
+    gallery = ui_gallery.render_gallery('')
+    report = verify_html(gallery)
+    assert not report['errors'] and not report['warnings'] and report['bundled'], report
     print(f'Installed artifact: {len(expected)} matching assets; {count} render combinations and {len(web_expected)} web assets passed')
 
 
