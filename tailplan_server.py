@@ -86,12 +86,21 @@ SHA256_RE = re.compile(r"[a-f0-9]{64}")
 IDEMPOTENCY_KEY_RE = re.compile(r"[A-Za-z0-9._~-]{1,128}")
 SAFE_QUERY_RE = re.compile(r"[A-Za-z0-9._~!$&'()*+,;=:@/?%\[\]-]*")
 MAX_IDEMPOTENCY_RECEIPTS = 4096
+DRAFT_VIEW_SCAN = 2000  # Newest `draft.view` audit rows that Seen by reads. It needs no new index.
 
 RESERVED_SLUGS = {
     "admin", "api", "app", "assets", "auth", "blog", "cdn", "cli", "d",
     "dashboard", "docs", "files", "help", "login", "mail", "postplan", "raw",
     "signin", "static", "status", "support", "taildoc", "tailplan", "ui", "www",
+    "disable", "enable", "delete", "favorite", "unfavorite", "archive", "unarchive", "tags", "sharing",
 }
+DRAFT_ACTIONS = ("disable", "enable", "delete", "favorite", "unfavorite", "archive", "unarchive", "tags",
+                 "sharing", "sharing/grants", "sharing/revoke")
+# A reserved action name is never a draft ref, so an action path cannot be read as a ref.
+DASHBOARD_DRAFT_RE = re.compile(
+    r"/dashboard/drafts/(?!(?:disable|enable|delete|favorite|unfavorite|archive|unarchive|tags|sharing)(?:/|$))"
+    r"([a-z0-9][a-z0-9-]{1,39})(?:/(" + "|".join(DRAFT_ACTIONS) + r"))?"
+)
 RESERVED_PAGE_ROOTS = {
     "v", "raw", "content", "share", "preview.png", "api", "healthz",
     "readyz", "favicon.ico", "favicon.png", "favicon.svg",
@@ -5074,33 +5083,52 @@ class Store:
         rows = self._rows("SELECT * FROM principals ORDER BY last_login_at DESC LIMIT ?", (limit,))
         return [self._principal_from_row(row) for row in rows]
 
-    def draft_viewers(self, draft_id: str, owner_account_id: str, limit: int = 10) -> list[dict]:
+    def account_name(self, account_id: str) -> str | None:
+        """Return the stored name of one account, or None."""
+        rows = self._rows("SELECT name FROM accounts WHERE account_id = ?", (account_id,))
+        return rows[0]["name"] if rows else None
+
+    def draft_viewers(self, draft_id: str, owner_account_id: str, limit: int = 10,
+                      owner_names: frozenset[str] | set[str] = frozenset()) -> list[dict]:
         """Return the latest `draft.view` per reader other than the owner, newest first.
 
-        It reads the audit table only. A reader counts once, by account or by login.
+        It reads the audit table only, and only its newest `DRAFT_VIEW_SCAN` view rows.
+        A reader counts once, by account, email, or Tailscale login.
+        A passive owner view has no account, so `owner_names` and the login hash find it.
         """
         rows = self._rows(
-            "SELECT ts, actor_account_id, actor_email, detail_json FROM audit_events"
-            " WHERE event_type = 'draft.view' AND target_id = ?"
-            " AND (actor_account_id IS NULL OR actor_account_id <> ?) ORDER BY id DESC LIMIT 500",
-            (draft_id, owner_account_id),
+            "SELECT ts, actor_account_id, actor_email, detail_json FROM ("
+            " SELECT id, ts, actor_account_id, actor_email, detail_json, target_id FROM audit_events"
+            " WHERE event_type = 'draft.view' ORDER BY id DESC LIMIT ?) WHERE target_id = ? ORDER BY id DESC",
+            (DRAFT_VIEW_SCAN, draft_id),
         )
-        seen: dict[str, dict] = {}
+        seen: set[str] = set()
+        result: list[dict] = []
         for row in rows:
             try:
                 detail = json.loads(row["detail_json"] or "{}")
             except ValueError:
                 detail = {}
-            login = row["actor_email"] or (detail.get("actorLogin") if isinstance(detail, dict) else None)
-            key = row["actor_account_id"] or (login or "").strip().lower()
-            if not key or key in seen:
+            detail = detail if isinstance(detail, dict) else {}
+            login = row["actor_email"] or detail.get("actorLogin")
+            names = {value.strip().lower() for value in (row["actor_email"], detail.get("actorLogin"))
+                     if isinstance(value, str) and value.strip()}
+            account = row["actor_account_id"]
+            if account is None and isinstance(detail.get("actorLogin"), str):
+                # A passive view has no account. Its account is a hash of the login.
+                account = sha256_text("tailscale:" + detail["actorLogin"].strip().lower())[:32]
+            if account == owner_account_id or names & set(owner_names):
                 continue
-            version = detail.get("version") if isinstance(detail, dict) else None
-            seen[key] = {"accountId": row["actor_account_id"], "viewer": login,
-                         "version": version if isinstance(version, int) else None, "viewedAt": row["ts"]}
-            if len(seen) >= limit:
+            keys = {key for key in (account, *names) if key}
+            if not keys or keys & seen:
+                continue
+            seen |= keys
+            version = detail.get("version")
+            result.append({"accountId": row["actor_account_id"], "viewer": login,
+                           "version": version if isinstance(version, int) else None, "viewedAt": row["ts"]})
+            if len(result) >= limit:
                 break
-        return list(seen.values())
+        return result
 
     def create_session(
         self,
@@ -7999,6 +8027,22 @@ class Handler(BaseHTTPRequestHandler):
                 or "application/json" in self.headers.get("Accept", ""))
 
     def management_request(self, method: str, path: str) -> None:
+        if method not in {"POST", "PATCH", "DELETE"} or not path.startswith(("/dashboard/drafts/", "/api/drafts/")):
+            self.dispatch_management(method, path)
+            return
+        key = self.viewer_miss_key()
+        limit = self.server.viewer_404_limit
+        wait = self.server.viewer_limiter.wait(key, limit)
+        if wait:
+            self.send_json(429, {"ok": False, "error": "Too many missing drafts. Try again later."},
+                           {"Retry-After": str(wait)})
+            return
+        self.response_status = 0
+        self.dispatch_management(method, path)
+        if self.response_status == 404:
+            self.server.viewer_limiter.record(key, limit)
+
+    def dispatch_management(self, method: str, path: str) -> None:
         try:
             if path.startswith("/auth/oidc/"):
                 self.oidc_request(method, path)
@@ -8206,6 +8250,8 @@ class Handler(BaseHTTPRequestHandler):
         """Return a draft and the caller role. Sharing changes need editor or higher."""
         draft = self.store.resolve_draft(ref)
         role = draft_role(identity, draft, self.store.list_grants(draft["draftId"]), self.auth) if draft else None
+        if role not in {"owner", "admin"} and draft is not None and draft.get("disabledAt"):
+            role = None  # A disabled draft is gone for everyone but the owner and admin.
         if role is None:
             raise KeyError("Draft not found.")
         if ROLE_RANK[role] < ROLE_RANK["editor"]:
@@ -8238,7 +8284,8 @@ class Handler(BaseHTTPRequestHandler):
             entry["workspaces"] |= workspaces
 
         for rule in policy.rules:
-            spaces = set(rule["workspaces"])
+            # A compound rule needs all its predicates. It gives no workspace to a lone predicate.
+            spaces = set(rule["workspaces"]) if self.single_predicate(rule) else set()
             if rule["group"]:
                 add(groups, rule["group"], rule["displayName"], spaces)
             if rule["email"]:
@@ -8278,7 +8325,8 @@ class Handler(BaseHTTPRequestHandler):
             names |= set(rule["workspaces"])
         return names
 
-    def sharing_directory(self, identity: dict | None, draft: dict | None = None) -> dict:
+    def sharing_directory(self, identity: dict | None, draft: dict | None = None,
+                          roster: tuple[dict, dict] | None = None) -> dict:
         """Return the people, groups, and workspaces the caller may pick for a grant.
 
         An instance admin sees all of them. Anyone else sees only entries that
@@ -8289,7 +8337,7 @@ class Handler(BaseHTTPRequestHandler):
             return directory
         admin = identity.get("instanceRole") == "admin"
         visible = self.workspace_names(identity)
-        people, groups = self.sharing_roster()
+        people, groups = roster or self.sharing_roster()
         skip: set[tuple[str, str]] = set()
         email = identity.get("email") if identity.get("emailVerified") else None
         if isinstance(email, str):
@@ -8329,35 +8377,60 @@ class Handler(BaseHTTPRequestHandler):
                  "groups": sorted(group for group, entry in groups.items() if name in entry["workspaces"])}
                 for name in sorted(names)]
 
-    def movable_workspaces(self, identity: dict, role: str | None) -> list[dict]:
+    def movable_workspaces(self, identity: dict, role: str | None, roster: tuple[dict, dict] | None = None) -> list[dict]:
         """Return the workspaces this caller may move the draft to. Only an owner or admin may move it."""
         if role not in {"owner", "admin"}:
             return []
-        people, groups = self.sharing_roster()
+        people, groups = roster or self.sharing_roster()
         names = {name for name in self.workspace_names(identity) if workspace_allowed(identity, name)}
         return self.workspace_cards(names, people, groups)
 
     def seen_by(self, draft: dict) -> list[dict]:
         """Return who opened the draft, newest first. Only the owner may read it."""
+        owner_id = draft.get("accountId") or "local"
+        owner_names: set[str] = set()
+        principal = self.store.account_principal(owner_id)
+        if principal:
+            if isinstance(principal["email"], str):
+                owner_names.add(principal["email"].strip().lower())
+            if principal["issuer"] == "tailscale":
+                owner_names.add(principal["subject"].strip().lower())
+        if owner_id == "local" and self.server.owner_login:
+            owner_names.add(self.server.owner_login.strip().lower())
         result = []
-        for row in self.store.draft_viewers(draft["draftId"], draft.get("accountId") or "local", 10):
+        for row in self.store.draft_viewers(draft["draftId"], owner_id, 10, owner_names):
             name = None
             if row["accountId"]:
                 principal = self.store.account_principal(row["accountId"])
                 name = clean_text(principal["displayName"], 80) if principal else None
-                name = name or clean_text((self.store.account(row["accountId"]) or {}).get("accountName"), 80)
+                name = name or clean_text(self.store.account_name(row["accountId"]), 80)
             result.append({"displayName": name or row["viewer"] or "Someone", "viewer": row["viewer"],
                            "version": row["version"], "viewedAt": row["viewedAt"]})
         return result
 
-    def infer_grant_type(self, value: object) -> str:
-        """Return the grant type for a bare value: an email, a policy group, or a Tailscale login."""
+    def visible_groups(self, identity: dict) -> set[str]:
+        """Return the policy groups the caller may see. An admin sees all. Others see their workspaces only."""
+        admin = identity.get("instanceRole") == "admin"
+        mine = self.workspace_names(identity)
+        groups: set[str] = set()
+        for rule in self.auth.policy.rules:
+            if rule["group"] and (admin or (self.single_predicate(rule) and set(rule["workspaces"]) & mine)):
+                groups.add(_normalize_principal_value(rule["group"]))
+        return groups
+
+    @staticmethod
+    def single_predicate(rule: dict) -> bool:
+        """True when a rule matches on one predicate. A compound rule needs all of its predicates."""
+        return sum(bool(rule[key]) for key in ("group", "email", "tailscaleLogin")) == 1
+
+    def infer_grant_type(self, identity: dict, value: object) -> str:
+        """Return the grant type for a bare value: an email, a visible policy group, or a Tailscale login."""
         if not isinstance(value, str) or not value.strip():
             raise ValueError("Grant value is required.")
         text = value.strip().lower()
         if EMAIL_RE.fullmatch(text):
             return "email"
-        if _normalize_principal_value(text) in {rule["group"] for rule in self.auth.policy.rules if rule["group"]}:
+        if _normalize_principal_value(text) in self.visible_groups(identity):
             return "group"
         if TAILSCALE_LOGIN_RE.fullmatch(text):
             return "tailscale_login"
@@ -8368,7 +8441,8 @@ class Handler(BaseHTTPRequestHandler):
         grants = self.store.list_grants(draft["draftId"])
         workspace = draft_workspace(draft, self.auth)
         visibility = effective_visibility(draft, self.auth)
-        movable = self.movable_workspaces(identity, role)
+        roster = None if identity.get("passive") else self.sharing_roster()
+        movable = self.movable_workspaces(identity, role, roster)
         payload = {
             "ok": True, "draftId": draft["draftId"], "workspace": workspace,
             "visibility": visibility, "maxVisibility": self.auth.max_visibility,
@@ -8377,7 +8451,7 @@ class Handler(BaseHTTPRequestHandler):
             "grants": grants,
             "canMoveWorkspace": any(item["name"] != workspace for item in movable),
             "movableWorkspaces": movable,
-            "directory": self.sharing_directory(identity, draft),
+            "directory": self.sharing_directory(identity, draft, roster),
             "audienceSummary": audience_summary(role, visibility, workspace, grants),
         }
         if role == "owner":
@@ -8410,7 +8484,7 @@ class Handler(BaseHTTPRequestHandler):
         elif action == "grant":
             principal_type = payload.get("type")
             if principal_type in (None, "", "auto"):
-                principal_type = self.infer_grant_type(payload.get("value"))
+                principal_type = self.infer_grant_type(identity, payload.get("value"))
             value = normalize_grant(principal_type, payload.get("value"))
             grant_role = payload.get("role") or "viewer"
             if grant_role not in GRANT_ROLES:
@@ -8461,12 +8535,7 @@ class Handler(BaseHTTPRequestHandler):
     def management_web(self, method: str, path: str) -> None:
         known = path in {"/dashboard", "/dashboard/bulk", "/dashboard/theme", "/cli/auth", "/cli/auth/keys",
                          "/cli/activate", "/auth/sign-in", "/auth/sign-out"}
-        draft_match = re.fullmatch(
-            r"/dashboard/drafts/([a-z0-9][a-z0-9-]{1,39})"
-            r"(?:/(disable|enable|delete|favorite|unfavorite|archive|unarchive|tags"
-            r"|sharing|sharing/grants|sharing/revoke))?",
-            path,
-        )
+        draft_match = DASHBOARD_DRAFT_RE.fullmatch(path)
         key_match = re.fullmatch(r"/cli/auth/keys/([a-z0-9]{6,32})/revoke", path)
         if not known and not draft_match and not key_match:
             self.send_not_found()
@@ -8570,7 +8639,10 @@ class Handler(BaseHTTPRequestHandler):
             elif draft_match and draft_match[2]:
                 _draft, role = self.dashboard_role(session, draft_match[1])
                 if role is None:
-                    self.send_not_found()
+                    if self.wants_json():
+                        self.send_json(404, {"ok": False, "error": "Draft not found."})
+                    else:
+                        self.send_not_found()
                     return
                 sharing_action = {"sharing": "update", "sharing/grants": "grant",
                                   "sharing/revoke": "revoke"}.get(draft_match[2])
@@ -8640,6 +8712,9 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 detail = self.store.draft_detail_any(draft["draftId"], self.base_url)
                 self.annotate_drafts([detail["draft"]])
+                if role != "owner":
+                    detail["draft"].update(tags=[], archived=False, archivedAt=None, favorite=False,
+                                           favoritedAt=None)
                 if role not in {"owner", "admin"}:
                     detail["versions"] = [{key: value for key, value in version.items()
                                            if key not in COLLABORATOR_HIDDEN_VERSION_FIELDS}

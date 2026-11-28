@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
 
 import tailplan_server as server
 from auth_harness import TOKEN, AuthCase
@@ -395,7 +396,7 @@ class SmartGrantTests(Wave1Case):
         for value, expected in (("Friend@Example.test", ("email", "friend@example.test")),
                                 ("CollabTeam", ("group", "collabteam")),
                                 ("Sam@GitHub", ("tailscale_login", "sam@github")),
-                                ("  family  ", ("group", "family"))):
+                                ("  collabteam  ", ("group", "collabteam"))):
             with self.subTest(value):
                 status, body = self.grant(value)
                 self.assertEqual(200, status, body)
@@ -546,6 +547,197 @@ class RosterPolicyTests(unittest.TestCase):
         for bad in ("", "   ", 5, "x" * 81, "bad\nname"):
             with self.subTest(bad), self.assertRaises(ValueError):
                 server.RBACPolicy({"rules": [{**rule, "display_name": bad}]})
+
+
+class Round1ReviewTests(Wave1Case):
+    """Regression tests for the Round 1 review findings F1 to F8."""
+
+    def disable_draft(self) -> None:
+        csrf = self.csrf(self.zach)
+        status, _headers, _body = self.request(self.detail + "/disable", "POST", cookies=[self.zach],
+                                               form={"csrf": csrf})
+        self.assertEqual(303, status)
+
+    def test_f1_disabled_draft_is_gone_from_the_sharing_api_for_non_owners(self) -> None:
+        self.disable_draft()
+        for name, key in (("editor", self.collab_key), ("viewer", self.viewer_key)):
+            for method, suffix, payload in (("GET", "", None), ("POST", "", {"visibility": "link"}),
+                                            ("POST", "/grants", {"value": "x@example.test"}),
+                                            ("DELETE", "/grants", {"type": "email", "value": "x@example.test"})):
+                with self.subTest(name=name, method=method, suffix=suffix):
+                    status, body = self.sharing(key, method, payload, suffix)
+                    self.assertEqual((404, NOT_FOUND_API), (status, body))
+        self.assertEqual(200, self.sharing(self.zach_key)[0])
+        self.assertEqual(200, self.sharing(self.boss_key)[0])
+
+    def test_f2_hidden_policy_groups_cannot_be_probed(self) -> None:
+        status, hidden = self.sharing(self.collab_key, "POST", {"value": "family"}, "/grants")
+        status_none, unknown = self.sharing(self.collab_key, "POST", {"value": "nogroup"}, "/grants")
+        self.assertEqual((400, 400), (status, status_none))
+        self.assertEqual(hidden, unknown)  # A hidden group and an unknown word look the same.
+        status, body = self.sharing(self.collab_key, "POST", {"value": "collabteam"}, "/grants")
+        self.assertEqual(200, status)
+        self.assertIn(("group", "collabteam"), [(grant["type"], grant["value"]) for grant in body["grants"]])
+        status, body = self.sharing(self.collab_key, "POST", {"value": "family", "type": "group"}, "/grants")
+        self.assertEqual(200, status)  # An explicit type stays unchanged.
+        status, body = self.sharing(self.boss_key, "POST", {"value": "outsiders", "type": "auto"}, "/grants")
+        self.assertEqual(200, status)  # An admin sees every policy group.
+        self.assertIn(("group", "outsiders"), [(grant["type"], grant["value"]) for grant in body["grants"]])
+
+    def test_f4_post_miss_answers_json_when_the_caller_wants_json(self) -> None:
+        csrf = self.csrf(self.stranger)
+        status, headers, body = self.request("/dashboard/drafts/zzzzzz-missing/sharing", "POST",
+                                             cookies=[self.stranger], headers={"Accept": "application/json"},
+                                             form={"csrf": csrf, "visibility": "link"})
+        self.assertEqual((404, NOT_FOUND_API), (status, json.loads(body)))
+        self.assertIn("application/json", headers["Content-Type"])
+        status, headers, body = self.request("/dashboard/drafts/zzzzzz-missing/disable", "POST",
+                                             cookies=[self.stranger], form={"csrf": csrf})
+        self.assertEqual(404, status)
+        self.assertIn("text/html", headers["Content-Type"])
+        status, _headers, same = self.request("/dashboard/drafts/zzzzzz-missing", cookies=[self.stranger])
+        self.assertEqual(body, same)  # The HTML miss is the same on GET and POST.
+
+    def test_f6_write_misses_share_the_viewer_limiter(self) -> None:
+        self.primary.viewer_404_limit = 2
+        stranger_key = self.create_key(self.stranger)
+        for _ in range(2):
+            self.assertEqual(404, self.api("/api/drafts/zzzzzz-missing/sharing", "POST", {"visibility": "link"},
+                                           token=stranger_key)[0])
+        for method, path in (("POST", "/api/drafts/zzzzzz-missing/sharing/grants"),
+                             ("DELETE", "/api/drafts/zzzzzz-missing/sharing/grants"),
+                             ("GET", "/d/zzzzzz-missing")):
+            with self.subTest(method=method, path=path):
+                status, headers, _body = self.request(path, method, {"value": "x@example.test"},
+                                                      token=stranger_key, headers={"Accept": "application/json"})
+                self.assertEqual(429, status)
+                self.assertGreaterEqual(int(headers["Retry-After"]), 1)
+        status, headers, _body = self.request("/dashboard/drafts/zzzzzz-missing/disable", "POST",
+                                              cookies=[self.stranger], form={"csrf": "x"})
+        self.assertEqual(429, status)
+
+    def test_f6_owner_writes_do_not_count_as_misses(self) -> None:
+        self.primary.viewer_404_limit = 2
+        for _ in range(5):
+            self.assertEqual(200, self.sharing(self.zach_key, "POST", {"visibility": "workspace"})[0])
+
+    def test_f7_reserved_action_names_are_neither_refs_nor_slugs(self) -> None:
+        for name in ("disable", "enable", "delete", "favorite", "unfavorite", "archive", "unarchive", "tags",
+                     "sharing"):
+            with self.subTest(name):
+                self.assertIsNone(server.DASHBOARD_DRAFT_RE.fullmatch(f"/dashboard/drafts/{name}"))
+                self.assertIsNone(server.DASHBOARD_DRAFT_RE.fullmatch(f"/dashboard/drafts/{name}/delete"))
+                self.assertIn(name, server.RESERVED_SLUGS)
+                self.assertIsNotNone(server.slug_problem(name))
+        for path, ref, action in (("/dashboard/drafts/plan-slug", "plan-slug", None),
+                                  ("/dashboard/drafts/plan-slug/tags", "plan-slug", "tags"),
+                                  ("/dashboard/drafts/tags-plan/sharing/grants", "tags-plan", "sharing/grants"),
+                                  (self.detail + "/disable", self.draft_id, "disable")):
+            with self.subTest(path):
+                match = server.DASHBOARD_DRAFT_RE.fullmatch(path)
+                self.assertEqual((ref, action), (match[1], match[2]))
+
+    def test_f8_sharing_roster_runs_once_per_payload(self) -> None:
+        original = server.Handler.sharing_roster
+        for name, key in (("owner", self.zach_key), ("admin", self.boss_key), ("editor", self.collab_key)):
+            with self.subTest(name), mock.patch.object(server.Handler, "sharing_roster", autospec=True,
+                                                       side_effect=original) as roster:
+                self.assertEqual(200, self.sharing(key)[0])
+                self.assertEqual(1, roster.call_count)
+
+    def test_f8_owner_private_fields_are_scrubbed_for_non_owners(self) -> None:
+        csrf = self.csrf(self.zach)
+        status, _headers, _body = self.request(self.detail + "/favorite", "POST", cookies=[self.zach],
+                                               form={"csrf": csrf, "next": "/dashboard"})
+        self.assertEqual(303, status)
+        seen = {}
+        for name, cookie in (("owner", self.zach), ("editor", self.collab), ("admin", self.boss)):
+            with mock.patch.object(server, "render_detail", wraps=server.render_detail) as render:
+                self.assertEqual(200, self.page(cookie)[0])
+                seen[name] = render.call_args.args[2]["draft"]
+        self.assertTrue(seen["owner"]["favorite"])
+        for name in ("editor", "admin"):
+            with self.subTest(name):
+                draft = seen[name]
+                self.assertEqual(([], False, None, False, None),
+                                 (draft["tags"], draft["archived"], draft["archivedAt"], draft["favorite"],
+                                  draft["favoritedAt"]))
+
+
+class CompoundRuleCase(Wave1Case):
+    policy = {**POLICY, "rules": [*POLICY["rules"],
+                                  {"match": {"group": "pairs", "email": "pair@example.test"},
+                                   "workspaces": {"collab": "editor"}, "display_name": "Pair Person"}]}
+
+
+class Round1CompoundRuleTests(CompoundRuleCase):
+    def test_f3_a_compound_rule_is_an_and_not_an_or(self) -> None:
+        status, body = self.sharing(self.zach_key)
+        people = {item["value"] for item in body["directory"]["people"]}
+        groups = {item["value"] for item in body["directory"]["groups"]}
+        self.assertNotIn("pair@example.test", people)  # No sign-in yet, and the rule needs both predicates.
+        self.assertNotIn("pairs", groups)
+        status, admin = self.sharing(self.boss_key)
+        self.assertIn("pairs", {item["value"] for item in admin["directory"]["groups"]})  # Admin sees all.
+        self.oidc_login(sub="pair", email="pair@example.test", name="Pair Person", groups=["pairs"])
+        status, body = self.sharing(self.zach_key)
+        self.assertIn("pair@example.test", {item["value"] for item in body["directory"]["people"]})
+        self.assertNotIn("pairs", {item["value"] for item in body["directory"]["groups"]})
+
+    def test_f2_a_compound_group_is_not_inferred_for_non_admins(self) -> None:
+        status, body = self.sharing(self.collab_key, "POST", {"value": "pairs"}, "/grants")
+        self.assertEqual(400, status, body)
+        status, body = self.sharing(self.boss_key, "POST", {"value": "pairs"}, "/grants")
+        self.assertEqual(200, status, body)
+
+
+class Round1SeenByTests(Wave1Case):
+    def view(self, actor: dict, detail: dict | None = None) -> None:
+        self.store.audit("draft.view", actor=actor, target_type="draft", target_id=self.draft_id,
+                         detail={"version": 1, "path": "index.html", **(detail or {})})
+
+    def passive(self, login: str) -> None:
+        self.view({"accountId": None, "email": login},
+                  {"authMethod": "tailscale_header", "actorLogin": login})
+
+    def test_f5_passive_owner_views_are_not_listed(self) -> None:
+        self.passive("zach@example.test")
+        self.passive("peer@example.test")
+        status, body = self.sharing(self.zach_key)
+        self.assertEqual(["peer@example.test"], [item["viewer"] for item in body["seenBy"]])
+
+    def test_f5_a_passive_and_a_signed_in_view_count_once(self) -> None:
+        self.assertEqual(200, self.request(f"/d/{self.draft_id}/", cookies=[self.viewer])[0])
+        self.passive("viewer@example.test")
+        status, body = self.sharing(self.zach_key)
+        self.assertEqual(["viewer@example.test"], [item["viewer"] for item in body["seenBy"]])
+
+    def test_f5_a_tailscale_login_matches_its_account_hash(self) -> None:
+        account = server.sha256_text("tailscale:pal@github")[:32]
+        self.view({"accountId": account, "email": None}, {"actorLogin": None})
+        self.passive("pal@github")
+        status, body = self.sharing(self.zach_key)
+        self.assertEqual(["pal@github"], [item["viewer"] for item in body["seenBy"]])
+
+    def test_f5_the_scan_reads_only_the_newest_view_rows(self) -> None:
+        self.passive("old@example.test")
+        self.passive("new@example.test")
+        for _ in range(3):
+            self.store.audit("draft.view", actor={"accountId": None, "email": "other@example.test"},
+                             target_type="draft", target_id="someotherdraft", detail={"version": 1})
+        with mock.patch.object(server, "DRAFT_VIEW_SCAN", 4):
+            people = [item["viewer"] for item in self.store.draft_viewers(self.draft_id, "x", 10)]
+        self.assertEqual(["new@example.test"], people)
+        people = [item["viewer"] for item in self.store.draft_viewers(self.draft_id, "x", 10)]
+        self.assertEqual(["new@example.test", "old@example.test"], people)
+
+    def test_f5_account_name_reads_one_row(self) -> None:
+        account = self.store.account_principal  # Principal rows exist for signed-in readers.
+        self.assertIsNotNone(account)
+        self.assertIsNone(self.store.account_name("nosuchaccount"))
+        accounts = self.store.load_meta()["accounts"]
+        known = next(iter(accounts))
+        self.assertEqual(accounts[known]["name"], self.store.account_name(known))
 
 
 if __name__ == "__main__":
