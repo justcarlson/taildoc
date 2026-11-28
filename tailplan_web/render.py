@@ -937,6 +937,8 @@ def render_sharing(base_url: str, session: dict, sharing: dict) -> str:
     body = '<section class="card" aria-labelledby="sharing-title"><h2 id="sharing-title">Sharing</h2>'
     body += (f'<p class="muted">Workspace <span class="badge ws">{esc(sharing["workspace"])}</span> · '
              f'Visibility <span class="badge scope">{esc(sharing["visibility"])}</span></p>')
+    if sharing.get("audienceSummary"):
+        body += f'<p class="audience">{esc(sharing["audienceSummary"])}.</p>'
     body += (f'<form method="post" action="{action_base}" class="inline">{csrf}<div><label for="visibility">'
              'Who can read</label><select id="visibility" name="visibility">')
     for value in sharing["allowedVisibilities"]:
@@ -968,8 +970,15 @@ def render_sharing(base_url: str, session: dict, sharing: dict) -> str:
              '<input id="grant-value" name="value" required maxlength="255"></div>'
              '<div><label for="grant-role">Role</label><select id="grant-role" name="role">'
              '<option value="viewer">Viewer</option><option value="editor">Editor</option></select></div>'
-             '<button>Add access</button></form></section>')
-    return body
+             '<button>Add access</button></form>')
+    if sharing.get("seenBy"):
+        body += '<h3>Seen by</h3><ul class="seen-by">'
+        for seen in sharing["seenBy"]:
+            version = f" · v{esc(seen['version'])}" if seen.get("version") else ""
+            body += (f'<li>{esc(seen["displayName"])}{version} · '
+                     f'<time>{esc(_exact(seen["viewedAt"]))}</time></li>')
+        body += '</ul>'
+    return body + '</section>'
 
 
 def render_activate(base_url: str, session: dict, code: str | None, info: dict | None, *,
@@ -1009,7 +1018,14 @@ def render_activate(base_url: str, session: dict, code: str | None, info: dict |
 
 
 def render_detail(base_url: str, session: dict, detail: dict, *, sharing: dict | None = None,
-                  theme: str = "system", script_nonce: str | None = None) -> str:
+                  role: str = "owner", theme: str = "system", script_nonce: str | None = None) -> str:
+    """Render one draft. Only the owner sees the tag, star, archive, disable, and delete controls.
+
+    An editor sees a short page with Open Draft, Sharing, and a version list with no audit data.
+    An instance admin sees the audit data but no owner controls.
+    """
+    owner = role == "owner"
+    audit = role in {"owner", "admin"}
     draft = detail["draft"]
     base = esc(base_url.rstrip("/"))
     draft_id = esc(draft["draftId"])
@@ -1017,36 +1033,42 @@ def render_detail(base_url: str, session: dict, detail: dict, *, sharing: dict |
     next_path = f"/dashboard/drafts/{draft['draftId']}"
     csrf = csrf_field(session["csrf"])
     hidden_next = f'<input type="hidden" name="next" value="{esc(next_path)}">'
+    star = _star_form(base, draft, session["csrf"], next_path) if owner else ""
     body = (f'<p class="crumb"><a class="muted" href="{base}/dashboard">← Drafts</a></p>'
-            f'<div class="detail-head">{_star_form(base, draft, session["csrf"], next_path)}'
-            f'<h1>{esc(draft["title"])}</h1></div>')
+            f'<div class="detail-head">{star}<h1>{esc(draft["title"])}</h1></div>')
     meta = [_version_chip(draft)]
     if draft.get("updatedAt"):
         meta.append(f'<span>Updated {_time_tag(draft["updatedAt"], datetime.now(UTC))}</span>')
     if _repo_label(draft):
         meta.append(f'<span class="pill">{esc(_repo_label(draft))}</span>')
-    if draft.get("archived"):
+    if owner and draft.get("archived"):
         meta.append('<span class="badge">archived</span>')
     body += f'<div class="detail-sub actions">{"".join(meta)}</div>'
     if draft.get("description"):
         body += f'<p class="detail-sub">{esc(draft["description"])}</p>'
-    body += '<div class="tag-editor" aria-label="Tags">'
-    for tag in draft.get("tags") or []:
-        body += (f'<span class="pill">{esc(tag)}<form method="post" action="{action_base}/tags">{csrf}{hidden_next}'
-                 f'<input type="hidden" name="remove_tag" value="{esc(tag)}">'
-                 f'<button type="submit" aria-label="Remove tag {esc(tag)}" title="Remove tag">×</button></form></span>')
-    body += (f'<form method="post" action="{action_base}/tags">{csrf}{hidden_next}'
-             '<label class="sr-only" for="add-tag">Add tag</label>'
-             '<input id="add-tag" name="add_tag" maxlength="32" placeholder="Add tag" autocomplete="off" required>'
-             '<button class="secondary sm" type="submit">Add</button></form></div>')
-    body += (f'<div class="links">{external_link(draft["shareUrl"], "Open latest draft", css="button sm")}'
+    if owner:
+        body += '<div class="tag-editor" aria-label="Tags">'
+        for tag in draft.get("tags") or []:
+            body += (f'<span class="pill">{esc(tag)}<form method="post" action="{action_base}/tags">{csrf}{hidden_next}'
+                     f'<input type="hidden" name="remove_tag" value="{esc(tag)}">'
+                     f'<button type="submit" aria-label="Remove tag {esc(tag)}" title="Remove tag">×</button>'
+                     '</form></span>')
+        body += (f'<form method="post" action="{action_base}/tags">{csrf}{hidden_next}'
+                 '<label class="sr-only" for="add-tag">Add tag</label>'
+                 '<input id="add-tag" name="add_tag" maxlength="32" placeholder="Add tag" autocomplete="off" required>'
+                 '<button class="secondary sm" type="submit">Add</button></form></div>')
+    open_label = "Open latest draft" if audit else "Open Draft"
+    body += (f'<div class="links">{external_link(draft["shareUrl"], open_label, css="button sm")}'
              f'{external_link(draft["rawUrl"], "Raw HTML", css="button secondary sm")}')
-    archive_action, archive_label = ("unarchive", "Unarchive") if draft.get("archived") else ("archive", "Archive")
-    body += (f'<form method="post" action="{action_base}/{archive_action}" class="flush">{csrf}{hidden_next}'
-             f'<button class="secondary sm">{archive_label}</button></form>')
-    toggle = ("enable", "Enable draft") if draft["disabled"] else ("disable", "Disable draft")
-    body += (f'<form method="post" action="{action_base}/{toggle[0]}" class="flush">{csrf}'
-             f'<button class="secondary sm">{toggle[1]}</button></form></div>')
+    if owner:
+        archive_action, archive_label = (("unarchive", "Unarchive") if draft.get("archived")
+                                         else ("archive", "Archive"))
+        body += (f'<form method="post" action="{action_base}/{archive_action}" class="flush">{csrf}{hidden_next}'
+                 f'<button class="secondary sm">{archive_label}</button></form>')
+        toggle = ("enable", "Enable draft") if draft["disabled"] else ("disable", "Disable draft")
+        body += (f'<form method="post" action="{action_base}/{toggle[0]}" class="flush">{csrf}'
+                 f'<button class="secondary sm">{toggle[1]}</button></form>')
+    body += '</div>'
     if draft["disabled"]:
         body += f'<p class="notice">Disabled: {esc(draft["disabledReason"])}</p>'
     if sharing is not None:
@@ -1067,15 +1089,20 @@ def render_detail(base_url: str, session: dict, detail: dict, *, sharing: dict |
                  f'<td data-label="Source"><span class="num">{esc(version["fileSize"])}</span> bytes')
         if version.get("ciRunUrl"):
             body += "<br>" + external_link(version["ciRunUrl"], "CI run")
-        body += '<details><summary>Audit</summary><dl>'
-        for field in ("fileSha256", "requestId", "apiKeyId", "sourceIp", "cliVersion", "ciActor",
-                      "hasInlineScript", "externalImageHosts"):
-            if version.get(field) is not None:
-                body += f'<dt>{esc(field)}</dt><dd class="mono">{esc(version[field])}</dd>'
-        body += '</dl></details></td></tr>'
-    body += ('</tbody></table></div><details><summary>Delete this draft</summary>'
-             '<p>Deletion removes this draft from the list and disables every version URL.</p>')
-    body += f'<form method="post" action="{action_base}/delete">{csrf}<button class="danger">Delete draft</button></form></details>'
+        if audit:
+            body += '<details><summary>Audit</summary><dl>'
+            for field in ("fileSha256", "requestId", "apiKeyId", "sourceIp", "cliVersion", "ciActor",
+                          "hasInlineScript", "externalImageHosts"):
+                if version.get(field) is not None:
+                    body += f'<dt>{esc(field)}</dt><dd class="mono">{esc(version[field])}</dd>'
+            body += '</dl></details>'
+        body += '</td></tr>'
+    body += '</tbody></table></div>'
+    if owner:
+        body += ('<details><summary>Delete this draft</summary>'
+                 '<p>Deletion removes this draft from the list and disables every version URL.</p>'
+                 f'<form method="post" action="{action_base}/delete">{csrf}'
+                 '<button class="danger">Delete draft</button></form></details>')
     return web_page(draft["title"], body, base_url, session, theme=theme, nav="drafts", next_path=next_path,
                     script_nonce=script_nonce)
 
