@@ -4561,11 +4561,21 @@ class Store:
 
     def draft_detail(self, account_id: str, ref: str, base_url: str) -> dict:
         with STORE_LOCK:
-            draft = self._owned_draft(self.load_meta(), ref, account_id)
-            public = self.public_draft(draft, base_url)
-            versions = sorted(self._version_records(draft).values(),
-                              key=lambda version: version["versionNumber"], reverse=True)
-            return {"ok": True, "draft": public, "versions": versions}
+            return self._detail(self._owned_draft(self.load_meta(), ref, account_id), base_url)
+
+    def draft_detail_any(self, ref: str, base_url: str) -> dict:
+        """Return the detail of any live draft. The caller must check access first."""
+        with STORE_LOCK:
+            _draft_id, draft = self._resolve_ref(self.load_meta(), ref)
+            if not draft or draft.get("deletedAt"):
+                raise KeyError("Draft not found.")
+            return self._detail(draft, base_url)
+
+    def _detail(self, draft: dict, base_url: str) -> dict:
+        public = self.public_draft(draft, base_url)
+        versions = sorted(self._version_records(draft).values(),
+                          key=lambda version: version["versionNumber"], reverse=True)
+        return {"ok": True, "draft": public, "versions": versions}
 
     def _edit_drafts(self, account_id: str, refs: list[str], apply, *, counts: bool = False
                      ) -> list[tuple[dict, int | None]]:
@@ -5059,6 +5069,39 @@ class Store:
         )
         return self._principal_from_row(rows[0] if rows else None)
 
+    def list_principals(self, limit: int = 2000) -> list[dict]:
+        """Return known sign-in principals, most recent first."""
+        rows = self._rows("SELECT * FROM principals ORDER BY last_login_at DESC LIMIT ?", (limit,))
+        return [self._principal_from_row(row) for row in rows]
+
+    def draft_viewers(self, draft_id: str, owner_account_id: str, limit: int = 10) -> list[dict]:
+        """Return the latest `draft.view` per reader other than the owner, newest first.
+
+        It reads the audit table only. A reader counts once, by account or by login.
+        """
+        rows = self._rows(
+            "SELECT ts, actor_account_id, actor_email, detail_json FROM audit_events"
+            " WHERE event_type = 'draft.view' AND target_id = ?"
+            " AND (actor_account_id IS NULL OR actor_account_id <> ?) ORDER BY id DESC LIMIT 500",
+            (draft_id, owner_account_id),
+        )
+        seen: dict[str, dict] = {}
+        for row in rows:
+            try:
+                detail = json.loads(row["detail_json"] or "{}")
+            except ValueError:
+                detail = {}
+            login = row["actor_email"] or (detail.get("actorLogin") if isinstance(detail, dict) else None)
+            key = row["actor_account_id"] or (login or "").strip().lower()
+            if not key or key in seen:
+                continue
+            version = detail.get("version") if isinstance(detail, dict) else None
+            seen[key] = {"accountId": row["actor_account_id"], "viewer": login,
+                         "version": version if isinstance(version, int) else None, "viewedAt": row["ts"]}
+            if len(seen) >= limit:
+                break
+        return list(seen.values())
+
     def create_session(
         self,
         *,
@@ -5490,7 +5533,7 @@ def revoke_value(principal_type: object, value: object) -> str:
 class RBACPolicy:
     """Map sign-in claims to an instance role and workspace roles. Deny by default."""
 
-    RULE_FIELDS = {"match", "instance_role", "workspaces", "default_workspace"}
+    RULE_FIELDS = {"match", "instance_role", "workspaces", "default_workspace", "display_name"}
 
     def __init__(self, data: object = None) -> None:
         self.configured = data is not None
@@ -5536,6 +5579,12 @@ class RBACPolicy:
         default = rule.get("default_workspace")
         if default is not None:
             self._workspace(default, f"rule {index + 1} default_workspace")
+        display_name = rule.get("display_name")
+        if display_name is not None:
+            if (not isinstance(display_name, str) or not display_name.strip() or len(display_name.strip()) > 80
+                    or any(ord(character) < 32 or ord(character) == 127 for character in display_name)):
+                raise ValueError(f"{where} display_name must be short text with no control characters.")
+            display_name = display_name.strip()
         if "email" in match and EMAIL_RE.fullmatch(match["email"].strip().lower()) is None:
             raise ValueError(
                 f"{where} email {match['email'].strip()!r} is not an email address with a dotted "
@@ -5552,6 +5601,7 @@ class RBACPolicy:
             "instanceRole": instance_role,
             "workspaces": dict(workspaces),
             "defaultWorkspace": default,
+            "displayName": display_name,
         }
 
     @classmethod
@@ -5764,6 +5814,44 @@ def workspace_allowed(identity: dict, workspace: str) -> bool:
     if identity.get("instanceRole") == "admin":
         return True
     return ROLE_RANK.get((identity.get("workspaces") or {}).get(workspace, ""), 0) >= ROLE_RANK["editor"]
+
+
+COLLABORATOR_HIDDEN_VERSION_FIELDS = frozenset(
+    {"apiKeyId", "sourceIp", "requestId", "cliVersion", "ciActor"})
+
+
+def _join_names(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def audience_summary(role: str | None, visibility: str, workspace: str, grants: list[dict]) -> str:
+    """Return one plain line that says who can open the draft.
+
+    The owner joins a sentence that lists only people. Groups and workspaces stand alone.
+    """
+    owner = "You" if role == "owner" else "The owner"
+    sentences: list[str] = []
+    owner_listed = False
+    for level, verb in (("editor", "edit"), ("viewer", "view")):
+        wanted = [grant for grant in grants if grant["role"] == level]
+        named = [f"{grant['value'].capitalize()} workspace" for grant in wanted if grant["type"] == "workspace"]
+        named += [f"{grant['value']} group" for grant in wanted if grant["type"] == "group"]
+        people = sum(1 for grant in wanted if grant["type"] in {"email", "tailscale_login"})
+        if people:
+            count = f"{people} person" if people == 1 else f"{people} people"
+            if named or owner_listed:
+                named.append(count)
+            else:
+                named, owner_listed = [owner, count], True
+        if named:
+            sentences.append(f"{_join_names(named)} can {verb}")
+    open_to = {"link": "Anyone with the link", "authenticated": "Everyone signed in",
+               "workspace": f"Members of the {workspace} workspace"}.get(visibility)
+    if open_to:
+        sentences.append(f"{open_to} can open this")
+    if not sentences:
+        return f"Only {owner.lower()} can open this"
+    return "; ".join(sentence[0].upper() + sentence[1:] for sentence in sentences)
 
 
 def claim_path(claims: dict, path: str) -> object:
@@ -7103,7 +7191,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         route = self.route_path()
-        if not route.startswith("/d/") and not SOURCE_ROUTE_RE.fullmatch(route):
+        if (not route.startswith(("/d/", "/dashboard/drafts/", "/api/drafts/"))
+                and not SOURCE_ROUTE_RE.fullmatch(route)):
             self.route_get()
             return
         key = self.viewer_miss_key()
@@ -7956,8 +8045,8 @@ class Handler(BaseHTTPRequestHandler):
         elif sharing:
             ref, grants = sharing.groups()
             if method == "GET" and not grants:
-                draft, _role = self.sharing_target(identity, ref)
-                self.send_json(200, self.sharing_payload(draft))
+                draft, role = self.sharing_target(identity, ref)
+                self.send_json(200, self.sharing_payload(draft, identity, role))
             elif method == "POST":
                 self.send_json(200, self.change_sharing(identity, ref, "grant" if grants else "update",
                                                         self.read_control_body()))
@@ -8123,15 +8212,177 @@ class Handler(BaseHTTPRequestHandler):
             raise AccessDenied("Editor role required.")
         return draft, role
 
-    def sharing_payload(self, draft: dict) -> dict:
+    def dashboard_role(self, session: dict, ref: str) -> tuple[dict | None, str | None]:
+        """Return the live draft and the session role. A disabled draft stays open to the owner and admin only."""
+        draft = self.store.resolve_draft(ref)
+        if draft is None:
+            return None, None
+        role = draft_role(session, draft, self.store.list_grants(draft["draftId"]), self.auth)
+        if role not in {"owner", "admin"} and draft.get("disabledAt"):
+            role = None
+        return draft, role
+
+    def sharing_roster(self) -> tuple[dict, dict]:
+        """Return every known person and group with display name and workspace names.
+
+        People come from the RBAC policy and from verified sign-in principals.
+        The result is the full roster. Callers must filter it by workspace.
+        """
+        policy = self.auth.policy
+        people: dict[tuple[str, str], dict] = {}
+        groups: dict[str, dict] = {}
+
+        def add(table: dict, key: object, name: str | None, workspaces: set[str]) -> None:
+            entry = table.setdefault(key, {"displayName": None, "workspaces": set()})
+            entry["displayName"] = entry["displayName"] or name
+            entry["workspaces"] |= workspaces
+
+        for rule in policy.rules:
+            spaces = set(rule["workspaces"])
+            if rule["group"]:
+                add(groups, rule["group"], rule["displayName"], spaces)
+            if rule["email"]:
+                add(people, ("email", rule["email"]), rule["displayName"], spaces)
+            if rule["tailscaleLogin"]:
+                add(people, ("tailscale_login", rule["tailscaleLogin"]), rule["displayName"], spaces)
+        for principal in self.store.list_principals():
+            email = principal["email"].strip().lower() if isinstance(principal["email"], str) else None
+            if email is not None and (not principal["emailVerified"] or EMAIL_RE.fullmatch(email) is None):
+                email = None
+            login = principal["subject"].strip().lower() if principal["issuer"] == "tailscale" else None
+            if login is not None and TAILSCALE_LOGIN_RE.fullmatch(login) is None:
+                login = None
+            if email is None and login is None:
+                continue
+            if policy.configured:
+                resolved = policy.resolve(email=email, email_verified=email is not None,
+                                          groups=principal["groups"], tailscale_login=login)
+                spaces = set(resolved["workspaces"]) if resolved else set()
+            else:
+                spaces = set(principal["workspaces"])
+            name = clean_text(principal["displayName"], 80) or None
+            if email is not None:
+                add(people, ("email", email), name, spaces)
+            if login is not None and login != email:
+                add(people, ("tailscale_login", login), name, spaces)
+        return people, groups
+
+    def workspace_names(self, identity: dict) -> set[str]:
+        """Return the workspace names the caller may see in the directory."""
+        mine = set(identity.get("workspaces") or {})
+        if identity.get("instanceRole") != "admin":
+            return mine
+        policy = self.auth.policy
+        names = mine | {policy.default_workspace, policy.legacy_workspace}
+        for rule in policy.rules:
+            names |= set(rule["workspaces"])
+        return names
+
+    def sharing_directory(self, identity: dict | None, draft: dict | None = None) -> dict:
+        """Return the people, groups, and workspaces the caller may pick for a grant.
+
+        An instance admin sees all of them. Anyone else sees only entries that
+        share a workspace with the caller. A passive or anonymous caller sees none.
+        """
+        directory: dict = {"people": [], "groups": [], "workspaces": []}
+        if identity is None or identity.get("passive") or identity.get("accountId") in (None, "anonymous"):
+            return directory
+        admin = identity.get("instanceRole") == "admin"
+        visible = self.workspace_names(identity)
+        people, groups = self.sharing_roster()
+        skip: set[tuple[str, str]] = set()
+        email = identity.get("email") if identity.get("emailVerified") else None
+        if isinstance(email, str):
+            skip.add(("email", email.strip().lower()))
+        if identity.get("tailscaleLogin"):
+            skip.add(("tailscale_login", identity["tailscaleLogin"].strip().lower()))
+        if draft is not None:
+            skip |= {(grant["type"], grant["value"]) for grant in self.store.list_grants(draft["draftId"])}
+            owner = self.store.account_principal(draft["accountId"]) if draft.get("accountId") else None
+            if owner:
+                if owner["emailVerified"] and isinstance(owner["email"], str):
+                    skip.add(("email", owner["email"].strip().lower()))
+                if owner["issuer"] == "tailscale":
+                    skip.add(("tailscale_login", owner["subject"].strip().lower()))
+        for (kind, value), entry in people.items():
+            shared = entry["workspaces"] if admin else entry["workspaces"] & visible
+            if (kind, value) in skip or (not shared and not admin):
+                continue
+            directory["people"].append({"type": kind, "value": value, "displayName": entry["displayName"] or value,
+                                        "workspaces": sorted(shared)})
+        for value, entry in groups.items():
+            shared = entry["workspaces"] if admin else entry["workspaces"] & visible
+            if ("group", value) in skip or (not shared and not admin):
+                continue
+            directory["groups"].append({"value": value, "displayName": entry["displayName"] or value,
+                                        "workspaces": sorted(shared)})
+        for items in (directory["people"], directory["groups"]):
+            items.sort(key=lambda item: (item["displayName"].casefold(), item["value"]))
+        directory["people"], directory["groups"] = directory["people"][:200], directory["groups"][:100]
+        directory["workspaces"] = self.workspace_cards(visible, people, groups)
+        return directory
+
+    @staticmethod
+    def workspace_cards(names: set[str], people: dict, groups: dict) -> list[dict]:
+        return [{"name": name,
+                 "memberCount": sum(1 for entry in people.values() if name in entry["workspaces"]),
+                 "groups": sorted(group for group, entry in groups.items() if name in entry["workspaces"])}
+                for name in sorted(names)]
+
+    def movable_workspaces(self, identity: dict, role: str | None) -> list[dict]:
+        """Return the workspaces this caller may move the draft to. Only an owner or admin may move it."""
+        if role not in {"owner", "admin"}:
+            return []
+        people, groups = self.sharing_roster()
+        names = {name for name in self.workspace_names(identity) if workspace_allowed(identity, name)}
+        return self.workspace_cards(names, people, groups)
+
+    def seen_by(self, draft: dict) -> list[dict]:
+        """Return who opened the draft, newest first. Only the owner may read it."""
+        result = []
+        for row in self.store.draft_viewers(draft["draftId"], draft.get("accountId") or "local", 10):
+            name = None
+            if row["accountId"]:
+                principal = self.store.account_principal(row["accountId"])
+                name = clean_text(principal["displayName"], 80) if principal else None
+                name = name or clean_text((self.store.account(row["accountId"]) or {}).get("accountName"), 80)
+            result.append({"displayName": name or row["viewer"] or "Someone", "viewer": row["viewer"],
+                           "version": row["version"], "viewedAt": row["viewedAt"]})
+        return result
+
+    def infer_grant_type(self, value: object) -> str:
+        """Return the grant type for a bare value: an email, a policy group, or a Tailscale login."""
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Grant value is required.")
+        text = value.strip().lower()
+        if EMAIL_RE.fullmatch(text):
+            return "email"
+        if _normalize_principal_value(text) in {rule["group"] for rule in self.auth.policy.rules if rule["group"]}:
+            return "group"
+        if TAILSCALE_LOGIN_RE.fullmatch(text):
+            return "tailscale_login"
+        raise ValueError("Use an email, a known group, or a Tailscale login.")
+
+    def sharing_payload(self, draft: dict, identity: dict, role: str | None) -> dict:
         public_url = f"{self.base_url.rstrip('/')}/d/{draft.get('slug') or draft['draftId']}"
-        return {
-            "ok": True, "draftId": draft["draftId"], "workspace": draft_workspace(draft, self.auth),
-            "visibility": effective_visibility(draft, self.auth), "maxVisibility": self.auth.max_visibility,
+        grants = self.store.list_grants(draft["draftId"])
+        workspace = draft_workspace(draft, self.auth)
+        visibility = effective_visibility(draft, self.auth)
+        movable = self.movable_workspaces(identity, role)
+        payload = {
+            "ok": True, "draftId": draft["draftId"], "workspace": workspace,
+            "visibility": visibility, "maxVisibility": self.auth.max_visibility,
             "allowedVisibilities": self.auth.allowed_visibilities(), "viewerAuthMode": self.auth.viewer_mode,
             "shareUrl": public_url + "/share", "publicUrl": public_url,
-            "grants": self.store.list_grants(draft["draftId"]),
+            "grants": grants,
+            "canMoveWorkspace": any(item["name"] != workspace for item in movable),
+            "movableWorkspaces": movable,
+            "directory": self.sharing_directory(identity, draft),
+            "audienceSummary": audience_summary(role, visibility, workspace, grants),
         }
+        if role == "owner":
+            payload["seenBy"] = self.seen_by(draft)
+        return payload
 
     def change_sharing(self, identity: dict, ref: str, action: str, payload: dict) -> dict:
         draft, role = self.sharing_target(identity, ref)
@@ -8158,6 +8409,8 @@ class Handler(BaseHTTPRequestHandler):
                              detail={"visibility": visibility, "workspace": workspace})
         elif action == "grant":
             principal_type = payload.get("type")
+            if principal_type in (None, "", "auto"):
+                principal_type = self.infer_grant_type(payload.get("value"))
             value = normalize_grant(principal_type, payload.get("value"))
             grant_role = payload.get("role") or "viewer"
             if grant_role not in GRANT_ROLES:
@@ -8172,7 +8425,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise KeyError("Grant not found.")
             self.audit_event("sharing.revoke", identity, "draft", draft_id,
                              detail={"type": principal_type, "value": value})
-        return self.sharing_payload(draft)
+        return self.sharing_payload(draft, identity, role)
 
     def annotate_drafts(self, drafts: list[dict]) -> list[dict]:
         for draft in drafts:
@@ -8209,7 +8462,7 @@ class Handler(BaseHTTPRequestHandler):
         known = path in {"/dashboard", "/dashboard/bulk", "/dashboard/theme", "/cli/auth", "/cli/auth/keys",
                          "/cli/activate", "/auth/sign-in", "/auth/sign-out"}
         draft_match = re.fullmatch(
-            r"/dashboard/drafts/([a-z0-9]{6,32})"
+            r"/dashboard/drafts/([a-z0-9][a-z0-9-]{1,39})"
             r"(?:/(disable|enable|delete|favorite|unfavorite|archive|unarchive|tags"
             r"|sharing|sharing/grants|sharing/revoke))?",
             path,
@@ -8314,12 +8567,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.store.revoke_key(account_id, key_match[1])
                 self.audit_event("key.revoke", session, "api_key", key_match[1])
                 self.redirect("/cli/auth")
-            elif draft_match and draft_match[2] and draft_match[2].startswith("sharing"):
-                action = {"sharing": "update", "sharing/grants": "grant", "sharing/revoke": "revoke"}[draft_match[2]]
-                self.change_sharing(session, draft_match[1], action, payload)
-                self.redirect(f"/dashboard/drafts/{draft_match[1]}")
             elif draft_match and draft_match[2]:
-                if draft_match[2] in {"favorite", "unfavorite", "archive", "unarchive", "tags"}:
+                _draft, role = self.dashboard_role(session, draft_match[1])
+                if role is None:
+                    self.send_not_found()
+                    return
+                sharing_action = {"sharing": "update", "sharing/grants": "grant",
+                                  "sharing/revoke": "revoke"}.get(draft_match[2])
+                if sharing_action and ROLE_RANK[role] >= ROLE_RANK["editor"]:
+                    self.change_sharing(session, draft_match[1], sharing_action, payload)
+                    self.redirect(f"/dashboard/drafts/{draft_match[1]}")
+                elif role != "owner" or sharing_action:
+                    self.send_json(403, {"ok": False, "error": "Forbidden"})
+                elif draft_match[2] in {"favorite", "unfavorite", "archive", "unarchive", "tags"}:
                     row = self.draft_edit(session, draft_match[1], payload, actions=(draft_match[2],))
                     draft_id = row["draftId"]
                     if self.wants_json():
@@ -8368,13 +8628,26 @@ class Handler(BaseHTTPRequestHandler):
                                             theme=self.web_theme(), script_nonce=nonce),
                            web=True, script_nonce=nonce)
         elif draft_match and draft_match[2] is None:
-            detail = self.store.draft_detail(account_id, draft_match[1], self.base_url)
-            self.annotate_drafts([detail["draft"]])
-            stored = self.store.resolve_draft(draft_match[1]) or {}
-            sharing = self.sharing_payload({**stored, "draftId": detail["draft"]["draftId"]})
-            self.send_html(200, render_detail(self.base_url, session, detail, sharing=sharing,
-                                              theme=self.web_theme(), script_nonce=nonce),
-                           web=True, script_nonce=nonce)
+            draft, role = self.dashboard_role(session, draft_match[1])
+            if draft is None or role is None:
+                # One 404 for a missing, deleted, disabled, or unshared draft.
+                if self.wants_json():
+                    self.send_json(404, {"ok": False, "error": "Draft not found."})
+                else:
+                    self.send_not_found()
+            elif role == "viewer":
+                self.redirect(f"/d/{draft.get('slug') or draft['draftId']}/share")
+            else:
+                detail = self.store.draft_detail_any(draft["draftId"], self.base_url)
+                self.annotate_drafts([detail["draft"]])
+                if role not in {"owner", "admin"}:
+                    detail["versions"] = [{key: value for key, value in version.items()
+                                           if key not in COLLABORATOR_HIDDEN_VERSION_FIELDS}
+                                          for version in detail["versions"]]
+                sharing = self.sharing_payload(draft, session, role)
+                self.send_html(200, render_detail(self.base_url, session, detail, sharing=sharing, role=role,
+                                                  theme=self.web_theme(), script_nonce=nonce),
+                               web=True, script_nonce=nonce)
         else:
             self.send_not_found()
 
